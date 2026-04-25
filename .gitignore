@@ -1,0 +1,16 @@
+# Dependencies
+node_modules/
+
+# Build output
+main.js
+/hooks/
+
+# Temp + logs
+*.tmp-*
+*.log
+
+# System / editor
+.DS_Store
+
+# Sibling web project colocated in this dir (POLLEO.AI homepage staging)
+www.polleo.ai/

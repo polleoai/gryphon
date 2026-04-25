@@ -1,0 +1,10 @@
+{
+  "id": "gryphon",
+  "name": "Gryphon",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Chat with Claude in your vault. Read notes, edit files, run tools — with a two-axis security model that keeps protected patterns guarded even when auto-approve is on.",
+  "author": "POLLEO.AI",
+  "authorUrl": "https://www.polleo.ai",
+  "isDesktopOnly": true
+}

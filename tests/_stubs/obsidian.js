@@ -1,0 +1,52 @@
+/**
+ * Minimal `obsidian` module stub for unit tests.
+ *
+ * Real Obsidian provides these classes at runtime; in tests we just need
+ * enough surface so that `require("obsidian")` succeeds. Tool tests run
+ * in `bypassPermissions` mode so the Modal is never constructed.
+ */
+
+class Modal {
+  constructor() { this.titleEl = _el(); this.contentEl = _el(); }
+  open() {}
+  close() {}
+}
+
+class Setting {
+  constructor() { return this; }
+  setName() { return this; }
+  setDesc() { return this; }
+  addToggle(fn) { fn({ setValue() { return this; }, onChange() { return this; } }); return this; }
+  addButton(fn) { fn({ setButtonText() { return this; }, setCta() { return this; }, onClick() { return this; } }); return this; }
+}
+
+class TFile {}
+class TFolder {}
+
+// Minimal class stubs for chat-view's `extends ItemView` and module-
+// level destructures. Pure-function tests importing a symbol from
+// chat-view.js (e.g., filterMessagesForSave) need these so the
+// module load succeeds; they're never instantiated.
+class ItemView {
+  constructor() {}
+}
+class MarkdownView {}
+class Menu {}
+const MarkdownRenderer = {
+  render() { /* no-op; chat-view uses this only in DOM paths */ },
+};
+function setTooltip() { /* no-op */ }
+
+function _el() {
+  return {
+    setText() {},
+    createEl() { return _el(); },
+    style: {},
+  };
+}
+
+module.exports = {
+  Modal, Setting, TFile, TFolder,
+  ItemView, MarkdownView, Menu, MarkdownRenderer,
+  setTooltip,
+};
