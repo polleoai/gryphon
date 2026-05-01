@@ -397,15 +397,23 @@ class GryphonChatView extends ItemView {
         return;
       }
 
-      // Terminal-style Up/Down behavior:
+      // Visual-line-aware Up/Down behavior (issue #10):
       //
       //   ArrowUp:
-      //     - cursor NOT at start of input  → jump cursor to start
-      //     - cursor AT start (or empty)    → walk back in prompt history
+      //     - caret on FIRST visual line → walk back in prompt history
+      //     - caret on any other visual line → native: move caret one line up
       //   ArrowDown:
-      //     - cursor NOT at end of input    → jump cursor to end
-      //     - cursor AT end and in history  → walk forward in history
-      //     - past newest in history        → restore pre-history input
+      //     - caret on LAST visual line and in history → walk forward
+      //     - caret on LAST visual line, past newest → restore pre-history input
+      //     - caret on LAST visual line, no history → no-op (native end)
+      //     - caret on any other visual line → native: move caret one line down
+      //
+      // "Visual line" respects soft-wrap, so a 200-char prompt that
+      // wraps to 3 rows lets the user navigate within it before
+      // ArrowUp/Down step into history. Same for pasted multi-line
+      // prompts. Mirror-element measurement is what makes this work
+      // across themes / fonts (the textarea has no public visual-line
+      // API; only mirror geometry tells us where the caret sits).
       //
       // Current typed text is buffered into _preHistoryInput when the
       // user enters history mode, so walking past the newest entry
@@ -413,22 +421,16 @@ class GryphonChatView extends ItemView {
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         const history = this._getPromptHistory();
         const currentText = this.inputEl.value;
-        const cursorPos = this.inputEl.selectionStart;
-        const endPos = currentText.length;
         const inHistoryMode = this._promptHistoryIdx !== null && this._promptHistoryIdx !== undefined;
+        const onBoundaryLine = e.key === "ArrowUp"
+          ? this._caretIsOnFirstVisualLine()
+          : this._caretIsOnLastVisualLine();
 
-        // Cursor position takes precedence over history state:
-        //   ArrowUp:  cursor NOT at start → jump to start; cursor AT start → older history
-        //   ArrowDown: cursor NOT at end → jump to end;   cursor AT end → newer history
-        // This lets users navigate inside a recalled history item without
-        // accidentally walking further through history.
+        // Interior visual line → let the native textarea move the caret
+        // one row up/down. Don't preventDefault; don't touch history.
+        if (!onBoundaryLine) return;
+
         if (e.key === "ArrowUp") {
-          if (cursorPos > 0) {
-            e.preventDefault();
-            this.inputEl.selectionStart = this.inputEl.selectionEnd = 0;
-            return;
-          }
-          // Cursor at start (or empty input) → walk back in history
           if (history.length === 0) return;
           e.preventDefault();
           if (inHistoryMode) {
@@ -444,12 +446,6 @@ class GryphonChatView extends ItemView {
         }
 
         if (e.key === "ArrowDown") {
-          if (cursorPos < endPos) {
-            e.preventDefault();
-            this.inputEl.selectionStart = this.inputEl.selectionEnd = endPos;
-            return;
-          }
-          // Cursor at end → walk forward in history, or exit history mode
           if (!inHistoryMode) return;  // nothing newer to show when not in history
           e.preventDefault();
           if (this._promptHistoryIdx < history.length - 1) {
@@ -491,15 +487,20 @@ class GryphonChatView extends ItemView {
   }
 
   /**
-   * Scroll `inputEl` so the current caret is visible. The textarea wraps
-   * soft lines, so a newline-count heuristic underestimates the visual
-   * line of the caret; we mirror the textarea's layout in a hidden div
-   * and measure the caret's pixel offset directly.
+   * Mirror the textarea's layout in a hidden div with a span marker at
+   * the caret position, measure the marker's pixel offset, and return
+   * the geometry needed by both `_scrollCaretIntoView` (issue #2) and
+   * the visual-line-aware ArrowUp/Down boundary checks (issue #10).
+   *
+   * Returns null if the textarea is empty or unavailable. The mirror
+   * element is created and removed within this call — no shared DOM
+   * state outlives the measurement.
+   *
+   * @returns {{caretTop: number, totalHeight: number, lineHeight: number, clientHeight: number} | null}
    */
-  _scrollCaretIntoView() {
+  _measureCaretGeometry() {
     const el = this.inputEl;
-    if (!el) return;
-    if (el.scrollHeight <= el.clientHeight) return;
+    if (!el) return null;
     const cs = getComputedStyle(el);
     const lineHeight = parseFloat(cs.lineHeight) ||
                        (parseFloat(cs.fontSize) || 13) * 1.5;
@@ -523,18 +524,73 @@ class GryphonChatView extends ItemView {
     const caretPos = el.selectionEnd;
     mirror.textContent = el.value.substring(0, caretPos);
     const marker = document.createElement("span");
+    // Marker needs measurable layout. A trailing newline produces a
+    // zero-width final span — use a period as fallback so offsetTop is
+    // computed relative to the new visual line rather than the previous one.
     marker.textContent = el.value.substring(caretPos, caretPos + 1) || ".";
     mirror.appendChild(marker);
     document.body.appendChild(mirror);
     const caretTop = marker.offsetTop;
+    const totalHeight = mirror.offsetHeight;
     document.body.removeChild(mirror);
+    return {
+      caretTop,
+      totalHeight,
+      lineHeight,
+      clientHeight: el.clientHeight,
+    };
+  }
+
+  /**
+   * Scroll `inputEl` so the current caret is visible. The textarea wraps
+   * soft lines, so a newline-count heuristic underestimates the visual
+   * line of the caret; we mirror the textarea's layout in a hidden div
+   * and measure the caret's pixel offset directly.
+   */
+  _scrollCaretIntoView() {
+    const el = this.inputEl;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight) return;
+    const m = this._measureCaretGeometry();
+    if (!m) return;
     const visibleTop = el.scrollTop;
-    const visibleBottom = visibleTop + el.clientHeight;
-    if (caretTop < visibleTop) {
-      el.scrollTop = caretTop;
-    } else if (caretTop + lineHeight > visibleBottom) {
-      el.scrollTop = caretTop + lineHeight - el.clientHeight;
+    const visibleBottom = visibleTop + m.clientHeight;
+    if (m.caretTop < visibleTop) {
+      el.scrollTop = m.caretTop;
+    } else if (m.caretTop + m.lineHeight > visibleBottom) {
+      el.scrollTop = m.caretTop + m.lineHeight - m.clientHeight;
     }
+  }
+
+  /**
+   * True if the caret currently sits on the first visual row of the
+   * textarea — i.e. ArrowUp should walk into prompt history rather
+   * than move the caret one visual line up.
+   *
+   * Empty textarea is treated as "on the first line" so ArrowUp from
+   * an empty input recalls the most recent prompt as expected.
+   */
+  _caretIsOnFirstVisualLine() {
+    if (!this.inputEl || !this.inputEl.value) return true;
+    const m = this._measureCaretGeometry();
+    if (!m) return true;
+    return m.caretTop < m.lineHeight;
+  }
+
+  /**
+   * True if the caret currently sits on the last visual row — i.e.
+   * ArrowDown should walk forward through history rather than move
+   * the caret one visual line down.
+   *
+   * Empty textarea is treated as "on the last line" too (the first
+   * and last lines are the same line). 1px fudge accommodates
+   * sub-pixel line-height rounding across themes.
+   */
+  _caretIsOnLastVisualLine() {
+    if (!this.inputEl || !this.inputEl.value) return true;
+    const m = this._measureCaretGeometry();
+    if (!m) return true;
+    return m.caretTop + m.lineHeight >= m.totalHeight - 1;
   }
 
   async onClose() {
