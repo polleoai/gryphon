@@ -105,6 +105,11 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
   let turnText = "";
   let finalMessage = null;
   let iterations = 0;
+  // Issue #4: thinking blocks accumulated across loop iterations. Each
+  // iteration's finalMessage.content can carry `thinking` /
+  // `redacted_thinking` blocks; we extract them so chat-view can persist
+  // and surface them as a collapsible section on the assistant bubble.
+  const thinkingBlocks = [];
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
@@ -141,12 +146,24 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     totalUsage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
     totalUsage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
 
+    // Issue #4: harvest thinking blocks for cross-provider parity.
+    if (Array.isArray(finalMessage.content)) {
+      for (const b of finalMessage.content) {
+        if (!b) continue;
+        if (b.type === "thinking" && typeof b.thinking === "string" && b.thinking.length > 0) {
+          thinkingBlocks.push(b.thinking);
+        } else if (b.type === "redacted_thinking") {
+          thinkingBlocks.push("[redacted thinking]");
+        }
+      }
+    }
+
     // Append assistant turn to history (always — tool_use or end_turn)
     history.push({ role: "assistant", content: finalMessage.content });
 
     if (finalMessage.stop_reason !== "tool_use") {
       // Pure text response — we're done
-      return { turnText, finalMessage, totalUsage, iterations };
+      return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
     }
 
     // Execute all tool_use blocks from this turn
@@ -154,7 +171,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     if (toolUseBlocks.length === 0) {
       // stop_reason said tool_use but no blocks present — defensive exit
       console.warn("[gryphon/sdk] stop_reason=tool_use but no tool_use blocks");
-      return { turnText, finalMessage, totalUsage, iterations };
+      return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
     }
 
     const toolResults = [];
@@ -178,7 +195,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
   if (callbacks.onError) {
     callbacks.onError(`Tool loop exceeded ${MAX_ITERATIONS} iterations — stopping. The model may be stuck in a tool loop.`);
   }
-  return { turnText, finalMessage, totalUsage, iterations };
+  return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
 }
 
 module.exports = { runToolLoop, MAX_ITERATIONS };

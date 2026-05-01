@@ -30,6 +30,7 @@ Gryphon is a lightweight, reactive chat surface that connects your Obsidian vaul
 - **Untrusted-content framing** — web fetches, shell output, and out-of-vault reads are tagged when Claude sees them, so prompt injection in fetched content can't redirect the conversation
 - **Per-file provenance** — files written from a web fetch are persistently flagged; subsequent reads show Claude the original source and treat the content as data, even after a plugin reload
 - **Session persistence** — conversations survive plugin reloads, including full model context in Anthropic API mode
+- **Auto-compact at 95%** *(SDK mode)* — Gryphon automatically summarizes the conversation and starts a fresh session seeded with the summary when the context window fills up; a status-line warning at 80% lets you intervene with `/compact` first if you'd rather control the summary yourself. Claude Code mode delegates to Claude Code's own auto-compaction.
 - **Skill loader** — `.md` files in `Gryphon/Skills/` become slash commands; five skills ship pre-populated
 - **Terminal-style input** — ↑/↓ jump cursor to start/end of prompt, or walk through prompt history
 - **Slash commands** — `/clear`, `/compact`, `/context`, `/cost`, `/effort`, `/export`, `/model`, `/perm`, `/quote`, `/settings`, `/stop`, `/usage`

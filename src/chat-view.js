@@ -38,6 +38,7 @@ const { createProvider, explainUnavailable, detectAvailable } = require("./provi
 const {
   TOOL_STATUS_CORE, MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON,
+  CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
 } = require("./constants");
 
 /**
@@ -65,10 +66,71 @@ function filterMessagesForSave(messages, currentSessionId) {
   });
 }
 
+/**
+ * Pure-function context-window pct for unit testing. Mirrors the
+ * arithmetic in `_currentContextPct` so the boundary math (0, 80, 95,
+ * 100) can be asserted without a DOM.
+ *
+ * @param {number} tokens
+ * @param {number} windowSize
+ * @returns {number} integer 0..100
+ */
+function computeContextPct(tokens, windowSize) {
+  if (!tokens || !windowSize || windowSize <= 0) return 0;
+  return Math.min(100, Math.round(tokens / windowSize * 100));
+}
+
+/**
+ * Pure-function decision: should we start an SDK auto-compact?
+ *
+ * @param {object} state
+ *   pct           — current context %
+ *   isSdk         — provider is SDK?
+ *   autoCompactSdk — user setting (true = enabled)
+ *   isCompacting  — already a compact in flight?
+ *   messageCount  — messages.length (need >= 4 to summarize)
+ *   lagFailsafe   — bypass pct threshold (catch-branch path)
+ * @returns {boolean}
+ */
+function shouldStartAutoCompact({
+  pct, isSdk, autoCompactSdk, isCompacting, messageCount, lagFailsafe,
+}) {
+  if (isCompacting) return false;
+  if (!isSdk) return false;
+  if (autoCompactSdk === false) return false;
+  if (!lagFailsafe && (pct == null || pct < 95)) return false;
+  if (!messageCount || messageCount < 4) return false;
+  return true;
+}
+
+/**
+ * Pure-function hysteresis decision for the 80% one-shot warning.
+ * Encodes: fire once when crossing CONTEXT_WARN_PCT (and below
+ * AUTO_COMPACT_SDK_THRESHOLD_PCT); reset only when dropping below
+ * CONTEXT_WARN_RESET_PCT.
+ *
+ * @param {{shown: boolean}} prev
+ * @param {number} pct
+ * @returns {{shown: boolean, fire: boolean}}
+ *   shown — new value of the "warning shown" flag
+ *   fire  — whether to flash this turn
+ */
+function nextContextWarningState(prev, pct) {
+  const shown = !!(prev && prev.shown);
+  if (pct >= 80 && pct < 95 && !shown) return { shown: true,  fire: true  };
+  if (pct < 75 && shown)               return { shown: false, fire: false };
+  return { shown, fire: false };
+}
+
 function labelFor(list, value) {
   const item = list.find((x) => x.value === value);
   return item ? item.label : value;
 }
+
+const CARET_KEYS = new Set([
+  "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  "Home", "End", "PageUp", "PageDown",
+]);
 
 class GryphonChatView extends ItemView {
   constructor(leaf, plugin, options = {}) {
@@ -79,6 +141,19 @@ class GryphonChatView extends ItemView {
     this.streamingText = "";
     this.claudeProcess = null;
     this.cumulativeCost = 0;
+    // Issue #3: prompts the user submitted while a turn was streaming.
+    // Each entry: { text: string, bubbleEl: HTMLElement }. Drained one at
+    // a time after each turn finalizes. The bubbleEl is rendered with a
+    // "queued" class so the user gets immediate feedback that the send
+    // was accepted; on fire we remove it and let the normal send pipeline
+    // re-render + persist the user message.
+    this._queuedPrompts = [];
+    // Parallel record of queued-but-not-yet-fired prompt texts. Used by
+    // up-arrow recall (`_getPromptHistory`) and as the recovery source
+    // when a turn aborts or times out — at cleanup we drop the DOM
+    // bubbles but keep the texts here so the user can up-arrow back to
+    // any queued message that didn't get a chance to fire.
+    this._pendingQueuedTexts = [];
 
     // Extension points for consuming plugins — see file header for the
     // full contract.
@@ -87,7 +162,7 @@ class GryphonChatView extends ItemView {
     this.onBeforeSend = options.onBeforeSend || null;
     this.viewType = options.viewType || "gryphon-view";
     this.viewDisplayText = options.displayText || "Gryphon";
-    this.viewIcon = options.icon || "send";
+    this.viewIcon = options.icon || "shield-check";
 
     // Autocomplete sources: each source is { name, matches(text), suggest(text) }.
     // `matches` returns true if this source should handle the input.
@@ -399,10 +474,67 @@ class GryphonChatView extends ItemView {
       // when the user's started composing a new message.
       this._promptHistoryIdx = null;
       this._updateAutocomplete();
+      this._scrollCaretIntoView();
+    });
+
+    // Caret-into-view on navigation keys. Past the 150px max-height cap
+    // the textarea becomes internally scrollable; native browsers don't
+    // reliably scroll the caret into view in a constrained-height +
+    // auto-resize textarea, so the caret can sit below the visible
+    // region. Run on keyup so the caret position has already moved.
+    this.inputEl.addEventListener("keyup", (e) => {
+      if (CARET_KEYS.has(e.key)) this._scrollCaretIntoView();
     });
 
     this.sendBtn = inputArea.createEl("button", { text: "Send", cls: "gryphon-btn-send" });
     this.sendBtn.addEventListener("click", () => this.sendMessage());
+  }
+
+  /**
+   * Scroll `inputEl` so the current caret is visible. The textarea wraps
+   * soft lines, so a newline-count heuristic underestimates the visual
+   * line of the caret; we mirror the textarea's layout in a hidden div
+   * and measure the caret's pixel offset directly.
+   */
+  _scrollCaretIntoView() {
+    const el = this.inputEl;
+    if (!el) return;
+    if (el.scrollHeight <= el.clientHeight) return;
+    const cs = getComputedStyle(el);
+    const lineHeight = parseFloat(cs.lineHeight) ||
+                       (parseFloat(cs.fontSize) || 13) * 1.5;
+    const mirror = document.createElement("div");
+    const props = [
+      "boxSizing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+      "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
+      "fontFamily", "fontSize", "fontWeight", "fontStyle",
+      "letterSpacing", "wordSpacing", "textTransform", "tabSize", "lineHeight",
+    ];
+    for (const p of props) mirror.style[p] = cs[p];
+    mirror.style.position = "absolute";
+    mirror.style.visibility = "hidden";
+    mirror.style.whiteSpace = "pre-wrap";
+    mirror.style.wordWrap = "break-word";
+    mirror.style.overflow = "hidden";
+    mirror.style.height = "auto";
+    mirror.style.left = "-9999px";
+    mirror.style.top = "0";
+    mirror.style.width = el.clientWidth + "px";
+    const caretPos = el.selectionEnd;
+    mirror.textContent = el.value.substring(0, caretPos);
+    const marker = document.createElement("span");
+    marker.textContent = el.value.substring(caretPos, caretPos + 1) || ".";
+    mirror.appendChild(marker);
+    document.body.appendChild(mirror);
+    const caretTop = marker.offsetTop;
+    document.body.removeChild(mirror);
+    const visibleTop = el.scrollTop;
+    const visibleBottom = visibleTop + el.clientHeight;
+    if (caretTop < visibleTop) {
+      el.scrollTop = caretTop;
+    } else if (caretTop + lineHeight > visibleBottom) {
+      el.scrollTop = caretTop + lineHeight - el.clientHeight;
+    }
   }
 
   async onClose() {
@@ -528,19 +660,52 @@ class GryphonChatView extends ItemView {
 
     this.contextBtn.removeClass("gryphon-context-warn");
     this.contextBtn.removeClass("gryphon-context-danger");
-    if (pct > 80) this.contextBtn.addClass("gryphon-context-danger");
-    else if (pct > 50) this.contextBtn.addClass("gryphon-context-warn");
+    if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) this.contextBtn.addClass("gryphon-context-danger");
+    else if (pct >= CONTEXT_WARN_PCT) this.contextBtn.addClass("gryphon-context-warn");
 
-    // Proactive warning — flash once when the user crosses 70%, giving
-    // them a chance to /compact manually (earlier + structured summary)
-    // before CC's own autocompact kicks in automatically. Reset when pct
-    // drops back below 65% (post-compact) so the next climb re-warns.
-    if (pct >= 70 && !this._contextWarningShown) {
-      this._flashStatus(`Context at ${pct}% \u2014 type /compact to summarize, or let autocompact handle it near the limit`);
+    // Proactive warning — flash once when the user crosses CONTEXT_WARN_PCT
+    // (80%) so they can /compact manually before SDK auto-compact triggers
+    // at AUTO_COMPACT_SDK_THRESHOLD_PCT (95%). Wording is provider-aware:
+    // SDK names Gryphon's auto-compact, CC names Claude Code's. Reset
+    // below CONTEXT_WARN_RESET_PCT (75%) so the next climb re-warns.
+    if (pct >= CONTEXT_WARN_PCT && pct < AUTO_COMPACT_SDK_THRESHOLD_PCT && !this._contextWarningShown) {
+      const note = this._isSdkMode()
+        ? `Gryphon will auto-compact at ${AUTO_COMPACT_SDK_THRESHOLD_PCT}%`
+        : "Claude Code will auto-compact near the limit";
+      this._flashStatus(`Context at ${pct}% \u2014 type /compact to summarize now, or ${note}`);
       this._contextWarningShown = true;
-    } else if (pct < 65 && this._contextWarningShown) {
+    } else if (pct < CONTEXT_WARN_RESET_PCT && this._contextWarningShown) {
       this._contextWarningShown = false;
     }
+  }
+
+  /**
+   * Whether the active provider is the Anthropic SDK (stateless \u2014 Gryphon
+   * owns the history) rather than Claude Code (stateful \u2014 CC owns the
+   * history). Drives auto-compact decisions: SDK mode requires Gryphon
+   * to compact; CC mode delegates to Claude Code's own auto-compact.
+   *
+   * Source of truth is the live provider's sessionId tag (synthetic
+   * `sdk-...` for SDK, real UUID for CC). Falls back to settings
+   * preference when no provider is active yet.
+   */
+  _isSdkMode() {
+    const sid = this.claudeProcess && this.claudeProcess.sessionId;
+    if (sid) return String(sid).startsWith("sdk-");
+    return (this.plugin.settings.providerPreference || "auto") === "anthropic-api";
+  }
+
+  /**
+   * Current context-window utilization as a 0-100 integer percentage,
+   * derived from the live provider's contextTokens count divided by the
+   * model's window. Returns 0 when no provider has reported usage yet.
+   */
+  _currentContextPct() {
+    const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
+    if (!tokens) return 0;
+    const model = this.plugin.settings.model || "sonnet";
+    const windowSize = MODEL_CONTEXT[model] || 200000;
+    return Math.min(100, Math.round(tokens / windowSize * 100));
   }
 
   // ── Plugin-handled slash commands ──
@@ -686,8 +851,18 @@ class GryphonChatView extends ItemView {
     this.streamingEl = null;
     this.streamingBubble = null;
     this.streamingText = "";
-    if (this.sendBtn) this.sendBtn.disabled = false;
-    if (this.inputEl) this.inputEl.disabled = false;
+    this._clearQueuedPrompts();
+    // /clear is an explicit "reset everything" — also drop any pending
+    // queued texts that _clearQueuedPrompts intentionally preserved for
+    // up-arrow recall. The user asked to wipe the session, so wipe.
+    this._pendingQueuedTexts = [];
+    this._invalidatePromptHistoryCache();
+    // Don't leave a stale queued-text in the input box from
+    // _clearQueuedPrompts's recovery restore.
+    if (this.inputEl) {
+      this.inputEl.value = "";
+      this.inputEl.style.height = "auto";
+    }
     this.messagesEl.empty();
     this.updateContextMeter(0);
     // Set idle status FIRST so a save failure (which flashes its own
@@ -751,7 +926,8 @@ class GryphonChatView extends ItemView {
    *
    * Blocked while a turn is streaming (would interleave messages).
    */
-  async _cmdCompact() {
+  async _cmdCompact(opts = {}) {
+    const auto = !!opts.auto;
     if (this.isStreaming) {
       this._flashStatus("Can't compact during an active turn \u2014 wait or /stop first");
       return;
@@ -766,7 +942,9 @@ class GryphonChatView extends ItemView {
     }
 
     this._compactionPending = true;
-    this._flashStatus("Compacting \u2026");
+    // Auto path's caller (_maybeStartAutoCompact) already surfaced its
+    // own status note; manual path needs the working indicator here.
+    if (!auto) this._flashStatus("Compacting \u2026");
 
     const summaryPrompt =
       "Generate a comprehensive summary of our conversation that will REPLACE the full message history. Future turns will use only this summary plus new messages as context \u2014 so be thorough.\n\n" +
@@ -811,6 +989,31 @@ class GryphonChatView extends ItemView {
     this._compactionInProgress = false;
     this._compactSummaryPending = false;
 
+    // Auto-compact path: skip the commit/cancel UI, commit immediately,
+    // drain any queued prompts (with the lag-failsafe retryText, if
+    // any, dispatched first). Manual path falls through to the existing
+    // commit/cancel buttons.
+    if (this._autoCompactInProgress) {
+      this._autoCompactInProgress = false;
+      const retryText = this._autoCompactRetryText;
+      this._autoCompactRetryText = null;
+      (async () => {
+        await this._commitCompaction(summaryText, { auto: true });
+        this._compactionPending = false;
+        // Retry the user's pre-compact text first (lag-failsafe path),
+        // otherwise drain queued prompts in normal order.
+        if (retryText) {
+          setTimeout(() => {
+            this.inputEl.value = retryText;
+            this.sendMessage();
+          }, 0);
+        } else {
+          this._drainQueuedPrompts();
+        }
+      })();
+      return;
+    }
+
     // Render commit/cancel controls attached to the last assistant bubble.
     const lastBubble = this.messagesEl.querySelector(".gryphon-message.gryphon-assistant:last-of-type");
     if (!lastBubble) return;
@@ -847,7 +1050,7 @@ class GryphonChatView extends ItemView {
    * message buffer, abort the current session, and store the summary
    * so the next spawn injects it via --append-system-prompt.
    */
-  async _commitCompaction(summaryText) {
+  async _commitCompaction(summaryText, opts = {}) {
     try {
       // Archive current history to a .bak file the user can inspect.
       const realPath = this._chatHistoryPath();
@@ -870,9 +1073,12 @@ class GryphonChatView extends ItemView {
       this.cumulativeCost = 0;
       this.messagesEl.empty();
 
-      // Marker so the user sees that compaction happened.
+      // Marker so the user sees that compaction happened. Distinguish
+      // auto vs manual so a returning user can scan the transcript and
+      // tell which compactions they triggered themselves.
       const when = new Date().toLocaleTimeString();
-      this.addSystemMessage(`\u2014 Compacted at ${when}. Fresh session seeded with the summary. \u2014`);
+      const label = opts.auto ? "Auto-compacted" : "Compacted";
+      this.addSystemMessage(`\u2014 ${label} at ${when}. Fresh session seeded with the summary. \u2014`);
       this.updateContextMeter(0);
       this._setIdleStatus();
     } catch (err) {
@@ -1013,19 +1219,202 @@ class GryphonChatView extends ItemView {
    *   fallbackFlash — if no bubble exists to finalize, this string is
    *                   flashed to the status bar instead.
    *
-   * Always performs: abort+null claudeProcess, isStreaming=false, both
-   * buttons re-enabled. These cannot be skipped — they're the invariant.
+   * Always performs: abort+null claudeProcess, isStreaming=false, queued
+   * prompts cleared. These cannot be skipped — they're the invariant.
    */
   _cleanupStreamingState({ bubbleText, doneStatus, fallbackFlash } = {}) {
     if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
     this.isStreaming = false;
-    if (this.sendBtn) this.sendBtn.disabled = false;
-    if (this.inputEl) this.inputEl.disabled = false;
+    this._clearQueuedPrompts();
     if (bubbleText !== undefined && this.streamingEl) {
       this.finalizeStreamingMessage(bubbleText, doneStatus);
     } else if (fallbackFlash) {
       this._flashStatus(fallbackFlash);
     }
+  }
+
+  // ── Streaming-input queue (issue #3) ──
+  //
+  // While a turn is streaming, additional non-slash prompts the user
+  // sends are queued instead of being dropped. Each queued prompt
+  // immediately renders a dimmed user bubble (so the user sees it was
+  // accepted) but is NOT pushed into `this.messages` until it actually
+  // fires — that way persistence and provider history stay in sync with
+  // the order prompts are dispatched.
+
+  _enqueuePrompt(text) {
+    const msgEl = this.messagesEl.createDiv("gryphon-message gryphon-user gryphon-queued");
+    const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-user gryphon-bubble-queued");
+    bubble.createEl("span", { text: "❯ ", cls: "gryphon-prompt-prefix" });
+    bubble.createEl("span", { text, cls: "gryphon-text" });
+    bubble.createEl("span", { text: " · queued", cls: "gryphon-queued-tag" });
+    this._queuedPrompts.push({ text, bubbleEl: msgEl });
+    this._pendingQueuedTexts.push(text);
+    // Up-arrow recall reads merged history; queued texts need to show
+    // up there so the user can recall an unsent prompt. Invalidate.
+    this._invalidatePromptHistoryCache();
+    this.scrollToBottom();
+    this._flashStatus(`Queued (${this._queuedPrompts.length} pending) — will send after this turn`);
+  }
+
+  /**
+   * Cleanup queued prompts on stop / timeout / error. Removes the DOM
+   * bubbles AND restores the oldest queued text to the input box if the
+   * box is empty (so the user can re-fire it with one keystroke).
+   * Texts stay recorded in `_pendingQueuedTexts` so up-arrow recall can
+   * still walk back to any queued message that didn't get a chance to
+   * fire — this is what protects the user from "I queued 3 messages
+   * during a slow turn, the model timed out, and now they're all gone."
+   */
+  _clearQueuedPrompts() {
+    if (!this._queuedPrompts || this._queuedPrompts.length === 0) return;
+    const queuedCount = this._queuedPrompts.length;
+    const oldestText = this._queuedPrompts[0] && this._queuedPrompts[0].text;
+    for (const q of this._queuedPrompts) {
+      if (q.bubbleEl && q.bubbleEl.parentElement) q.bubbleEl.remove();
+    }
+    this._queuedPrompts = [];
+    // Restore the oldest queued text into the input box for one-keystroke
+    // retry — but only if the user hasn't already started typing
+    // something else. The other queued texts (if any) remain reachable
+    // via up-arrow recall through `_pendingQueuedTexts`.
+    if (oldestText && this.inputEl && !this.inputEl.value.trim()) {
+      this.inputEl.value = oldestText;
+      this.inputEl.style.height = "auto";
+      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+      this.inputEl.selectionStart = this.inputEl.selectionEnd = oldestText.length;
+    }
+    if (queuedCount > 0) {
+      const tail = queuedCount > 1
+        ? ` (and ${queuedCount - 1} more — type ↑ to recall)`
+        : "";
+      this._flashStatus(`Restored your queued prompt${tail}`);
+    }
+  }
+
+  _drainQueuedPrompts() {
+    if (!this._queuedPrompts || this._queuedPrompts.length === 0) return;
+    const next = this._queuedPrompts.shift();
+    if (next.bubbleEl && next.bubbleEl.parentElement) next.bubbleEl.remove();
+    // The text is about to fire through the normal send pipeline, where
+    // `addUserMessage` will record it in this.messages — so drop our
+    // pending-text shadow record (first matching entry) to avoid showing
+    // the same prompt twice in up-arrow recall after it sends.
+    const idx = this._pendingQueuedTexts.indexOf(next.text);
+    if (idx >= 0) this._pendingQueuedTexts.splice(idx, 1);
+    this._invalidatePromptHistoryCache();
+    // Defer one tick so the just-completed turn's finalize DOM work
+    // settles first. Restore the prompt text into the input on the same
+    // tick we call sendMessage so the user never sees the queued text
+    // flash in the textarea — sendMessage clears it on entry.
+    setTimeout(() => {
+      this.inputEl.value = next.text;
+      this.sendMessage();
+    }, 0);
+  }
+
+  // ── SDK auto-compact gate (issue #5 / v1.1.0) ──
+  //
+  // Anthropic API mode is stateless — Gryphon owns the entire history
+  // array, so without auto-compaction a long conversation eventually
+  // 4xx's mid-turn with "prompt is too long". Mirror Claude Code's own
+  // ~95% threshold by triggering the existing manual-compact machinery
+  // automatically (skipping the user-confirmation step). CC mode is
+  // never auto-compacted from here — Claude Code handles its own.
+
+  /**
+   * Decide whether to start an auto-compact. Returns true if a
+   * compaction was triggered (caller should NOT drain queued prompts —
+   * the auto-compact's commit handler will drain instead). Returns
+   * false otherwise.
+   *
+   * @param {{ lagFailsafe?: boolean, retryText?: string }} opts
+   *   lagFailsafe — bypasses the percentage threshold; used by
+   *                 sendMessage's catch branch when the SDK returned
+   *                 "prompt is too long" despite our last reading
+   *                 being below 95%.
+   *   retryText  — original user text to re-send post-commit. Set on
+   *                the lag-failsafe path so the user's intended message
+   *                still reaches the model.
+   */
+  _maybeStartAutoCompact(opts = {}) {
+    if (this._compactionPending || this._compactionInProgress) return false;
+    if (!this._isSdkMode()) return false;
+
+    const pct = this._currentContextPct();
+    const overThreshold = pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT;
+
+    // Opt-out path: at threshold, surface a louder warning instead of
+    // triggering. Below threshold, just stay silent — the 80% warning
+    // already fired.
+    if (this.plugin.settings.autoCompactSdk === false) {
+      if (overThreshold || opts.lagFailsafe) {
+        this._flashStatus(
+          `Context at ${pct}% — auto-compact disabled. Run /compact manually before the next send.`
+        );
+      }
+      return false;
+    }
+
+    if (!opts.lagFailsafe && !overThreshold) return false;
+    if (!this.messages || this.messages.length < 4) return false;
+
+    this._autoCompactInProgress = true;
+    this._autoCompactRetryText = opts.retryText || null;
+    const reasonNote = opts.lagFailsafe
+      ? "context overflowed"
+      : `${pct}%`;
+    this._flashStatus(
+      `Auto-compacting (${reasonNote}) — fresh session will start after this.`
+    );
+    this._cmdCompact({ auto: true }).catch((err) => {
+      console.warn("[gryphon] auto-compact failed:", err);
+      this._autoCompactInProgress = false;
+      const retryText = this._autoCompactRetryText;
+      this._autoCompactRetryText = null;
+      this._flashStatus(`Auto-compact failed: ${err.message || err}`);
+      // Recovery: drain queued prompts so the user's pending sends still
+      // dispatch (against the still-bloated provider, which may itself
+      // overflow — but that surfaces as a normal error rather than a
+      // silent drop).
+      if (retryText) {
+        setTimeout(() => {
+          this.inputEl.value = retryText;
+          this.sendMessage();
+        }, 0);
+      } else {
+        this._drainQueuedPrompts();
+      }
+    });
+    return true;
+  }
+
+  /**
+   * Last-resort defense when the compaction's own summarization turn
+   * overflows the context window. Drops the oldest entries from the
+   * SDK provider's in-memory history array, keeping only the most
+   * recent `keepRecent` turns. Returns true if any trimming happened
+   * (caller should retry the summary turn). Returns false if there's
+   * nothing to trim or the provider doesn't expose a history (e.g.,
+   * CC mode — but this path is gated to SDK mode upstream anyway).
+   *
+   * Anthropic message-pair invariant: messages must alternate user /
+   * assistant. After splicing we may land on an assistant turn first;
+   * trim one extra so the slice starts with a user turn.
+   */
+  _emergencyTrim(provider, keepRecent = 8) {
+    if (!provider || !Array.isArray(provider.history)) return false;
+    if (provider.history.length <= keepRecent) return false;
+    const original = provider.history.length;
+    provider.history.splice(0, provider.history.length - keepRecent);
+    if (provider.history[0] && provider.history[0].role !== "user") {
+      provider.history.shift();
+    }
+    console.warn(
+      `[gryphon] emergency-trim: dropped ${original - provider.history.length} ` +
+      `messages from SDK history (kept ${provider.history.length})`
+    );
+    return true;
   }
 
   // ── Chat history (unified: local + CLI session) ──
@@ -1350,6 +1739,17 @@ class GryphonChatView extends ItemView {
       // it as an opt-in setting rather than bake it in here.
       prompts.push(clean);
     }
+    // Append queued-but-not-yet-fired prompts so up-arrow recall sees
+    // them too. Lifecycle: pushed in `_enqueuePrompt`, removed in
+    // `_drainQueuedPrompts` once the prompt fires (so the post-send
+    // entry from `addUserMessage` doesn't duplicate). Survives
+    // `_clearQueuedPrompts` (stop/timeout/error) so the user can
+    // recover queued text that never got a chance to fire.
+    if (Array.isArray(this._pendingQueuedTexts) && this._pendingQueuedTexts.length > 0) {
+      for (const t of this._pendingQueuedTexts) {
+        if (typeof t === "string" && t.trim()) prompts.push(t);
+      }
+    }
     this._cachedPromptHistory = prompts.slice(-MAX);
     return this._cachedPromptHistory;
   }
@@ -1509,8 +1909,21 @@ class GryphonChatView extends ItemView {
     }
 
     // Source 2: local CLI session file (CLI-owned; read-only for us).
+    //
+    // Only relevant when the current provider preference uses the CLI
+    // ("claude-code" or "auto"). Otherwise `lastSessionId` may point at
+    // a stale CLI session — e.g. the user switched providers from
+    // claude-code to anthropic-api but the old CLI session jsonl is
+    // still on disk. Reading it would replay old CLI messages that the
+    // SDK has since persisted again into chat-history.json, producing
+    // duplicates on every reload. Defensive: also skip if the session
+    // id is SDK-shaped (`sdk-…`), even if a file with that name somehow
+    // exists.
     const sessionId = this.plugin.settings.lastSessionId;
-    if (sessionId) {
+    const providerPref = this.plugin.settings.providerPreference || "auto";
+    const cliProviderActive = providerPref === "claude-code" || providerPref === "auto";
+    const sessionIsSdkShaped = sessionId && String(sessionId).startsWith("sdk-");
+    if (sessionId && cliProviderActive && !sessionIsSdkShaped) {
       try {
         const cwd = this.app.vault.adapter.basePath;
         // CC escapes path separators and Windows drive-colons to `-`
@@ -1540,14 +1953,27 @@ class GryphonChatView extends ItemView {
               if (d.type === "queue-operation" && d.operation === "enqueue" && d.content) {
                 merged.push({ role: "user", text: d.content, ts, source: "llm", sessionId });
               }
-              // Assistant messages (text blocks only). Same sessionId
-              // tag for the same reason.
+              // Assistant messages (text + thinking blocks). Same
+              // sessionId tag for the same reason. Issue #4: preserve
+              // thinking blocks across CC-session reloads so the
+              // collapsed-disclosure affordance survives Obsidian
+              // restart for CC turns the way it does for SDK turns.
               if (d.message && d.message.role === "assistant" && Array.isArray(d.message.content)) {
+                let textBlock = null;
+                const thinkingBlocks = [];
                 for (const block of d.message.content) {
-                  if (block.type === "text" && block.text) {
-                    merged.push({ role: "assistant", text: block.text, ts, source: "llm", sessionId });
-                    break;
+                  if (block.type === "text" && block.text && !textBlock) {
+                    textBlock = block.text;
+                  } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.length > 0) {
+                    thinkingBlocks.push(block.thinking);
+                  } else if (block.type === "redacted_thinking") {
+                    thinkingBlocks.push("[redacted thinking]");
                   }
+                }
+                if (textBlock) {
+                  const entry = { role: "assistant", text: textBlock, ts, source: "llm", sessionId };
+                  if (thinkingBlocks.length > 0) entry.thinking = thinkingBlocks;
+                  merged.push(entry);
                 }
               }
             } catch {
@@ -1564,6 +1990,46 @@ class GryphonChatView extends ItemView {
     return merged;
   }
 
+  /**
+   * Issue #4: render extended-reasoning ("thinking") output as a
+   * collapsed <details> disclosure inside the assistant bubble. Multiple
+   * thinking blocks per turn are joined with horizontal rules so they
+   * stay distinguishable when expanded. Blocks display as plain text
+   * (preserving newlines) — they're internal model output, not markdown
+   * authored for rendering.
+   *
+   * @param {HTMLElement} bubbleEl       — the .gryphon-bubble-assistant element
+   * @param {string[]} thinking          — non-empty thinking strings
+   * @param {HTMLElement} [insertBefore] — if provided, insert the disclosure
+   *                                       before this child (so the thinking
+   *                                       block sits ABOVE the response text)
+   */
+  _renderThinkingBlock(bubbleEl, thinking, insertBefore = null) {
+    const details = document.createElement("details");
+    details.className = "gryphon-thinking";
+    const summary = document.createElement("summary");
+    summary.className = "gryphon-thinking-summary";
+    summary.textContent = thinking.length > 1
+      ? `\u{1F4AD} Thinking (${thinking.length} blocks)`
+      : "\u{1F4AD} Thinking";
+    details.appendChild(summary);
+    const body = document.createElement("div");
+    body.className = "gryphon-thinking-body";
+    for (let i = 0; i < thinking.length; i++) {
+      if (i > 0) body.appendChild(document.createElement("hr"));
+      const pre = document.createElement("pre");
+      pre.className = "gryphon-thinking-text";
+      pre.textContent = thinking[i];
+      body.appendChild(pre);
+    }
+    details.appendChild(body);
+    if (insertBefore && insertBefore.parentElement === bubbleEl) {
+      bubbleEl.insertBefore(details, insertBefore);
+    } else {
+      bubbleEl.appendChild(details);
+    }
+  }
+
   _renderMessage(msg) {
     if (msg.role === "user") {
       const msgEl = document.createElement("div");
@@ -1576,6 +2042,12 @@ class GryphonChatView extends ItemView {
       const msgEl = document.createElement("div");
       msgEl.className = "gryphon-message gryphon-assistant";
       const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-assistant");
+      // Issue #4: render persisted thinking blocks above the assistant
+      // text so they survive reload + Obsidian restart with the same
+      // collapsed-by-default affordance as freshly streamed turns.
+      if (Array.isArray(msg.thinking) && msg.thinking.length > 0) {
+        this._renderThinkingBlock(bubble, msg.thinking);
+      }
       const contentEl = bubble.createDiv("gryphon-text");
       MarkdownRenderer.render(this.app, msg.text, contentEl, "", this.plugin);
       return msgEl;
@@ -2053,7 +2525,7 @@ class GryphonChatView extends ItemView {
     }
   }
 
-  finalizeStreamingMessage(text, doneStatus, source = "mechanical") {
+  finalizeStreamingMessage(text, doneStatus, source = "mechanical", thinking = null) {
     this.clearStatus(doneStatus);
 
     // G3: when this assistant response is landing within a few seconds
@@ -2100,13 +2572,23 @@ class GryphonChatView extends ItemView {
     } else if (this.streamingEl) {
       this.streamingEl.removeClass("gryphon-streaming");
       this.streamingEl.empty();
+      // Issue #4: render thinking blocks (if any) as a collapsed
+      // disclosure ABOVE the assistant text so the user knows extended
+      // reasoning happened on this turn but it stays visually secondary.
+      if (Array.isArray(thinking) && thinking.length > 0 && this.streamingBubble) {
+        this._renderThinkingBlock(this.streamingBubble, thinking, this.streamingEl);
+      }
       MarkdownRenderer.render(this.app, text, this.streamingEl, "", this.plugin);
     }
-    this.messages.push({
+    const persisted = {
       role: "assistant", text, ts: new Date().toISOString(),
       source,
       sessionId: this.plugin.settings.lastSessionId || null,
-    });
+    };
+    if (Array.isArray(thinking) && thinking.length > 0) {
+      persisted.thinking = thinking;
+    }
+    this.messages.push(persisted);
     this._saveChatHistory();
     this.streamingEl = null;
     this.streamingBubble = null;
@@ -2593,10 +3075,13 @@ class GryphonChatView extends ItemView {
       if (await this.handleChatCommand(text)) { this.inputEl.focus(); return; }
     }
 
-    // Non-slash input while streaming is a no-op (the user must /stop
-    // first). This guard sits here — after slash dispatch, before LLM
-    // send — so it only gates the LLM path.
-    if (this.isStreaming) return;
+    // Non-slash input while streaming is queued and dispatched after the
+    // current turn finalizes. Slash dispatch above runs first so /stop
+    // and friends still take effect mid-turn.
+    if (this.isStreaming) {
+      this._enqueuePrompt(text);
+      return;
+    }
 
     // Extension hook: consuming plugins can intercept messages before
     // they're sent to the provider. If the hook returns truthy,
@@ -2618,8 +3103,6 @@ class GryphonChatView extends ItemView {
     this.addUserMessage(text, "llm");
 
     this.isStreaming = true;
-    this.sendBtn.disabled = true;
-    this.inputEl.disabled = true;
     this.startStreamingMessage();
 
     const vaultPath = this.app.vault.adapter.basePath;
@@ -2687,9 +3170,6 @@ class GryphonChatView extends ItemView {
         initialHistory: sdkInitialHistory,
       });
       if (!this.claudeProcess) {
-        this.isStreaming = false;
-        this.sendBtn.disabled = false;
-        this.inputEl.disabled = false;
         this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin) });
         return;
       }
@@ -2802,11 +3282,13 @@ class GryphonChatView extends ItemView {
       if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
 
       const responseText = (result && result.text) ? result.text : (this.streamingText || "(No response)");
+      const thinking = (result && Array.isArray(result.thinking) && result.thinking.length > 0)
+        ? result.thinking : null;
       // Core uses a generic "Done" status. Consuming plugins that want
       // response-sensitive status (e.g. "Page created") should wrap
       // this flow or override finalizeStreamingMessage — core stays
       // LLM-domain-agnostic per the file header contract.
-      this.finalizeStreamingMessage(responseText, "Done", "llm");
+      this.finalizeStreamingMessage(responseText, "Done", "llm", thinking);
 
       if (result) {
         this.addCostInfo(result.cost, result.duration);
@@ -2847,19 +3329,95 @@ class GryphonChatView extends ItemView {
     } catch (err) {
       if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
       if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+
+      // Lag-failsafe (issue #5 / v1.1.0): SDK reported the prompt
+      // overflowed despite our last reading being below the 95%
+      // threshold. Auto-compact and re-send the user's original text
+      // transparently — no visible error since we recover.
+      const errMsg = String((err && err.message) || err || "");
+      const isOverflow = /prompt is too long|context_length_exceeded/i.test(errMsg);
+      if (isOverflow && this._isSdkMode()) {
+        // Tear down the empty streaming bubble; auto-compact will
+        // re-render once the retry fires.
+        if (this.streamingEl) {
+          const assistantRow = this.streamingBubble && this.streamingBubble.parentElement;
+          if (assistantRow && assistantRow.parentElement === this.messagesEl) {
+            assistantRow.remove();
+          }
+          this.streamingEl = null;
+          this.streamingBubble = null;
+          this.streamingText = "";
+        }
+
+        // Special case: this overflow happened *inside* a compaction's
+        // own summary turn (the conversation is so large that even the
+        // summary prompt overflows). Emergency-trim the oldest history
+        // entries on the provider, then retry the summary turn once. If
+        // it still fails, fall through to the normal error surface.
+        if (this._compactionPending && this._emergencyTrim(this.claudeProcess)) {
+          this.isStreaming = false;
+          this._userInitiatedAbort = false;
+          this._flashStatus("Compaction summary too large — trimming oldest turns and retrying");
+          // Re-fire the summary prompt through sendMessage. The
+          // _compactSummaryPending flag is still set, so the finalize
+          // path will route to _onCompactSummaryReady as expected.
+          setTimeout(() => {
+            this.inputEl.value = text;
+            this.sendMessage();
+          }, 0);
+          return;
+        }
+
+        this.claudeProcess = null;
+        this._userInitiatedAbort = false;
+        // isStreaming must drop before _maybeStartAutoCompact dispatches
+        // its summarization turn. Finally also sets it, but the gate
+        // runs synchronously here so set it now.
+        this.isStreaming = false;
+        if (this._maybeStartAutoCompact({ lagFailsafe: true, retryText: text })) {
+          return;
+        }
+        // Fall through if auto-compact declined (e.g., user disabled
+        // the toggle) — surface the original error.
+      }
+
       this.finalizeStreamingMessage(this.streamingText || "");
       this.addSystemMessage(`Error: ${err.message}`);
+      // Tear down the dead provider instance but PRESERVE the server
+      // session ID. A generic abort (connection timeout, network error,
+      // SDK 4xx/5xx) doesn't mean the server-side session is gone — it
+      // means this network call failed. The next provider spawn should
+      // re-resume the same session via --resume <id> (CC) or seed
+      // history from chat-history.json (SDK), preserving conversation
+      // context. The dedicated `onSessionExpired` callback (fired only
+      // when CC's stderr explicitly says the session is missing) is
+      // the ONLY signal that should wipe lastSessionId.
       this.claudeProcess = null;
-      if (!this._userInitiatedAbort && this.plugin.settings.lastSessionId) {
-        this.plugin.settings.lastSessionId = null;
-        this.plugin.saveSettings();
-      }
       this._userInitiatedAbort = false;
+      // Issue #7: don't auto-drain queued prompts after a visible
+      // error — the user just saw a failure and may want to switch
+      // models, wait, or stop. _clearQueuedPrompts preserves the texts
+      // in _pendingQueuedTexts (issue #6) so they remain reachable via
+      // up-arrow recall, and restores the oldest into the input box.
+      this._clearQueuedPrompts();
+      this._sendErroredThisTurn = true;
     } finally {
       this.isStreaming = false;
-      this.sendBtn.disabled = false;
-      this.inputEl.disabled = false;
       this.inputEl.focus();
+      // Auto-compact takes priority over queued drain — if SDK context is
+      // over the threshold, compact before draining so queued prompts
+      // dispatch against the fresh post-compact session. The auto path
+      // owns its own drain via _onCompactSummaryReady on commit. Skip
+      // entirely if a compaction is already running so we don't drain
+      // mid-flight. Also skip if the catch branch already cleared the
+      // queue (issue #7).
+      if (this._sendErroredThisTurn) {
+        this._sendErroredThisTurn = false;
+      } else if (this._autoCompactInProgress || this._compactionPending) {
+        // owned by the in-flight compaction's own drain
+      } else if (!this._maybeStartAutoCompact()) {
+        this._drainQueuedPrompts();
+      }
     }
   }
 }
@@ -2868,4 +3426,7 @@ module.exports = {
   GryphonChatView,
   // Exported for unit testing only.
   filterMessagesForSave,
+  computeContextPct,
+  shouldStartAutoCompact,
+  nextContextWarningState,
 };
