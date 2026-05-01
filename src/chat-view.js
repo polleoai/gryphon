@@ -397,68 +397,48 @@ class GryphonChatView extends ItemView {
         return;
       }
 
-      // Visual-line-aware Up/Down behavior (issue #10):
+      // Visual-line-aware Up/Down behavior (issues #10, #12, #13, #14).
       //
-      //   ArrowUp:
-      //     - caret on FIRST visual line → walk back in prompt history
-      //     - caret on any other visual line → native: move caret one line up
-      //   ArrowDown:
-      //     - caret on LAST visual line and in history → walk forward
-      //     - caret on LAST visual line, past newest → restore pre-history input
-      //     - caret on LAST visual line, no history → no-op (native end)
-      //     - caret on any other visual line → native: move caret one line down
+      // We don't try to predict whether the caret is on the first/last
+      // visual line — three rounds of mirror-element heuristics taught
+      // us that no single layout-metric threshold works across themes,
+      // fonts, and the 150px max-height cap. Instead, let the browser's
+      // own arrow handler run, then check whether `selectionStart`
+      // actually moved. The browser is the only authoritative source
+      // for "is this caret on a row boundary?" — its behavior IS the
+      // answer.
       //
-      // "Visual line" respects soft-wrap, so a 200-char prompt that
-      // wraps to 3 rows lets the user navigate within it before
-      // ArrowUp/Down step into history. Same for pasted multi-line
-      // prompts. Mirror-element measurement is what makes this work
-      // across themes / fonts (the textarea has no public visual-line
-      // API; only mirror geometry tells us where the caret sits).
+      //   - Caret moved to a different position → native row-by-row
+      //     navigation worked. Done.
+      //   - Caret didn't move → we were on the boundary row. Walk
+      //     history (ArrowUp = older, ArrowDown = newer or restore).
+      //
+      // The history walk fires one frame later than synchronously
+      // (~16ms). Imperceptible to users; eliminates the entire class
+      // of "is this single-line or multi-line" guesswork.
       //
       // Current typed text is buffered into _preHistoryInput when the
       // user enters history mode, so walking past the newest entry
       // returns them to exactly what they were composing — not empty.
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
-        const history = this._getPromptHistory();
-        const currentText = this.inputEl.value;
-        const inHistoryMode = this._promptHistoryIdx !== null && this._promptHistoryIdx !== undefined;
-        const onBoundaryLine = e.key === "ArrowUp"
-          ? this._caretIsOnFirstVisualLine()
-          : this._caretIsOnLastVisualLine();
-
-        // Interior visual line → let the native textarea move the caret
-        // one row up/down. Don't preventDefault; don't touch history.
-        if (!onBoundaryLine) return;
-
-        if (e.key === "ArrowUp") {
-          if (history.length === 0) return;
-          e.preventDefault();
-          if (inHistoryMode) {
-            if (this._promptHistoryIdx === 0) return;  // already at oldest
-            this._promptHistoryIdx -= 1;
-          } else {
-            // Remember what was in the input so ArrowDown-past-newest can restore it
-            this._preHistoryInput = currentText;
-            this._promptHistoryIdx = history.length - 1;
+        const direction = e.key === "ArrowUp" ? "back" : "forward";
+        const beforePos = this.inputEl.selectionStart;
+        const beforeText = this.inputEl.value;
+        // Don't preventDefault. Let the browser try to move the caret.
+        // We check on the next frame whether it actually did.
+        requestAnimationFrame(() => {
+          // The textarea must still be focused and untouched; if the
+          // user pressed something else in the meantime, bail.
+          if (this.inputEl.value !== beforeText) return;
+          const afterPos = this.inputEl.selectionStart;
+          if (afterPos !== beforePos) {
+            // Native navigation worked — caret moved up or down a row.
+            return;
           }
-          this._setInputFromHistory(history[this._promptHistoryIdx]);
-          return;
-        }
-
-        if (e.key === "ArrowDown") {
-          if (!inHistoryMode) return;  // nothing newer to show when not in history
-          e.preventDefault();
-          if (this._promptHistoryIdx < history.length - 1) {
-            this._promptHistoryIdx += 1;
-            this._setInputFromHistory(history[this._promptHistoryIdx]);
-          } else {
-            // Past the newest — restore pre-history input (not empty)
-            this._promptHistoryIdx = null;
-            this._setInputFromHistory(this._preHistoryInput || "");
-            this._preHistoryInput = null;
-          }
-          return;
-        }
+          // Caret didn't move → we're on the boundary row.
+          this._walkPromptHistory(direction, beforeText);
+        });
+        return;
       }
     });
 
@@ -563,34 +543,47 @@ class GryphonChatView extends ItemView {
   }
 
   /**
-   * True if the caret currently sits on the first visual row of the
-   * textarea — i.e. ArrowUp should walk into prompt history rather
-   * than move the caret one visual line up.
+   * Walk prompt history one step in the given direction. Called from
+   * the post-frame ArrowUp/Down check (issue #14) only after we've
+   * confirmed the native textarea couldn't move the caret (i.e., the
+   * caret was on the boundary visual row).
    *
-   * Empty textarea is treated as "on the first line" so ArrowUp from
-   * an empty input recalls the most recent prompt as expected.
+   * @param {"back"|"forward"} direction
+   * @param {string} currentText  — the textarea value at keydown time;
+   *                                used as the "pre-history input" snapshot
+   *                                that `forward` can restore once the
+   *                                walk passes the newest entry.
    */
-  _caretIsOnFirstVisualLine() {
-    if (!this.inputEl || !this.inputEl.value) return true;
-    const m = this._measureCaretGeometry();
-    if (!m) return true;
-    return m.caretTop < m.lineHeight;
-  }
+  _walkPromptHistory(direction, currentText) {
+    const history = this._getPromptHistory();
+    const inHistoryMode = this._promptHistoryIdx !== null && this._promptHistoryIdx !== undefined;
 
-  /**
-   * True if the caret currently sits on the last visual row — i.e.
-   * ArrowDown should walk forward through history rather than move
-   * the caret one visual line down.
-   *
-   * Empty textarea is treated as "on the last line" too (the first
-   * and last lines are the same line). 1px fudge accommodates
-   * sub-pixel line-height rounding across themes.
-   */
-  _caretIsOnLastVisualLine() {
-    if (!this.inputEl || !this.inputEl.value) return true;
-    const m = this._measureCaretGeometry();
-    if (!m) return true;
-    return m.caretTop + m.lineHeight >= m.totalHeight - 1;
+    if (direction === "back") {
+      if (history.length === 0) return;
+      if (inHistoryMode) {
+        if (this._promptHistoryIdx === 0) return;  // already at oldest
+        this._promptHistoryIdx -= 1;
+      } else {
+        // Remember what was in the input so a forward-past-newest walk
+        // can restore exactly what the user was composing.
+        this._preHistoryInput = currentText;
+        this._promptHistoryIdx = history.length - 1;
+      }
+      this._setInputFromHistory(history[this._promptHistoryIdx]);
+      return;
+    }
+
+    // direction === "forward"
+    if (!inHistoryMode) return;  // nothing newer to show when not in history
+    if (this._promptHistoryIdx < history.length - 1) {
+      this._promptHistoryIdx += 1;
+      this._setInputFromHistory(history[this._promptHistoryIdx]);
+    } else {
+      // Past the newest — restore pre-history input (not empty).
+      this._promptHistoryIdx = null;
+      this._setInputFromHistory(this._preHistoryInput || "");
+      this._preHistoryInput = null;
+    }
   }
 
   async onClose() {
