@@ -711,8 +711,12 @@ class GryphonChatView extends ItemView {
     const windowSize = MODEL_CONTEXT[model] || 200000;
     const pct = Math.min(Math.round(contextTokens / windowSize * 100), 100);
     this.contextBtn.textContent = `${pct}%`;
+    // Dual-side tooltip (issue #11) — used and remaining at a glance,
+    // so users see both framings without needing to type /context.
+    const usedK = Math.round(contextTokens / 1000);
+    const remK = Math.max(0, Math.round((windowSize - contextTokens) / 1000));
     this.contextBtn.setAttribute("title",
-      `Context: ${Math.round(contextTokens / 1000)}K / ${Math.round(windowSize / 1000)}K tokens`);
+      `Context: ${usedK}K used · ${remK}K remaining (${pct}% of ${Math.round(windowSize / 1000)}K)`);
 
     this.contextBtn.removeClass("gryphon-context-warn");
     this.contextBtn.removeClass("gryphon-context-danger");
@@ -944,24 +948,77 @@ class GryphonChatView extends ItemView {
   }
 
   /**
-   * /context — show current context-window usage in the status bar.
-   * Reads from this.claudeProcess.contextTokens (tracked from each
-   * assistant message's usage field) and MODEL_CONTEXT for the window
-   * size of the currently-selected model. Falls back gracefully if no
-   * turn has happened yet.
+   * /context — show current context-window usage as a structured
+   * system message. Includes used + remaining + headroom to the next
+   * two threshold transitions (80% warning, 95% auto-compact for SDK
+   * mode), plus a phase-appropriate options list. More informative
+   * than the older one-line status flash.
    */
   _cmdShowContext() {
     const contextTokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
     const model = this.plugin.settings.model || "sonnet";
     const windowSize = MODEL_CONTEXT[model] || 200000;
-    const pct = Math.round(contextTokens / windowSize * 100);
+
     if (contextTokens === 0) {
-      this._flashStatus(`Context: 0 / ${Math.round(windowSize / 1000)}K tokens (send a message to populate)`);
-    } else {
       this._flashStatus(
-        `Context: ${Math.round(contextTokens / 1000)}K / ${Math.round(windowSize / 1000)}K tokens (${pct}%)`
+        `Context: 0 / ${Math.round(windowSize / 1000)}K tokens (send a message to populate)`
       );
+      return;
     }
+
+    const pct = Math.min(100, Math.round(contextTokens / windowSize * 100));
+    const remaining = Math.max(0, windowSize - contextTokens);
+    const usedK = Math.round(contextTokens / 1000);
+    const remK = Math.round(remaining / 1000);
+    const winK = Math.round(windowSize / 1000);
+    const warnTokens = Math.max(0, Math.round(windowSize * CONTEXT_WARN_PCT / 100) - contextTokens);
+    const compactTokens = Math.max(0, Math.round(windowSize * AUTO_COMPACT_SDK_THRESHOLD_PCT / 100) - contextTokens);
+    const isSdk = this._isSdkMode();
+    const autoCompactOn = this.plugin.settings.autoCompactSdk !== false;
+
+    const userMsgs = this.messages.filter((m) => m.role === "user").length;
+    const asstMsgs = this.messages.filter((m) => m.role === "assistant").length;
+
+    const lines = [];
+    lines.push(`**Context window — ${model} (${winK}K)**`);
+    lines.push(`Used: ${usedK}K tokens (${pct}%)`);
+    lines.push(`Remaining: ${remK}K tokens (${100 - pct}%)`);
+    if (warnTokens > 0) {
+      lines.push(`Headroom to ${CONTEXT_WARN_PCT}% warning: ${Math.round(warnTokens / 1000)}K tokens`);
+    }
+    if (compactTokens > 0) {
+      const label = isSdk
+        ? `${AUTO_COMPACT_SDK_THRESHOLD_PCT}% auto-compact`
+        : `${AUTO_COMPACT_SDK_THRESHOLD_PCT}% (CC auto-compact threshold)`;
+      lines.push(`Headroom to ${label}: ${Math.round(compactTokens / 1000)}K tokens`);
+    }
+    lines.push("");
+    lines.push(`Messages: ${this.messages.length} (${userMsgs} user · ${asstMsgs} assistant).`);
+    lines.push("");
+    lines.push("**Options**");
+    if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+      if (isSdk && autoCompactOn) {
+        lines.push("- Auto-compact will fire at the end of this turn.");
+      } else if (isSdk) {
+        lines.push("- Run `/compact` now — auto-compact is off, the next send may fail with prompt-too-long.");
+      } else {
+        lines.push("- Claude Code will auto-compact near the limit; you can also `/compact` manually now.");
+      }
+      lines.push("- `/clear` to start a fresh session immediately.");
+    } else if (pct >= CONTEXT_WARN_PCT) {
+      lines.push("- `/compact` to summarize and continue with a fresh session seeded by the summary.");
+      lines.push("- `/recap` to see a summary without resetting.");
+      if (isSdk && autoCompactOn) {
+        lines.push(`- Continue — auto-compact will fire at ${AUTO_COMPACT_SDK_THRESHOLD_PCT}%.`);
+      } else {
+        lines.push("- Continue — but consider `/compact` soon.");
+      }
+    } else {
+      lines.push("- Continue — plenty of headroom.");
+      lines.push("- `/compact` to summarize and start fresh (preserves intent, drops detail).");
+      lines.push("- `/recap` to see a summary inline without resetting.");
+    }
+    this.addSystemMessage(lines.join("\n"));
   }
 
   /**
