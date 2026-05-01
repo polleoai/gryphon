@@ -756,6 +756,22 @@ class GryphonChatView extends ItemView {
           const customName = cmd === "/export" ? null : (text.trim().substring(8).trim() || null);
           return this._exportConversation(customName);
         } },
+
+      // v1.2.0 slash command parity pass (issue #9)
+      { match: (c) => c === "/version", run: () => this._cmdVersion() },
+      { match: (c) => c === "/status", run: () => this._cmdStatus() },
+      { match: (c) => c === "/doctor", run: () => this._cmdDoctor() },
+      { match: (c) => c === "/recap", run: () => this._cmdRecap() },
+      { match: (c) => c === "/init", run: () => this._cmdInitManual() },
+      { match: (c) => c === "/feedback" || c.startsWith("/feedback "), run: () => {
+          const arg = cmd === "/feedback" ? "" : text.trim().substring(10).trim();
+          return this._cmdFeedback(arg);
+        } },
+      // /btw is hybrid — handled in sendMessage's pre-dispatch path so the
+      // wrapped text reaches the LLM. Reaching here means /btw with no
+      // args, which is just guidance.
+      { match: (c) => c === "/btw", run: () =>
+          this._flashStatus("/btw needs a note: type /btw <your side note>") },
     ];
 
     for (const h of handlers) {
@@ -1095,6 +1111,342 @@ class GryphonChatView extends ItemView {
     } else {
       this._flashStatus("Settings unavailable in this Obsidian version");
     }
+  }
+
+  // ── v1.2.0 slash commands (issue #9) ──
+
+  /**
+   * Build the diagnostic context shared by /version, /status, /doctor,
+   * and the /feedback prefill. Returns a plain object — callers format
+   * it as text, markdown, or query-string parameters as needed.
+   *
+   * NEVER includes any conversation content. Only metadata.
+   */
+  _buildDiagnosticContext() {
+    const settings = this.plugin.settings || {};
+    const provider = (() => {
+      const sid = this.claudeProcess && this.claudeProcess.sessionId;
+      if (sid && String(sid).startsWith("sdk-")) return "anthropic-api";
+      if (sid) return "claude-code";
+      return settings.providerPreference || "auto";
+    })();
+    const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
+    const model = settings.model || "sonnet";
+    const windowSize = MODEL_CONTEXT[model] || 200000;
+    const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
+    let obsidianVersion = "unknown";
+    try {
+      if (this.app && this.app.appInfo && this.app.appInfo.appVersion) {
+        obsidianVersion = String(this.app.appInfo.appVersion);
+      } else if (typeof require === "function") {
+        // Electron renderer exposes process.versions
+        if (typeof process !== "undefined" && process.versions && process.versions.electron) {
+          obsidianVersion = `electron-${process.versions.electron}`;
+        }
+      }
+    } catch {}
+    let osDesc = "unknown";
+    try {
+      const os = require("os");
+      osDesc = `${os.platform()} ${os.release()}`;
+    } catch {}
+    return {
+      pluginVersion: (this.plugin.manifest && this.plugin.manifest.version) || "unknown",
+      provider,
+      model,
+      effort: settings.effort || "high",
+      permissionMode: settings.permissionMode || "default",
+      protectedMode: settings.protectedMode !== false,
+      autoCompactSdk: settings.autoCompactSdk !== false,
+      obsidianVersion,
+      os: osDesc,
+      messageCount: (this.messages || []).length,
+      cumulativeCost: this.cumulativeCost || 0,
+      contextTokens: tokens,
+      contextPct: ctxPct,
+      windowSize,
+      hasApiKey: !!(settings.anthropicApiKey || (typeof process !== "undefined" && process.env && process.env.ANTHROPIC_API_KEY)),
+      hasClaudeCli: !!settings.claudePath,
+    };
+  }
+
+  /**
+   * /version — quick one-glance system info.
+   */
+  _cmdVersion() {
+    const d = this._buildDiagnosticContext();
+    const text =
+      `**Gryphon v${d.pluginVersion}**\n` +
+      `Provider: ${d.provider} · Model: ${d.model} · Effort: ${d.effort}\n` +
+      `Obsidian: ${d.obsidianVersion} · OS: ${d.os}`;
+    this.addSystemMessage(text);
+  }
+
+  /**
+   * /status — unified session-status panel.
+   */
+  _cmdStatus() {
+    const d = this._buildDiagnosticContext();
+    const ctxLine = d.contextTokens > 0
+      ? `${Math.round(d.contextTokens / 1000)}K / ${Math.round(d.windowSize / 1000)}K tokens (${d.contextPct}%)`
+      : `0 / ${Math.round(d.windowSize / 1000)}K tokens (no usage yet)`;
+    const lines = [
+      `**Session status**`,
+      `Provider: ${d.provider}`,
+      `Model: ${d.model} · Effort: ${d.effort}`,
+      `Permissions: ${d.permissionMode} · Protected mode: ${d.protectedMode ? "on" : "off"}`,
+      `Context: ${ctxLine}`,
+      `Messages: ${d.messageCount} · Cost: $${d.cumulativeCost.toFixed(4)}${this._costSuffix()}`,
+      `Auto-compact (SDK): ${d.autoCompactSdk ? "on (95%)" : "off"}`,
+    ];
+    this.addSystemMessage(lines.join("\n"));
+  }
+
+  /**
+   * /doctor — diagnostics dump for bug reports. Includes a network
+   * reachability test (HEAD https://api.anthropic.com/v1/) so users on
+   * a corporate / firewalled network see the failure mode in the same
+   * panel as the rest of the metadata.
+   */
+  async _cmdDoctor() {
+    this._flashStatus("Running diagnostics …");
+    const d = this._buildDiagnosticContext();
+    const settings = this.plugin.settings || {};
+    const path = require("path");
+    const fs = require("fs");
+    let pluginDir = null;
+    try {
+      pluginDir = path.join(
+        this.app.vault.adapter.basePath,
+        ".obsidian", "plugins", this.plugin.manifest.id
+      );
+    } catch {}
+    const expectHooks = [
+      "hooks/pretool.js",
+      "hooks/posttool.js",
+      "hooks/session-start.js",
+      "hooks/session-end.js",
+      "hooks/user-prompt.js",
+      "hooks/notification.js",
+      "hooks/common/ipc-client.js",
+    ];
+    const hookStatus = expectHooks.map((rel) => {
+      if (!pluginDir) return `${rel}: ?`;
+      const full = path.join(pluginDir, rel);
+      return fs.existsSync(full) ? `${rel}: ✓` : `${rel}: ✗ MISSING`;
+    });
+    let networkLine = "Network: not tested";
+    try {
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      const resp = await fetch("https://api.anthropic.com/v1/", {
+        method: "HEAD",
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeout);
+      networkLine = `Network: api.anthropic.com reachable (HTTP ${resp.status})`;
+    } catch (e) {
+      networkLine = `Network: api.anthropic.com unreachable — ${(e && e.message) || e}`;
+    }
+    let ipcLine = "IPC: not tested";
+    try {
+      if (this.plugin && typeof this.plugin.ensureIpcListening === "function") {
+        const ok = await this.plugin.ensureIpcListening(2000);
+        ipcLine = ok ? "IPC: listening" : "IPC: NOT listening (CLI mode protections degraded)";
+      }
+    } catch (e) {
+      ipcLine = `IPC: error — ${(e && e.message) || e}`;
+    }
+    const lines = [
+      `**Gryphon diagnostics**`,
+      ``,
+      `Plugin: v${d.pluginVersion}`,
+      `Obsidian: ${d.obsidianVersion} · OS: ${d.os}`,
+      `Provider: ${d.provider} (preference: ${settings.providerPreference || "auto"})`,
+      `Model: ${d.model} · Effort: ${d.effort} · Permissions: ${d.permissionMode}`,
+      `Anthropic API key: ${d.hasApiKey ? "present" : "NOT SET"}`,
+      `Claude Code path: ${d.hasClaudeCli ? settings.claudePath : "(not configured)"}`,
+      `Plugin directory: ${pluginDir || "(unknown)"}`,
+      ``,
+      `**Hook scripts**`,
+      ...hookStatus,
+      ``,
+      ipcLine,
+      networkLine,
+    ];
+    this.addSystemMessage(lines.join("\n"));
+    this._flashStatus("Diagnostics complete");
+  }
+
+  /**
+   * /recap — summarize the conversation as a regular bubble without
+   * committing the compaction. Useful mid-conversation snapshot.
+   * Reuses the same summary prompt as /compact for consistency.
+   */
+  async _cmdRecap() {
+    if (this.isStreaming) {
+      this._flashStatus("Can't /recap during an active turn — wait or /stop first");
+      return;
+    }
+    if (!this.messages || this.messages.length < 4) {
+      this._flashStatus("Nothing to recap — conversation is too short");
+      return;
+    }
+    const recapPrompt =
+      "Generate a concise recap of our conversation so far — what we've " +
+      "discussed, decisions made, current state of any in-progress work, " +
+      "and open questions. This is a snapshot for the user to review " +
+      "mid-conversation, NOT a replacement for the conversation history. " +
+      "Keep it tight (300-700 tokens). Don't ask if I want to continue.";
+    this.inputEl.value = recapPrompt;
+    await this.sendMessage();
+  }
+
+  /**
+   * /init — scaffold Gryphon/MANUAL.md if it doesn't already exist.
+   * Won't overwrite an existing file. Opens the file for editing if
+   * it was created.
+   */
+  async _cmdInitManual() {
+    const path = require("path");
+    const fs = require("fs");
+    const vaultPath = this.app.vault.adapter.basePath;
+    const manualRel = "Gryphon/MANUAL.md";
+    const manualAbs = path.join(vaultPath, manualRel);
+    if (fs.existsSync(manualAbs)) {
+      this._flashStatus(`Gryphon/MANUAL.md already exists — opening`);
+      try { this.app.workspace.openLinkText(manualRel, ""); } catch {}
+      return;
+    }
+    const template =
+      "# Gryphon — Vault Manual\n\n" +
+      "This file is your personal scratchpad for Gryphon — anything you'd " +
+      "like the model to know about your vault, your conventions, your " +
+      "in-progress projects. Gryphon doesn't auto-read it (so you control " +
+      "when it's seen), but you can paste from here, reference it via " +
+      "`/quote`, or copy excerpts into your messages.\n\n" +
+      "## About this vault\n\n" +
+      "_(your notes — what's the vault for, who you are, what conventions you follow)_\n\n" +
+      "## Active projects\n\n" +
+      "_(things you're working on, with links to relevant notes via `[[wikilinks]]`)_\n\n" +
+      "## Conventions\n\n" +
+      "_(folder structure, tagging style, link patterns, anything else worth knowing)_\n\n" +
+      "## Personal context\n\n" +
+      "_(role, expertise, preferences — anything that helps the model talk to you usefully)_\n\n" +
+      "## Skills\n\n" +
+      "Custom slash commands live in `Gryphon/Skills/`. Each `.md` file becomes a " +
+      "`/<name>` command. See the bundled skills folder for examples.\n";
+    try {
+      const dir = path.dirname(manualAbs);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(manualAbs, template);
+      this.addSystemMessage(`Created [[Gryphon/MANUAL]] — opening for editing`);
+      try { this.app.workspace.openLinkText(manualRel, ""); } catch {}
+    } catch (e) {
+      this._flashStatus(`Failed to create MANUAL.md: ${(e && e.message) || e}`);
+    }
+  }
+
+  /**
+   * /feedback — open a modal that lets the user pick how they want to
+   * send feedback. With args, defaults to mailto with the args as body.
+   * Never auto-sends; every path opens a draft (browser tab or mail
+   * composer) for the user to review and submit manually.
+   *
+   * Diagnostic context (versions, provider, mode) is prefilled. NO
+   * conversation content is included unless the user pastes it.
+   */
+  _cmdFeedback(arg) {
+    const userText = (arg || "").trim();
+    if (!userText) {
+      this._showFeedbackModal();
+      return;
+    }
+    // Args path: default to mailto with diagnostics appended.
+    this._openFeedbackMailto(userText);
+  }
+
+  _buildFeedbackDiagText() {
+    const d = this._buildDiagnosticContext();
+    return [
+      `Plugin version: ${d.pluginVersion}`,
+      `Provider: ${d.provider}`,
+      `Model: ${d.model} · Effort: ${d.effort}`,
+      `Permissions: ${d.permissionMode}`,
+      `Obsidian: ${d.obsidianVersion} · OS: ${d.os}`,
+    ].join("\n");
+  }
+
+  _openFeedbackMailto(userText) {
+    const subject = encodeURIComponent("Gryphon feedback");
+    const body = encodeURIComponent(
+      `${userText || "(write your feedback here)"}\n\n---\n${this._buildFeedbackDiagText()}\n`
+    );
+    const url = `mailto:contact@polleo.ai?subject=${subject}&body=${body}`;
+    try { window.open(url); } catch {}
+    this._flashStatus("Opened feedback email — review and send from your mail app");
+  }
+
+  _openFeedbackIssueTracker(userText) {
+    const title = encodeURIComponent("[Bug] ");
+    const body = encodeURIComponent(
+      `${userText || "Describe the issue here…"}\n\n` +
+      `**Steps to reproduce:**\n1. \n2. \n\n` +
+      `**Expected:**\n\n**Actual:**\n\n` +
+      `---\n${this._buildFeedbackDiagText()}\n`
+    );
+    const url = `https://github.com/polleoai/gryphon/issues/new?title=${title}&body=${body}`;
+    try { window.open(url); } catch {}
+    this._flashStatus("Opened issue tracker — review and submit");
+  }
+
+  _showFeedbackModal() {
+    const { Modal, Setting } = require("obsidian");
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("Send feedback");
+
+    const note = modal.contentEl.createEl("p");
+    note.style.marginBottom = "0.8em";
+    note.setText(
+      "Gryphon never auto-sends — every option opens a draft you review " +
+      "first. Conversation content is NOT included unless you paste it " +
+      "yourself. Diagnostic context (plugin version, provider, model, " +
+      "OS) IS included so we can reproduce."
+    );
+
+    const diagBox = modal.contentEl.createEl("pre");
+    diagBox.style.fontSize = "0.85em";
+    diagBox.style.padding = "0.5em";
+    diagBox.style.background = "var(--background-secondary)";
+    diagBox.style.borderRadius = "4px";
+    diagBox.style.marginBottom = "1em";
+    diagBox.setText(this._buildFeedbackDiagText());
+
+    new Setting(modal.contentEl)
+      .setName("Report a bug")
+      .setDesc("Opens a GitHub issue draft with diagnostic context prefilled.")
+      .addButton((b) => b.setButtonText("Open issue tracker").onClick(() => {
+        modal.close();
+        this._openFeedbackIssueTracker("");
+      }));
+
+    new Setting(modal.contentEl)
+      .setName("Send a quick note")
+      .setDesc("Opens a draft email to contact@polleo.ai.")
+      .addButton((b) => b.setButtonText("Open email").onClick(() => {
+        modal.close();
+        this._openFeedbackMailto("");
+      }));
+
+    new Setting(modal.contentEl)
+      .setName("Browse issues")
+      .setDesc("Opens the public issue tracker without prefilling anything.")
+      .addButton((b) => b.setButtonText("Open issues page").onClick(() => {
+        modal.close();
+        try { window.open("https://github.com/polleoai/gryphon/issues"); } catch {}
+      }));
+
+    modal.open();
   }
 
   /**
@@ -2033,10 +2385,17 @@ class GryphonChatView extends ItemView {
   _renderMessage(msg) {
     if (msg.role === "user") {
       const msgEl = document.createElement("div");
-      msgEl.className = "gryphon-message gryphon-user";
-      const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-user");
+      msgEl.className = msg.sideNote
+        ? "gryphon-message gryphon-user gryphon-sidenote"
+        : "gryphon-message gryphon-user";
+      const bubble = msgEl.createDiv(msg.sideNote
+        ? "gryphon-bubble gryphon-bubble-user gryphon-bubble-sidenote"
+        : "gryphon-bubble gryphon-bubble-user");
       bubble.createEl("span", { text: "\u276F ", cls: "gryphon-prompt-prefix" });
       bubble.createEl("span", { text: msg.text, cls: "gryphon-text" });
+      if (msg.sideNote) {
+        bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
+      }
       return msgEl;
     } else if (msg.role === "assistant") {
       const msgEl = document.createElement("div");
@@ -2465,7 +2824,7 @@ class GryphonChatView extends ItemView {
     this.scrollToBottom();
   }
 
-  addUserMessage(text, source = "mechanical") {
+  addUserMessage(text, source = "mechanical", opts = {}) {
     this._invalidatePromptHistoryCache();
     // Fresh user turn starts — clear any leftover refusal flag from
     // the previous turn so this turn's finalize doesn't accidentally
@@ -2487,13 +2846,23 @@ class GryphonChatView extends ItemView {
     // store-what-the-user-typed invariant (so up-arrow recall works)
     // is maintained regardless of where the call originated.
     const cleanText = this._stripContextBlock(text);
-    const msgEl = this.messagesEl.createDiv("gryphon-message gryphon-user");
-    const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-user");
+    const msgRowCls = opts.sideNote
+      ? "gryphon-message gryphon-user gryphon-sidenote"
+      : "gryphon-message gryphon-user";
+    const bubbleCls = opts.sideNote
+      ? "gryphon-bubble gryphon-bubble-user gryphon-bubble-sidenote"
+      : "gryphon-bubble gryphon-bubble-user";
+    const msgEl = this.messagesEl.createDiv(msgRowCls);
+    const bubble = msgEl.createDiv(bubbleCls);
     bubble.createEl("span", { text: "\u276F ", cls: "gryphon-prompt-prefix" });
     bubble.createEl("span", { text: cleanText, cls: "gryphon-text" });
+    if (opts.sideNote) {
+      bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
+    }
     this.messages.push({
       role: "user", text: cleanText, ts: new Date().toISOString(),
       source,
+      sideNote: opts.sideNote ? true : undefined,
       // Tagged with the session ID in effect at creation time so
       // `_doSaveChatHistory` can drop only messages that belong to
       // the current CLI session (those live in CC's jsonl). Messages
@@ -3068,6 +3437,21 @@ class GryphonChatView extends ItemView {
       text = `From [[${noteName}]]:\n${quoted}\n\n${args}`;
     }
 
+    // /btw <text> — side-note context injection. Strip the "/btw "
+    // prefix; the bubble shows the user's raw note. The LLM-facing
+    // augmentation site wraps it with a "no expansion needed" preamble
+    // so the model logs the note without burning tokens on a full
+    // reply. Bare `/btw` falls through to the dispatch table for a
+    // usage hint.
+    let isSideNote = false;
+    if (text.startsWith("/btw ")) {
+      const note = text.slice(5).trim();
+      if (note) {
+        text = note;
+        isSideNote = true;
+      }
+    }
+
     // Plugin-handled slash commands run BEFORE the isStreaming guard so
     // /stop and friends work while a turn is in flight. Slash commands
     // are plugin-level operations, not LLM sends.
@@ -3100,7 +3484,7 @@ class GryphonChatView extends ItemView {
     }
 
     // Forward to Claude
-    this.addUserMessage(text, "llm");
+    this.addUserMessage(text, "llm", isSideNote ? { sideNote: true } : undefined);
 
     this.isStreaming = true;
     this.startStreamingMessage();
@@ -3276,7 +3660,14 @@ class GryphonChatView extends ItemView {
         .replace(/\[gryphon-context\]/gi, "[gryphon-context-user]")
         .replace(/\[\/gryphon-context\]/gi, "[/gryphon-context-user]");
       const reminder = this._shouldInjectReminder(safeText) ? this._buildReminderBlock() : "";
-      const augmentedText = this._buildContextPrefix() + reminder + safeText;
+      // Side-note wrap (issue #9, /btw): prepend the no-expansion
+      // preamble so the model logs the note as context without burning
+      // tokens on a full reply. The user bubble already shows the raw
+      // note (rendered with .gryphon-bubble-sidenote styling).
+      const sideNotePrefix = isSideNote
+        ? "[Side note from user — no need to expand; reply in one sentence acknowledging it.]\n\n"
+        : "";
+      const augmentedText = this._buildContextPrefix() + reminder + sideNotePrefix + safeText;
       const result = await this.claudeProcess.send(augmentedText);
       if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
       if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }

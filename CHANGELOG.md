@@ -4,6 +4,27 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.1.1] — 2026-04-29
+
+Slash-command parity pass ([#9](https://github.com/polleoai/gryphon/issues/9)) plus three queue-recovery bugs found in v1.1.0 testing.
+
+### Added — slash commands
+
+- **`/btw <text>`** — side-note context injection. Wraps the message with a "no expansion needed; reply in one sentence" preamble so the model logs the note as future context without burning tokens on a long reply. User bubble renders dimmed + italic with a "· btw" tag.
+- **`/version`** — quick one-line system info: plugin version, provider, model, OS, Obsidian version.
+- **`/status`** — unified session-status panel: provider, model, effort, permissions, context usage, message count, cumulative cost, auto-compact state.
+- **`/doctor`** — diagnostics dump for bug reports: versions, provider availability, hook scripts present, IPC status, network reachability test.
+- **`/recap`** — generate a conversation summary as a regular bubble without committing the compaction (no archive, no session reset).
+- **`/init`** — scaffold `Gryphon/MANUAL.md` template if missing; opens for editing. Won't overwrite an existing file.
+- **`/feedback [text]`** — modal with three options: GitHub issue (with diagnostic context prefilled), mailto contact@polleo.ai, or open issues page. Never auto-sends. Conversation content is never included unless the user pastes it.
+- **`/permissions`** — added to autocomplete (was already wired as alias of `/perm`).
+
+### Fixed — queue recovery
+
+- [#6](https://github.com/polleoai/gryphon/issues/6): queued prompts are no longer silently lost on stream timeout / error / stop. Texts survive in up-arrow recall, and the oldest queued text is restored to the input box for one-keystroke retry.
+- [#7](https://github.com/polleoai/gryphon/issues/7): `sendMessage` catch branch no longer auto-fires the next queued prompt after a visible error. The user gets a chance to react before queued sends dispatch.
+- [#8](https://github.com/polleoai/gryphon/issues/8): `lastSessionId` is no longer wiped on generic abort (timeout, network error). The next message resumes the same server-side session, preserving conversation context. Only the dedicated `onSessionExpired` callback (CC's "No conversation found" stderr) wipes.
+
 ## [1.1.0] — 2026-04-28
 
 Chat-input UX fixes (issues #2, #3, #4) and SDK auto-compact (issue #5).

@@ -85,6 +85,19 @@
   margin-left: 0.5em;
 }
 
+/* Side-note user prompt (/btw) — rendered dimmer + italic so it scans
+   as context/aside, not as a main turn. Tag at the end identifies it. */
+.gryphon-bubble-sidenote {
+  opacity: 0.75;
+  font-style: italic;
+}
+.gryphon-sidenote-tag {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  font-style: italic;
+  margin-left: 0.5em;
+}
+
 /* Thinking disclosure (issue #4) — collapsed-by-default extended-reasoning
    block rendered inside the assistant bubble. Plain monospace body so
    internal model reasoning reads as raw output, not authored markdown. */
