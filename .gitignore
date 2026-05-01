@@ -1,0 +1,14 @@
+# Dependencies
+node_modules/
+
+# Build output
+main.js
+/hooks/
+
+# Temp + logs
+*.tmp-*
+*.log
+
+# System / editor
+.DS_Store
+

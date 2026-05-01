@@ -1,0 +1,16 @@
+# Force LF line endings on source + shipped files.
+#
+# Windows-specific rationale: Git's `core.autocrlf=true` default on
+# Windows rewrites LF to CRLF on checkout. When Claude Code invokes
+# a hook via Git Bash, bash reads the script's shebang — CRLF makes
+# it search for an interpreter named `node\r`, which doesn't exist,
+# and the hook silently never runs. Even though our hook command
+# bypasses the shebang (we invoke `node.exe pretool.js` explicitly),
+# bundled docs, settings JSON, and JSON-parsed at runtime would all
+# break similarly under CRLF contamination. Pin everything to LF.
+*.js   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf

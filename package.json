@@ -1,0 +1,35 @@
+{
+  "name": "obsidian-gryphon",
+  "version": "1.1.4",
+  "description": "Bring AI to your vault — with guardrails at runtime.",
+  "main": "main.js",
+  "private": true,
+  "license": "MIT",
+  "author": "POLLEO.AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polleoai/gryphon"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "claude",
+    "anthropic",
+    "llm",
+    "ai",
+    "chat"
+  ],
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js --watch",
+    "test": "node --test tests/*.test.js",
+    "build:install": "node build.js && echo 'Built. Copy main.js + manifest.json + styles.css into your vault .obsidian/plugins/gryphon/ to install.'"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "undici": "^8.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
