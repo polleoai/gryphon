@@ -276,6 +276,20 @@ class GryphonSettingTab extends PluginSettingTab {
           });
       });
 
+    this._descToTooltip(
+      new Setting(containerEl).setName("Auto-compact at 95% (SDK mode)"),
+      "Automatically summarize and reset the conversation when context " +
+      "fills up. Disable to get an explicit \"context full\" warning at " +
+      "95% and run /compact manually instead. Claude Code mode handles " +
+      "its own auto-compaction and ignores this.",
+    )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.autoCompactSdk !== false).onChange(async (value) => {
+          this.plugin.settings.autoCompactSdk = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
     this._renderSectionHeading(containerEl, { title: "Defaults" });
 
     new Setting(containerEl)
@@ -1034,11 +1048,11 @@ class GryphonPlugin extends Plugin {
         new GryphonChatView(leaf, this, {
           viewType: VIEW_TYPE,
           displayText: "Gryphon",
-          icon: "send",
+          icon: "shield-check",
         })
     );
 
-    this.addRibbonIcon("send", "Open Gryphon", () => this.activateView());
+    this.addRibbonIcon("shield-check", "Open Gryphon", () => this.activateView());
 
     this.addCommand({
       id: "open-gryphon",

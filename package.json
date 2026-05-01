@@ -1,7 +1,7 @@
 {
   "name": "obsidian-gryphon",
-  "version": "1.0.0",
-  "description": "Claude chat for Obsidian with vault-aware tools. Uses the Anthropic API; optional local Claude CLI for advanced users.",
+  "version": "1.1.4",
+  "description": "Bring AI to your vault — with guardrails at runtime.",
   "main": "main.js",
   "private": true,
   "license": "MIT",

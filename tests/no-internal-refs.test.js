@@ -63,6 +63,13 @@ const ALLOWLIST = new Set([
   "docs/v0.5.0-attack-detector-design.md",
   "docs/v0.6.0-hook-integration-design.md",
   "docs/v0.6.0-implementation-plan.md",
+  "docs/v1.1.0-sdk-auto-compact-design.md",
+  "docs/v1.1.0-sdk-auto-compact-plan.md",
+  // Dev-only Claude Code config + Git hook script. Documents the
+  // Gryphon → Athena vendor auto-sync workflow. Not in
+  // publish-release.sh's safelist, so never reaches the public repo.
+  "CLAUDE.md",
+  ".githooks/pre-push",
 ]);
 
 // Binary-like extensions are skipped (images, fonts, etc.). Text-ish

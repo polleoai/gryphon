@@ -162,6 +162,14 @@ class ClaudeCodeProvider {
     this.contextTokens = 0;
 
     this.turnText = "";
+    // Issue #4: thinking blocks accumulated for the current turn. Each
+    // turn produces zero or more thinking blocks; chat-view drains and
+    // resets via the result emit at end-of-turn.
+    this.turnThinking = [];
+    // Per-block-index buffer used to assemble streamed thinking_delta
+    // events into complete thinking blocks before they finalize. The
+    // CC stream-json output groups deltas by content block index.
+    this._thinkingByIndex = {};
     this.pendingResolve = null;
     this.pendingReject = null;
 
@@ -754,6 +762,15 @@ class ClaudeCodeProvider {
           event.delta?.type === "text_delta" && event.delta.text) {
         this.turnText += event.delta.text;
         if (this.onMessage) this.onMessage(this.turnText, "replace");
+      } else if (event.type === "content_block_delta" &&
+                 event.delta?.type === "thinking_delta" &&
+                 typeof event.delta.thinking === "string") {
+        // Issue #4: assemble streamed thinking_delta events. Each delta
+        // carries a chunk plus the index of the content block it
+        // belongs to; we buffer per-index so concurrent thinking blocks
+        // (rare but possible) don't merge.
+        const idx = typeof event.index === "number" ? event.index : 0;
+        this._thinkingByIndex[idx] = (this._thinkingByIndex[idx] || "") + event.delta.thinking;
       }
       return;
     }
@@ -766,6 +783,14 @@ class ClaudeCodeProvider {
         }
         if (block.type === "tool_use") {
           if (this.onMessage) this.onMessage(block.name, "tool");
+        }
+        // Issue #4: capture full thinking blocks. Some CC versions emit
+        // the complete block in the assistant event rather than via
+        // streamed deltas; handle both shapes.
+        if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking.length > 0) {
+          this.turnThinking.push(block.thinking);
+        } else if (block.type === "redacted_thinking") {
+          this.turnThinking.push("[redacted thinking]");
         }
       }
       // Track context from the LAST assistant message's usage (per-API-call, not cumulative).
@@ -795,6 +820,14 @@ class ClaudeCodeProvider {
       // Don't overwrite contextTokens from result — it's cumulative across
       // all API calls in the turn. The assistant message usage is per-call.
 
+      // Issue #4: flush any streamed thinking_delta buffers into the
+      // turn-thinking list so the result carries every block.
+      const indexedThinking = Object.keys(this._thinkingByIndex)
+        .sort((a, b) => Number(a) - Number(b))
+        .map((k) => this._thinkingByIndex[k])
+        .filter((s) => typeof s === "string" && s.length > 0);
+      const turnThinking = [...this.turnThinking, ...indexedThinking];
+
       const result = {
         text: raw.result || this.turnText || "",
         cost: turnCost,
@@ -802,6 +835,7 @@ class ClaudeCodeProvider {
         sessionId: raw.session_id || this.sessionId,
         duration: raw.duration_ms,
         contextTokens: this.contextTokens,
+        thinking: turnThinking.length > 0 ? turnThinking : undefined,
       };
 
       if (this.onDone) this.onDone(result);
@@ -811,6 +845,8 @@ class ClaudeCodeProvider {
         this.pendingReject = null;
       }
       this.turnText = "";
+      this.turnThinking = [];
+      this._thinkingByIndex = {};
     }
   }
 

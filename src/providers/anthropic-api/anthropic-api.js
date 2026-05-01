@@ -162,7 +162,7 @@ class AnthropicAPIProvider {
     };
 
     try {
-      const { turnText, finalMessage, totalUsage } = await runToolLoop({
+      const { turnText, finalMessage, totalUsage, thinkingBlocks } = await runToolLoop({
         client: this.client,
         model: this.resolvedModel,
         history: this.history,
@@ -207,6 +207,8 @@ class AnthropicAPIProvider {
         sessionId: this.sessionId,
         duration: Date.now() - turnStart,
         contextTokens: this.contextTokens,
+        thinking: Array.isArray(thinkingBlocks) && thinkingBlocks.length > 0
+          ? thinkingBlocks : undefined,
       };
 
       if (this.onDone) this.onDone(result);

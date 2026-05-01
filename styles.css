@@ -73,6 +73,79 @@
   display: inline;
 }
 
+/* Queued user prompt — sent during an active turn, fires after finalize */
+.gryphon-bubble-queued {
+  opacity: 0.55;
+  font-style: italic;
+}
+.gryphon-queued-tag {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  font-style: italic;
+  margin-left: 0.5em;
+}
+
+/* Side-note user prompt (/btw) — rendered dimmer + italic so it scans
+   as context/aside, not as a main turn. Tag at the end identifies it. */
+.gryphon-bubble-sidenote {
+  opacity: 0.75;
+  font-style: italic;
+}
+.gryphon-sidenote-tag {
+  color: var(--text-faint);
+  font-size: 0.85em;
+  font-style: italic;
+  margin-left: 0.5em;
+}
+
+/* Thinking disclosure (issue #4) — collapsed-by-default extended-reasoning
+   block rendered inside the assistant bubble. Plain monospace body so
+   internal model reasoning reads as raw output, not authored markdown. */
+.gryphon-thinking {
+  margin: 0 0 0.5em 0;
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: 0.6em;
+}
+.gryphon-thinking-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 0.85em;
+  user-select: none;
+  list-style: none;
+}
+.gryphon-thinking-summary::-webkit-details-marker {
+  display: none;
+}
+.gryphon-thinking-summary::before {
+  content: "▸ ";
+  display: inline-block;
+  width: 1em;
+  transition: transform 0.15s ease;
+}
+.gryphon-thinking[open] > .gryphon-thinking-summary::before {
+  content: "▾ ";
+}
+.gryphon-thinking-body {
+  margin-top: 0.4em;
+  max-height: 24em;
+  overflow-y: auto;
+}
+.gryphon-thinking-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-monospace);
+  font-size: 0.85em;
+  color: var(--text-muted);
+  background: transparent;
+  padding: 0;
+}
+.gryphon-thinking hr {
+  margin: 0.6em 0;
+  border: none;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
 /* Assistant output — plain text flow */
 .gryphon-assistant {
   display: flex;

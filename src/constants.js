@@ -852,6 +852,12 @@ const DEFAULT_SETTINGS = {
   // console-only; never written to a user file or sent off-device.
   // Default off; opt-in for bug reports and cross-platform debugging.
   devCliDebug: false,
+  // Issue #5 / v1.1.0: SDK-mode auto-compact at AUTO_COMPACT_SDK_THRESHOLD_PCT
+  // (95%). When true, Gryphon automatically summarizes the conversation and
+  // resets to a fresh session seeded with the summary. When false, the user
+  // gets an explicit "context full" warning at 95% and can /compact manually.
+  // CC mode ignores this — Claude Code handles its own auto-compaction.
+  autoCompactSdk: true,
 };
 
 // Aliases — resolved to concrete versions by the local CLI at spawn.
@@ -883,25 +889,41 @@ const MODEL_CONTEXT = {
   "opus[1m]": 1000000,
 };
 
+// Context-utilization thresholds (issue #5 / v1.1.0). Centralized here
+// so the meter colors, the proactive warning, and the SDK auto-compact
+// gate stay aligned. Hysteresis at 75% prevents the warning from
+// re-firing repeatedly as a long turn fluctuates around 80%.
+const CONTEXT_WARN_PCT = 80;
+const CONTEXT_WARN_RESET_PCT = 75;
+const AUTO_COMPACT_SDK_THRESHOLD_PCT = 95;
+
 // Plugin-handled slash commands. Shared between the autocomplete dropdown
 // and the help output so they stay in sync. Order is alphabetical so the
 // dropdown is scannable regardless of typed prefix.
 // takesArgs=true → autocomplete inserts a trailing space so the user can
 // type arguments without a manual keystroke (e.g. /model <name>).
 const SLASH_COMMANDS = [
-  { cmd: "/clear",     desc: "Start a new session" },
-  { cmd: "/compact",   desc: "Summarize the conversation and start fresh with the summary as context" },
-  { cmd: "/context",   desc: "Show context window usage" },
-  { cmd: "/cost",      desc: "Show session cost" },
-  { cmd: "/effort",    desc: "Switch effort level (opens picker)", takesArgs: true },
-  { cmd: "/export",    desc: "Save conversation as a note in Gryphon/Exports/", takesArgs: true },
-  { cmd: "/help",      desc: "Show all commands and keyboard shortcuts" },
-  { cmd: "/model",     desc: "Switch model (opens picker)", takesArgs: true },
-  { cmd: "/perm",      desc: "Switch permission mode (opens picker)" },
-  { cmd: "/quote",     desc: "Insert highlighted editor text as a quoted reference in your prompt" },
-  { cmd: "/settings",  desc: "Open plugin settings" },
-  { cmd: "/stop",      desc: "Stop the current turn" },
-  { cmd: "/usage",     desc: "Show session usage (cost, tokens, messages, duration)" },
+  { cmd: "/btw",         desc: "Add a side note — model logs it without expanding (costs ~30 tokens)", takesArgs: true },
+  { cmd: "/clear",       desc: "Start a new session" },
+  { cmd: "/compact",     desc: "Summarize the conversation and start fresh with the summary as context" },
+  { cmd: "/context",     desc: "Show context window usage" },
+  { cmd: "/cost",        desc: "Show session cost" },
+  { cmd: "/doctor",      desc: "Run diagnostics — versions, providers, hooks, network reachability" },
+  { cmd: "/effort",      desc: "Switch effort level (opens picker)", takesArgs: true },
+  { cmd: "/export",      desc: "Save conversation as a note in Gryphon/Exports/", takesArgs: true },
+  { cmd: "/feedback",    desc: "Send feedback or report a bug (opens browser / Mail)", takesArgs: true },
+  { cmd: "/help",        desc: "Show all commands and keyboard shortcuts" },
+  { cmd: "/init",        desc: "Scaffold Gryphon/MANUAL.md template in the vault if missing" },
+  { cmd: "/model",       desc: "Switch model (opens picker)", takesArgs: true },
+  { cmd: "/perm",        desc: "Switch permission mode (opens picker)" },
+  { cmd: "/permissions", desc: "Switch permission mode (opens picker — alias of /perm)" },
+  { cmd: "/quote",       desc: "Insert highlighted editor text as a quoted reference in your prompt" },
+  { cmd: "/recap",       desc: "Summarize the conversation as an inline note without resetting" },
+  { cmd: "/settings",    desc: "Open plugin settings" },
+  { cmd: "/status",      desc: "Show session status — model, provider, perm, tokens, cost, messages" },
+  { cmd: "/stop",        desc: "Stop the current turn" },
+  { cmd: "/usage",       desc: "Show session usage (cost, tokens, messages, duration)" },
+  { cmd: "/version",     desc: "Show plugin version, provider, model, OS, Obsidian version" },
 ];
 
 // Known CLI built-in slash commands that are blocked in stream-json
@@ -961,4 +983,5 @@ module.exports = {
   PROTECTED_CATEGORIES,
   MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS,
+  CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
 };
