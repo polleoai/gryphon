@@ -45,8 +45,16 @@ function _el() {
   };
 }
 
+// requestUrl: Obsidian's CORS-bypassing HTTP client. Tests typically replace
+// the export at runtime (`obsidianStub.requestUrl = mock`) before exercising
+// modules that call it. The default returns 200 + empty json so accidental
+// invocation in unrelated tests doesn't crash.
+async function requestUrl() {
+  return { status: 200, json: {}, text: "", headers: {} };
+}
+
 module.exports = {
   Modal, Setting, TFile, TFolder,
   ItemView, MarkdownView, Menu, MarkdownRenderer,
-  setTooltip,
+  setTooltip, requestUrl,
 };

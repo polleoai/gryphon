@@ -2,27 +2,46 @@
  * Provider factory — selects an LLMProvider implementation based on
  * settings + runtime availability.
  *
- * Selection logic:
- *   providerPreference = "auto"          → claude-code if claudePath
- *                                           present, else anthropic-api
- *                                           if apiKey present, else null
+ * Selection logic (per ADR 0002 + ADR 0003):
+ *   providerPreference = "auto"          → first available, in order:
+ *                                           claude-code (CLI present)
+ *                                           → anthropic-api (key present)
+ *                                           → openai-api (key present)
+ *                                           → google-api (key present)
+ *                                           → null
  *                      = "claude-code"   → Claude Code CLI (or null if
  *                                           claudePath missing)
  *                      = "anthropic-api" → Anthropic API (or null if
  *                                           apiKey missing)
+ *                      = "openai-api"    → OpenAI API (or null if
+ *                                           openaiApiKey missing).
+ *                                           v1.2.0: Stage 1 returns null
+ *                                           even when key is present —
+ *                                           the OpenAIProvider class lands
+ *                                           in Stage 2 (#17).
+ *                      = "google-api"    → Google Gemini API (or null if
+ *                                           googleApiKey missing).
+ *                                           v1.2.0: Stage 1 returns null
+ *                                           even when key is present —
+ *                                           the GoogleProvider class lands
+ *                                           in Stage 3 (#18).
  *
  * Returning null from createProvider is a soft failure — the caller
- * (chat-view) is responsible for surfacing setup guidance to the user.
+ * (chat-view) is responsible for surfacing setup guidance to the user
+ * via explainUnavailable().
  *
- * The current "auto" tiebreaker prefers claude-code when both are
- * available. Rationale: subscription users get the CLI's per-prompt-
- * cached, no-extra-cost lane by default; the Anthropic API is the
- * policy-safe fallback that costs per-token. Users who want the
- * Anthropic API explicitly can switch in settings.
+ * The "auto" tiebreaker prefers claude-code when available because the
+ * security guarantee is strongest there (full 27-event hook surface).
+ * The other three SDK modes (anthropic-api / openai-api / google-api)
+ * carry the same two-axis security via shared permission-IPC + attack-
+ * detector, but no extra hook layer.
  */
 
 const { ClaudeCodeProvider } = require("./claude-code/claude-code");
 const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
+const { OpenAIProvider } = require("./openai-api/openai-api");
+const { GoogleProvider } = require("./google-api/google-api");
+const { DEFAULT_PROVIDER_PREFERENCE } = require("../constants");
 
 /**
  * @param {object} plugin     — the GryphonPlugin instance (we read settings)
@@ -39,9 +58,11 @@ const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
  */
 function createProvider(plugin, cwd, options = {}) {
   const settings = plugin.settings || {};
-  const preference = settings.providerPreference || "auto";
+  const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
   const claudePath = settings.claudePath || _detectClaudeBinary();
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
+  const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
+  const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
 
   // claude-code provider receives `plugin` too, so it can read the
   // active protected-path / protected-command settings and translate
@@ -56,10 +77,25 @@ function createProvider(plugin, cwd, options = {}) {
     return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
   }
 
-  // auto: claude-code wins if both are available (subscription path is
-  // no extra cost per prompt).
+  // openai-api: Stage 2 (#17) shipped — real OpenAIProvider when key present.
+  if (preference === "openai-api") {
+    if (!openaiKey) return null;
+    return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
+  }
+
+  // google-api: Stage 3 (#18) shipped — real GoogleProvider when key present.
+  if (preference === "google-api") {
+    if (!googleKey) return null;
+    return new GoogleProvider(googleKey, cwd, { ...options, plugin });
+  }
+
+  // auto: claude-code wins if available (subscription path is no extra
+  // cost per prompt and has the full hook surface). Then any HTTP-API
+  // key in the order: anthropic → openai → google.
   if (claudePath) return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
   if (apiKey)     return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
+  if (openaiKey)  return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
+  if (googleKey)  return new GoogleProvider(googleKey, cwd, { ...options, plugin });
   return null;
 }
 
@@ -69,9 +105,15 @@ function createProvider(plugin, cwd, options = {}) {
  */
 function explainUnavailable(plugin) {
   const settings = plugin.settings || {};
-  const preference = settings.providerPreference || "anthropic-api";
+  // Round 15 fix (F20): single source of truth for the default. Previously
+  // createProvider used "auto" while explainUnavailable used "anthropic-api"
+  // — those two assumptions diverged in the settings-corruption /
+  // pre-DEFAULT-merge edge case.
+  const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
   const hasCli = !!(settings.claudePath || _detectClaudeBinary());
   const hasKey = !!(settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
+  const hasOpenAiKey = !!(settings.openaiApiKey || process.env.OPENAI_API_KEY);
+  const hasGoogleKey = !!(settings.googleApiKey || process.env.GOOGLE_API_KEY);
 
   if (preference === "claude-code" && !hasCli) {
     return _cliNotFoundMessage();
@@ -80,9 +122,37 @@ function explainUnavailable(plugin) {
     return "Anthropic API key not set. Paste a key in Settings → Gryphon → " +
            "Anthropic API key.";
   }
-  // auto with neither
-  return "No provider available. Paste an Anthropic API key in " +
-         "Settings → Gryphon → Anthropic API key.";
+  // openai-api: Stage 2 shipped, so a key-missing case is the only
+  // blocker. (Once Stage 3 ships, the symmetric google-api copy will
+  // also drop its "being implemented" hint.)
+  if (preference === "openai-api") {
+    if (!hasOpenAiKey) {
+      return "OpenAI API key not set. Paste a key in Settings → Gryphon → " +
+             "OpenAI API key.";
+    }
+    // Should not reach here when key is present + adapter exists; defensive.
+    return "OpenAI provider failed to initialize. Check your API key.";
+  }
+  if (preference === "google-api") {
+    if (!hasGoogleKey) {
+      return "Google API key not set. Paste a key in Settings → Gryphon → " +
+             "Google API key.";
+    }
+    // Stage 3 shipped — defensive fallback for construction failure.
+    return "Google provider failed to initialize. Check your API key.";
+  }
+
+  // auto-fallthrough with NO key/CLI at all. All three SDK adapters now
+  // shipped — claude-code preserved as preferred when CLI is detected.
+  return (
+    "No provider available. Set up any of:\n" +
+    "  • Claude Code CLI (install `claude`, then choose Claude Code in " +
+    "Settings → Gryphon → Provider).\n" +
+    "  • Anthropic API key (paste in Settings → Gryphon → Anthropic " +
+    "API key — recommended).\n" +
+    "  • OpenAI API key (paste in Settings → Gryphon → OpenAI API key).\n" +
+    "  • Google API key (paste in Settings → Gryphon → Google API key)."
+  );
 }
 
 /**
@@ -165,7 +235,67 @@ function detectAvailable(plugin) {
     apiKey = process.env.ANTHROPIC_API_KEY;
     apiKeySource = "env";
   }
-  return { cliPath, apiKey, apiKeySource };
+
+  let openaiKey = "";
+  let openaiKeySource = null;
+  if (settings.openaiApiKey) {
+    openaiKey = settings.openaiApiKey;
+    openaiKeySource = "settings";
+  } else if (process.env.OPENAI_API_KEY) {
+    openaiKey = process.env.OPENAI_API_KEY;
+    openaiKeySource = "env";
+  }
+
+  let googleKey = "";
+  let googleKeySource = null;
+  if (settings.googleApiKey) {
+    googleKey = settings.googleApiKey;
+    googleKeySource = "settings";
+  } else if (process.env.GOOGLE_API_KEY) {
+    googleKey = process.env.GOOGLE_API_KEY;
+    googleKeySource = "env";
+  }
+
+  return {
+    cliPath,
+    apiKey, apiKeySource,
+    openaiKey, openaiKeySource,
+    googleKey, googleKeySource,
+  };
 }
 
-module.exports = { createProvider, explainUnavailable, detectAvailable };
+/**
+ * Returns the resolved provider kind that createProvider would pick for the
+ * current settings + environment, WITHOUT actually instantiating anything.
+ *
+ * Used by UI surfaces (toolbar model button, model menu, Settings tab Default
+ * model dropdown) that need to know "which provider's model list applies?"
+ * even before a chat turn has spawned a real provider instance. The literal
+ * `providerPreference` setting is NOT enough — `auto` resolves dynamically
+ * based on which key/CLI is available, and the UI must mirror that.
+ *
+ * Returns one of: "claude-code" | "anthropic-api" | "openai-api" | "google-api" | null.
+ * Mirrors createProvider's selection logic exactly (any divergence = bug).
+ */
+function getActiveProviderKind(plugin) {
+  const settings = (plugin && plugin.settings) || {};
+  const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
+  const claudePath = settings.claudePath || _detectClaudeBinary();
+  const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
+  const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
+  const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
+
+  if (preference === "claude-code")   return claudePath ? "claude-code"   : null;
+  if (preference === "anthropic-api") return apiKey     ? "anthropic-api" : null;
+  if (preference === "openai-api")    return openaiKey  ? "openai-api"    : null;
+  if (preference === "google-api")    return googleKey  ? "google-api"    : null;
+
+  // auto: same priority as createProvider's auto-fallthrough.
+  if (claudePath) return "claude-code";
+  if (apiKey)     return "anthropic-api";
+  if (openaiKey)  return "openai-api";
+  if (googleKey)  return "google-api";
+  return null;
+}
+
+module.exports = { createProvider, explainUnavailable, detectAvailable, getActiveProviderKind };

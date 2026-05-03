@@ -55,9 +55,26 @@ const {
  * @param {string|null} currentSessionId — value of plugin.settings.lastSessionId
  * @returns {Array<object>}
  */
+// SDK provider session prefixes. The CLI optimization in
+// filterMessagesForSave drops llm messages tagged with the current CLI
+// session (because Claude Code's jsonl re-supplies them on resume) — but
+// SDK sessions have no such re-supply, so dropping them is data loss.
+// We detect SDK sessions by their synthetic prefix:
+//   - "sdk-..."          → anthropic-api (legacy; emit pre-Stage-2)
+//   - "openai-sdk-..."   → openai-api    (Stage 2)
+//   - "gemini-sdk-..."   → google-api    (Stage 3)
+// Anything else (typically a UUID) is treated as a CLI session.
+const _SDK_SESSION_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk)-/;
+
 function filterMessagesForSave(messages, currentSessionId) {
   const currentId = currentSessionId || null;
-  const currentIsCli = !!(currentId && !String(currentId).startsWith("sdk-"));
+  // Bug #24 fix: detect SDK sessions across all three providers, not just
+  // the legacy anthropic-api "sdk-" prefix. Before the fix, OpenAI / Gemini
+  // session ids ("openai-sdk-...", "gemini-sdk-...") didn't match the
+  // legacy check, so currentIsCli evaluated TRUE and the filter dropped
+  // every llm message tagged with the current SDK session — silent
+  // user-data loss whenever a save fired with the matching lastSessionId.
+  const currentIsCli = !!(currentId && !_SDK_SESSION_PREFIX_RE.test(String(currentId)));
   return (messages || []).filter((m) => {
     if (!m || !m.source) return false;
     if (m.source !== "llm") return true;
@@ -125,6 +142,84 @@ function nextContextWarningState(prev, pct) {
 function labelFor(list, value) {
   const item = list.find((x) => x.value === value);
   return item ? item.label : value;
+}
+
+/**
+ * Toolbar model-button text. The ACTIVE provider (resolved with auto-
+ * fallthrough — not just the literal `providerPreference`) gates which
+ * model list applies:
+ *   • claude-code / anthropic-api → Anthropic MODELS (Haiku / Sonnet / Opus)
+ *   • openai-api → OpenAI model list (gpt-5 family + legacy 4o)
+ *   • google-api → Stage-3-pending hint until the Gemini adapter ships (#18)
+ *
+ * The `plugin` argument is used to call factory.getActiveProviderKind so
+ * Auto-mode users with only an OpenAI key see the OpenAI list (not the
+ * Anthropic list). Tests that only have a settings object can pass it as
+ * `plugin` directly — the helper just needs `.settings`.
+ */
+function modelButtonText(settingsOrPlugin) {
+  const settings = settingsOrPlugin && settingsOrPlugin.settings
+    ? settingsOrPlugin.settings : settingsOrPlugin;
+  const plugin = settingsOrPlugin && settingsOrPlugin.settings
+    ? settingsOrPlugin : { settings };
+  const { getActiveProviderKind } = require("./providers/factory");
+  const kind = getActiveProviderKind(plugin) || settings.providerPreference;
+
+  if (kind === "openai-api") {
+    const {
+      getModelDropdownOptions,
+      resolveModel: resolveOpenAIModel,
+      DEFAULT_MODEL: OPENAI_DEFAULT_MODEL,
+    } = require("./providers/openai-api/pricing");
+    const options = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
+    const requested = settings && settings.model;
+    // Defensive fallback when the persisted model id isn't an OpenAI option
+    // (e.g. cross-vendor switch with `model="sonnet"`): mirror what
+    // pricing.resolveModel will pick at runtime so the toolbar label
+    // matches the actual API request — no UI/runtime gap (Round 18 F23-1).
+    if (options.some((o) => o.value === requested)) {
+      return labelFor(options, requested);
+    }
+    const resolved = resolveOpenAIModel(requested);
+    const fitsDropdown = options.some((o) => o.value === resolved);
+    return labelFor(options, fitsDropdown ? resolved : OPENAI_DEFAULT_MODEL);
+  }
+  if (kind === "google-api") {
+    const {
+      getModelDropdownOptions: getGeminiOptions,
+      resolveModel: resolveGeminiModel,
+      DEFAULT_MODEL: GEMINI_DEFAULT_MODEL,
+    } = require("./providers/google-api/pricing");
+    const options = getGeminiOptions().map((o) => ({ value: o.id, label: o.label }));
+    const requested = settings && settings.model;
+    if (options.some((o) => o.value === requested)) {
+      return labelFor(options, requested);
+    }
+    const resolved = resolveGeminiModel(requested);
+    const fitsDropdown = options.some((o) => o.value === resolved);
+    return labelFor(options, fitsDropdown ? resolved : GEMINI_DEFAULT_MODEL);
+  }
+  // Anthropic / Claude Code: same fallback shape as the OpenAI branch — if
+  // settings.model isn't in MODELS (e.g. user just switched FROM openai-api
+  // and persisted "gpt-5.4-mini" carries over), use "sonnet" as the default
+  // so the toolbar doesn't show a raw OpenAI id like "gpt-5.4-mini".
+  const requested = settings && settings.model;
+  if (MODELS.some((m) => m.value === requested)) {
+    return labelFor(MODELS, requested);
+  }
+  return labelFor(MODELS, "sonnet");
+}
+
+function modelButtonTitle(settingsOrPlugin) {
+  const settings = settingsOrPlugin && settingsOrPlugin.settings
+    ? settingsOrPlugin.settings : settingsOrPlugin;
+  const plugin = settingsOrPlugin && settingsOrPlugin.settings
+    ? settingsOrPlugin : { settings };
+  const { getActiveProviderKind } = require("./providers/factory");
+  const kind = getActiveProviderKind(plugin) || settings.providerPreference;
+  if (kind === "openai-api") return "Model (OpenAI)";
+  if (kind === "google-api") return "Model (Gemini)";
+  return "Model";
 }
 
 const CARET_KEYS = new Set([
@@ -281,9 +376,9 @@ class GryphonChatView extends ItemView {
     const toolbar = container.createDiv("gryphon-toolbar");
 
     this.modelBtn = toolbar.createEl("span", {
-      text: labelFor(MODELS, this.plugin.settings.model) + " \u25BE",
+      text: modelButtonText(this.plugin) + " \u25BE",
       cls: "gryphon-toolbar-btn",
-      attr: { title: "Model" },
+      attr: { title: modelButtonTitle(this.plugin) },
     });
     this.modelBtn.addEventListener("click", (e) => this.showModelMenu(e));
 
@@ -603,15 +698,49 @@ class GryphonChatView extends ItemView {
   }
 
   showModelMenu(e) {
+    // Provider-aware model menu, resolved via getActiveProviderKind so Auto
+    // mode + only-an-OpenAI-key shows the OpenAI list (not Anthropic's
+    // MODELS). Each kind has its own model list:
+    //   \u2022 claude-code / anthropic-api \u2192 Anthropic MODELS
+    //   \u2022 openai-api \u2192 OpenAI dropdown options (Stage 2 shipped)
+    //   \u2022 google-api \u2192 still adapter-pending, Notice instead of menu (Stage 3)
+    const { getActiveProviderKind } = require("./providers/factory");
+    const kind = getActiveProviderKind(this.plugin) ||
+                 this.plugin.settings.providerPreference;
+
+    let modelList = MODELS;
+    if (kind === "openai-api") {
+      const { getModelDropdownOptions } = require("./providers/openai-api/pricing");
+      modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
+    } else if (kind === "google-api") {
+      const { getModelDropdownOptions } = require("./providers/google-api/pricing");
+      modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
+    }
+
     const menu = new Menu();
-    for (const m of MODELS) {
+    for (const m of modelList) {
       menu.addItem((item) => {
         item.setTitle(m.label + (m.value === this.plugin.settings.model ? " \u2713" : ""))
           .setSection("model")
-          .onClick(() => this.changeSetting("model", m.value, this.modelBtn, MODELS));
+          .onClick(() => this.changeSetting("model", m.value, this.modelBtn, modelList));
       });
     }
     this._showMenuAbove(menu, e.target);
+  }
+
+  /**
+   * Re-compute toolbar button labels in place. Called by the plugin's
+   * _resetActiveSessions() whenever a setting changes that affects what
+   * the toolbar should display \u2014 most notably providerPreference, since
+   * switching to openai-api / google-api in Settings should immediately
+   * change the model button from "Sonnet" to the Stage-N-pending label
+   * (Bug #21).
+   */
+  refreshToolbarLabels() {
+    if (this.modelBtn) {
+      this.modelBtn.setText(modelButtonText(this.plugin) + " \u25be");
+      this.modelBtn.setAttribute("title", modelButtonTitle(this.plugin));
+    }
   }
 
   showEffortMenu(e) {
@@ -2678,6 +2807,19 @@ class GryphonChatView extends ItemView {
     );
     if (provider) return;  // a provider can resolve — nothing to show
 
+    // Bug #23 fix: skip the welcome panel when the user already has
+    // chat history. Otherwise the welcome panel is appended AFTER
+    // _restoreChatHistory called scrollToBottom (which uses RAF, so
+    // it reads scrollHeight in the next frame — by which time the
+    // welcome panel exists and dominates the bottom). Result was:
+    // user sees only the welcome panel, their actual chat is
+    // scrolled out of view above. The user already has all the
+    // setup context they need from the inline `explainUnavailable`
+    // bubble that fires on a failed send (in `sendMessage`'s
+    // createProvider-null branch); the welcome-panel onboarding is
+    // for first-time users with an empty chat.
+    if (this.messages && this.messages.length > 0) return;
+
     const detected = detectAvailable(this.plugin);
     const panel = this.messagesEl.createDiv("gryphon-welcome");
     this._welcomePanelEl = panel;
@@ -3660,7 +3802,34 @@ class GryphonChatView extends ItemView {
         initialHistory: sdkInitialHistory,
       });
       if (!this.claudeProcess) {
+        // Bug #23: failed sends (no provider could be constructed) used
+        // to lose both the user message AND the error bubble across
+        // plugin disable+enable. Two issues conspired:
+        //   1. addUserMessage() tagged the just-typed prompt with the
+        //      current lastSessionId. If that ID looked like a CLI
+        //      session, filterMessagesForSave() dropped the message
+        //      on the assumption Claude Code's jsonl would re-supply
+        //      it — but no CLI session ran, no jsonl was written,
+        //      and the message vanished on reload.
+        //   2. Save was fire-and-forget; a quick disable could
+        //      interrupt the rename step before the new content
+        //      committed to disk.
+        // Fix: clear sessionId on the just-recorded user message so
+        // the save filter can't drop it, then AWAIT the save before
+        // returning so the user message + the error bubble (added by
+        // _cleanupStreamingState → finalizeStreamingMessage) are
+        // both flushed to disk before any subsequent disable.
+        const lastUserMsg = this.messages[this.messages.length - 1];
+        if (lastUserMsg && lastUserMsg.role === "user") {
+          lastUserMsg.sessionId = null;
+        }
         this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin) });
+        // Awaited save: ensures both the user message and the error
+        // bubble (just pushed by finalizeStreamingMessage inside
+        // _cleanupStreamingState) hit disk before sendMessage returns
+        // to the user, who is likely about to fix their config and
+        // re-enable the plugin.
+        await this._saveChatHistory();
         return;
       }
     }
@@ -3926,4 +4095,6 @@ module.exports = {
   computeContextPct,
   shouldStartAutoCompact,
   nextContextWarningState,
+  modelButtonText,
+  modelButtonTitle,
 };

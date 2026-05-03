@@ -1,6 +1,6 @@
 {
   "name": "obsidian-gryphon",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "description": "Bring AI to your vault — with guardrails at runtime.",
   "main": "main.js",
   "private": true,
@@ -27,6 +27,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.90.0",
+    "@google/genai": "^1.51.0",
+    "openai": "^6.35.0",
     "undici": "^8.1.0"
   },
   "devDependencies": {

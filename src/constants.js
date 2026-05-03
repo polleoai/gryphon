@@ -771,13 +771,25 @@ const DEFAULT_SETTINGS = {
   //                       (Claude Code CLI; subject to that vendor's
   //                       terms of use — for users who already have
   //                       that subscription and have reviewed them)
+  //   "openai-api"     — OpenAI's API via HTTPS (v1.2.0; per ADR 0003)
+  //   "google-api"     — Google's Gemini API via HTTPS (v1.2.0; per ADR 0003)
   //   "auto"           — prefer claude-code if the binary is present,
-  //                       else fall back to anthropic-api
+  //                       else fall back to anthropic-api, then
+  //                       openai-api, then google-api (Claude-first
+  //                       per ADR 0002 — security guarantee strongest there)
   providerPreference: "anthropic-api",
   // Anthropic API key for Anthropic API mode. Stored in plugin data.json — users
   // who don't want a key on disk can leave this blank and set the
   // ANTHROPIC_API_KEY env var instead (the factory checks both).
   anthropicApiKey: "",
+  // OpenAI API key for openai-api mode (v1.2.0). Stored in plugin
+  // data.json. The factory ALSO accepts OPENAI_API_KEY in process.env —
+  // see the macOS GUI-launch caveat in the Anthropic key tooltip.
+  openaiApiKey: "",
+  // Google AI Studio API key for google-api mode (v1.2.0). Stored in
+  // plugin data.json. The factory also accepts GOOGLE_API_KEY in
+  // process.env. Same macOS GUI-launch caveat applies.
+  googleApiKey: "",
   // Brave Search API key for SDK-mode WebSearch. Free tier: 2000
   // queries/month at https://brave.com/search/api/. Empty string means
   // WebSearch returns an instructive error telling the user how to set it.
@@ -953,10 +965,22 @@ const RESERVED_SKILL_NAMES = new Set(
   SLASH_COMMANDS.map((c) => c.cmd.replace(/^\//, ""))
 );
 
+// Single source of truth for the fallback when settings.providerPreference
+// is missing/undefined. Used by createProvider AND explainUnavailable so
+// the two functions never operate under conflicting assumptions about
+// what "no preference set" means. (Round 15 fix: F20.)
+const DEFAULT_PROVIDER_PREFERENCE = "auto";
+
+// Provider dropdown labels intentionally name only the provider, NOT the
+// model — model selection lives in its own dropdown (panel toolbar +
+// Settings → Default model). Mixing model names here would create two
+// sources of truth that can drift.
 const PROVIDER_PREFS = [
   { value: "anthropic-api", label: "Anthropic API (recommended)", desc: "Uses your Anthropic API key — the unambiguously terms-safe route" },
   { value: "claude-code",   label: "Claude Code (advanced)",      desc: "Spawns a local `claude` subprocess — confirm your usage complies with that product's terms" },
-  { value: "auto",          label: "Auto",                        desc: "Prefer Claude Code if installed, else Anthropic API" },
+  { value: "openai-api",    label: "OpenAI API",                  desc: "Uses your OpenAI API key" },
+  { value: "google-api",    label: "Google Gemini API",           desc: "Uses your Google AI Studio key" },
+  { value: "auto",          label: "Auto",                        desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
 
 // Human-readable title shown at the top of the protected-operation modal
@@ -978,7 +1002,7 @@ const PROTECTED_CATEGORIES = {
 };
 
 module.exports = {
-  TOOL_STATUS_CORE, DEFAULT_SETTINGS,
+  TOOL_STATUS_CORE, DEFAULT_SETTINGS, DEFAULT_PROVIDER_PREFERENCE,
   DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
   PROTECTED_CATEGORIES,
   MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,

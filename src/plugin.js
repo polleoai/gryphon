@@ -12,7 +12,9 @@ const path = require("path");
 const { GryphonChatView } = require("./chat-view");
 const { DEFAULT_SETTINGS, MODELS, EFFORTS, PERMS, PROVIDER_PREFS, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
 const { SkillRegistry } = require("./skills");
-const { testApiKey } = require("./providers/anthropic-api/anthropic-api");
+const { testApiKey: testAnthropicApiKey } = require("./providers/anthropic-api/anthropic-api");
+const { testApiKey: testOpenAIApiKey } = require("./providers/openai-api/openai-api");
+const { testApiKey: testGoogleApiKey } = require("./providers/google-api/test-key");
 const {
   PermissionIPCServer,
   defaultSocketPath,
@@ -34,6 +36,39 @@ const VIEW_TYPE = "gryphon-view";
  * Falls back to the raw string if the value isn't parseable (e.g. a
  * hand-edited provenance.json with a non-ISO timestamp).
  */
+/**
+ * Pick a sensible default model id for the active provider when the
+ * persisted settings.model is not recognized by that provider's model
+ * list. Used on Provider switch (in the dropdown's onChange) so the
+ * chat-view toolbar + Settings dropdown stay in lockstep without showing
+ * a stale cross-vendor id (e.g. "gpt-5.4-mini" lingering after switching
+ * to Claude Code).
+ *
+ * Returns the new model id (or the unchanged current id when it's already
+ * valid for the active provider). Caller is responsible for persisting.
+ */
+function _resetModelForProvider(plugin) {
+  const { getActiveProviderKind } = require("./providers/factory");
+  const settings = plugin.settings || {};
+  const current = settings.model;
+  const kind = getActiveProviderKind(plugin) || settings.providerPreference;
+
+  if (kind === "openai-api") {
+    const { getModelDropdownOptions, DEFAULT_MODEL } =
+      require("./providers/openai-api/pricing");
+    const options = getModelDropdownOptions();
+    return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
+  }
+  if (kind === "google-api") {
+    const { getModelDropdownOptions, DEFAULT_MODEL } =
+      require("./providers/google-api/pricing");
+    const options = getModelDropdownOptions();
+    return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
+  }
+  // claude-code / anthropic-api / null → Anthropic MODELS list.
+  return MODELS.some((m) => m.value === current) ? current : "sonnet";
+}
+
 function _formatTaggedAt(iso) {
   if (!iso || typeof iso !== "string") return "";
   const d = new Date(iso);
@@ -125,8 +160,21 @@ class GryphonSettingTab extends PluginSettingTab {
         drop.setValue(this.plugin.settings.providerPreference || "auto");
         drop.onChange(async (value) => {
           this.plugin.settings.providerPreference = value;
+          // When the new provider doesn't recognize the persisted model id
+          // (e.g. switching from openai-api → claude-code with model
+          // "gpt-5.4-mini"), reset settings.model to a sensible default
+          // for the new provider. Without this, the chat-view toolbar
+          // shows the stale id as a raw string. Mirrors what the toolbar
+          // and Settings dropdown will pick visually so all three surfaces
+          // converge before the next render.
+          this.plugin.settings.model = _resetModelForProvider(this.plugin);
           await this.plugin.saveSettings();
           this.plugin._resetActiveSessions();
+          // Bug #22 fix: re-render the Settings tab so the Defaults
+          // section (Default model + Default effort) reflects the new
+          // Provider. Without this, switching to openai-api leaves
+          // "Sonnet — Balanced" stale in the dropdown.
+          this.display();
         });
       });
 
@@ -244,7 +292,7 @@ class GryphonSettingTab extends PluginSettingTab {
               (this.plugin.settings.anthropicApiKey || "").trim() ||
               process.env.ANTHROPIC_API_KEY ||
               "";
-            const { ok, message } = await testApiKey(key);
+            const { ok, message } = await testAnthropicApiKey(key);
             btn.setDisabled(false).setButtonText("Test key");
             if (keyStatusEl) {
               keyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
@@ -256,6 +304,98 @@ class GryphonSettingTab extends PluginSettingTab {
       .then((setting) => {
         keyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
         keyStatusEl.style.marginTop = "4px";
+      });
+
+    // OpenAI + Google API keys (v1.2.0 — per ADR 0003). OpenAI adapter
+    // shipped in Stage 2 (#17); Google adapter lands in Stage 3 (#18).
+    // The Test-key buttons mirror the Anthropic pattern above — they
+    // make a no-token-cost validation call so users can verify before
+    // running an actual chat turn.
+    let openaiKeyStatusEl = null;
+    this._descToTooltip(
+      new Setting(containerEl).setName("OpenAI API key"),
+      "Required for OpenAI API mode (v1.2.0). Paste your key here — " +
+      "stored in plugin data.json. (Advanced: OPENAI_API_KEY env var " +
+      "also works, but only if Obsidian was launched from a shell that " +
+      "has the variable.)",
+    )
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("sk-...")
+          .setValue(this.plugin.settings.openaiApiKey || "")
+          .onChange(async (value) => {
+            this.plugin.settings.openaiApiKey = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+            if (openaiKeyStatusEl) openaiKeyStatusEl.setText("");
+          });
+      })
+      .addButton((btn) =>
+        btn
+          .setButtonText("Test key")
+          .onClick(async () => {
+            btn.setDisabled(true).setButtonText("Testing...");
+            const key =
+              (this.plugin.settings.openaiApiKey || "").trim() ||
+              process.env.OPENAI_API_KEY ||
+              "";
+            const { ok, message } = await testOpenAIApiKey(key);
+            btn.setDisabled(false).setButtonText("Test key");
+            if (openaiKeyStatusEl) {
+              openaiKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
+              openaiKeyStatusEl.style.color = ok ? "var(--color-green)" : "var(--color-red)";
+            }
+            new Notice(`OpenAI API key: ${ok ? "OK" : message}`);
+          })
+      )
+      .then((setting) => {
+        openaiKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
+        openaiKeyStatusEl.style.marginTop = "4px";
+      });
+
+    let googleKeyStatusEl = null;
+    this._descToTooltip(
+      new Setting(containerEl).setName("Google API key"),
+      "Required for Google Gemini API mode (v1.2.0). Paste your key " +
+      "here — stored in plugin data.json. Get one free at " +
+      "aistudio.google.com/apikey. (Advanced: GOOGLE_API_KEY env var " +
+      "also works, but only if Obsidian was launched from a shell that " +
+      "has the variable.)",
+    )
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text
+          .setPlaceholder("AIza...")
+          .setValue(this.plugin.settings.googleApiKey || "")
+          .onChange(async (value) => {
+            this.plugin.settings.googleApiKey = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+            if (googleKeyStatusEl) googleKeyStatusEl.setText("");
+          });
+      })
+      .addButton((btn) =>
+        btn
+          .setButtonText("Test key")
+          .onClick(async () => {
+            btn.setDisabled(true).setButtonText("Testing...");
+            const key =
+              (this.plugin.settings.googleApiKey || "").trim() ||
+              process.env.GOOGLE_API_KEY ||
+              "";
+            const { ok, message } = await testGoogleApiKey(key);
+            btn.setDisabled(false).setButtonText("Test key");
+            if (googleKeyStatusEl) {
+              googleKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
+              googleKeyStatusEl.style.color = ok ? "var(--color-green)" : "var(--color-red)";
+            }
+            new Notice(`Google API key: ${ok ? "OK" : message}`);
+          })
+      )
+      .then((setting) => {
+        googleKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
+        googleKeyStatusEl.style.marginTop = "4px";
       });
 
     this._descToTooltip(
@@ -292,29 +432,150 @@ class GryphonSettingTab extends PluginSettingTab {
 
     this._renderSectionHeading(containerEl, { title: "Defaults" });
 
-    new Setting(containerEl)
-      .setName("Default model")
-      .addDropdown((drop) => {
-        for (const m of MODELS) drop.addOption(m.value, `${m.label} — ${m.desc}`);
-        drop.setValue(this.plugin.settings.model);
-        drop.onChange(async (value) => {
-          this.plugin.settings.model = value;
-          await this.plugin.saveSettings();
-          this.plugin._resetActiveSessions();
-        });
-      });
+    // Per-provider Default model + Default effort. When an adapter is
+    // shipped, dropdowns read its native model list (with effort options
+    // where applicable). When the adapter is still pending (google-api in
+    // v1.2 — Stage 3), show a disabled row with a "pending" hint.
+    // Use the resolved active provider (auto-fallthrough), not the literal
+    // preference — so an Auto user with only an OpenAI key sees OpenAI's
+    // model list here, matching what the chat-view toolbar shows.
+    const { getActiveProviderKind } = require("./providers/factory");
+    const activePref = getActiveProviderKind(this.plugin) ||
+                       this.plugin.settings.providerPreference || "auto";
 
-    new Setting(containerEl)
-      .setName("Default effort")
-      .addDropdown((drop) => {
-        for (const e of EFFORTS) drop.addOption(e.value, `${e.label} — ${e.desc}`);
-        drop.setValue(this.plugin.settings.effort);
-        drop.onChange(async (value) => {
-          this.plugin.settings.effort = value;
-          await this.plugin.saveSettings();
-          this.plugin._resetActiveSessions();
+    if (activePref === "google-api") {
+      // Gemini adapter shipped Stage 3 — render the real Gemini model
+      // dropdown with the same auto-correct pattern as the OpenAI branch:
+      // if the persisted settings.model isn't a Gemini id (e.g. cross-vendor
+      // carryover), persist a sensible Gemini default before display.
+      const {
+        getModelDropdownOptions: getGeminiOptions,
+        resolveModel: resolveGeminiModel,
+        DEFAULT_MODEL: GEMINI_DEFAULT_MODEL,
+      } = require("./providers/google-api/pricing");
+      const geminiModels = getGeminiOptions();
+
+      const isKnown = geminiModels.some((o) => o.id === this.plugin.settings.model);
+      if (!isKnown) {
+        const resolved = resolveGeminiModel(this.plugin.settings.model);
+        const fitsDropdown = geminiModels.some((o) => o.id === resolved);
+        const persistTarget = fitsDropdown ? resolved : GEMINI_DEFAULT_MODEL;
+        if (this.plugin.settings.model !== persistTarget) {
+          this.plugin.settings.model = persistTarget;
+          this.plugin.saveSettings();
+        }
+      }
+
+      new Setting(containerEl)
+        .setName("Default model")
+        .addDropdown((drop) => {
+          for (const m of geminiModels) drop.addOption(m.id, m.label);
+          drop.setValue(this.plugin.settings.model);
+          drop.onChange(async (value) => {
+            this.plugin.settings.model = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
         });
-      });
+
+      new Setting(containerEl)
+        .setName("Default effort")
+        .addDropdown((drop) => {
+          for (const e of EFFORTS) drop.addOption(e.value, `${e.label} — ${e.desc}`);
+          drop.setValue(this.plugin.settings.effort);
+          drop.onChange(async (value) => {
+            this.plugin.settings.effort = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
+        });
+    } else if (activePref === "openai-api") {
+      // OpenAI's reasoning models (o-series) take a `reasoning.effort`
+      // request param but the chat-completions models don't. For v1.2
+      // we surface the same effort dropdown as Anthropic so the panel
+      // header pattern is consistent — the openai-api provider ignores
+      // effort for non-reasoning models. Stage 5 may add per-model
+      // gating if user feedback warrants it.
+      const {
+        getModelDropdownOptions,
+        resolveModel: resolveOpenAIModel,
+        DEFAULT_MODEL: OPENAI_DEFAULT_MODEL,
+      } = require("./providers/openai-api/pricing");
+      const openaiModels = getModelDropdownOptions();
+
+      // Round 18 F23-1 fix: when the persisted settings.model is a non-OpenAI
+      // id (e.g. "sonnet" carried over from prior Anthropic use), three
+      // surfaces would otherwise disagree:
+      //   • this dropdown's visual default (was openaiModels[0] = gpt-4o-mini)
+      //   • the chat-view toolbar's modelButtonText (was hardcoded "gpt-4o")
+      //   • the runtime resolveModel("sonnet") = "gpt-4o" via MODEL_ALIAS
+      // Cost surprise: gpt-4o-mini is $0.15/$0.60 per M tokens, gpt-4o is
+      // $2.50/$10.00 — a ~17× silent gap if the user trusts the Settings UI.
+      // Fix: when the persisted id isn't a known OpenAI dropdown option,
+      // resolve it through pricing.resolveModel, fall back to DEFAULT_MODEL
+      // if even that isn't in the dropdown, and PERSIST the result so all
+      // three surfaces converge to the same id.
+      const isKnown = openaiModels.some((o) => o.id === this.plugin.settings.model);
+      if (!isKnown) {
+        const resolved = resolveOpenAIModel(this.plugin.settings.model);
+        const fitsDropdown = openaiModels.some((o) => o.id === resolved);
+        const persistTarget = fitsDropdown ? resolved : OPENAI_DEFAULT_MODEL;
+        if (this.plugin.settings.model !== persistTarget) {
+          this.plugin.settings.model = persistTarget;
+          // fire-and-forget save during render is safe — saveSettings is
+          // idempotent + the UI re-renders below with the new value.
+          this.plugin.saveSettings();
+        }
+      }
+
+      new Setting(containerEl)
+        .setName("Default model")
+        .addDropdown((drop) => {
+          for (const m of openaiModels) drop.addOption(m.id, m.label);
+          drop.setValue(this.plugin.settings.model);
+          drop.onChange(async (value) => {
+            this.plugin.settings.model = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
+        });
+
+      new Setting(containerEl)
+        .setName("Default effort")
+        .addDropdown((drop) => {
+          for (const e of EFFORTS) drop.addOption(e.value, `${e.label} — ${e.desc}`);
+          drop.setValue(this.plugin.settings.effort);
+          drop.onChange(async (value) => {
+            this.plugin.settings.effort = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
+        });
+    } else {
+      new Setting(containerEl)
+        .setName("Default model")
+        .addDropdown((drop) => {
+          for (const m of MODELS) drop.addOption(m.value, `${m.label} — ${m.desc}`);
+          drop.setValue(this.plugin.settings.model);
+          drop.onChange(async (value) => {
+            this.plugin.settings.model = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
+        });
+
+      new Setting(containerEl)
+        .setName("Default effort")
+        .addDropdown((drop) => {
+          for (const e of EFFORTS) drop.addOption(e.value, `${e.label} — ${e.desc}`);
+          drop.setValue(this.plugin.settings.effort);
+          drop.onChange(async (value) => {
+            this.plugin.settings.effort = value;
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+          });
+        });
+    }
 
     new Setting(containerEl)
       .setName("Default permissions")
@@ -1158,6 +1419,13 @@ class GryphonPlugin extends Plugin {
       }
       if (typeof view.refreshWelcomePanel === "function") {
         view.refreshWelcomePanel();
+      }
+      // Bug #21 fix: provider preference changes need to update the
+      // toolbar's model button in place — switching to openai-api /
+      // google-api should immediately replace the Anthropic model
+      // label with the Stage-N-pending hint.
+      if (typeof view.refreshToolbarLabels === "function") {
+        view.refreshToolbarLabels();
       }
     }
   }

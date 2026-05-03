@@ -155,3 +155,132 @@ test("empty-string sessionId treated as null (not a real CLI session)", () => {
   // currentIsCli false (empty string → null), so LLM persists.
   assert.equal(out.length, 1);
 });
+
+// ── Bug #23 regression: failed-send messages must survive ─────────
+
+test("Bug #23 — failed-send user message tagged sessionId=null survives even when current is a CLI session", () => {
+  // Scenario: user previously ran a Claude Code session (lastSessionId
+  // is a CLI uuid). They switch Provider to openai-api (no key) and
+  // type "hello". The send fails because createProvider returned null.
+  // The chat-view code path explicitly sets sessionId=null on the
+  // user message before saving, so filterMessagesForSave must KEEP it
+  // even though current is a CLI session.
+  const messages = [
+    msg("user", "llm", "hello", null), // failed-send: explicitly cleared sessionId
+  ];
+  const out = filterMessagesForSave(messages, "uuid-cli-stale");
+  assert.equal(out.length, 1, "failed-send user message must persist across save");
+  assert.equal(out[0].text, "hello");
+});
+
+test("Bug #23 — failed-send error bubble (mechanical) survives any session state", () => {
+  // The error bubble emitted by _cleanupStreamingState → finalizeStreamingMessage
+  // has source="mechanical" (default), which was already covered by the
+  // existing filter contract. This test pins that the bubble survives
+  // even when the user message that preceded it was tagged with the
+  // current CLI sessionId (regression-safety: the two messages together
+  // form the recovery context the user needs).
+  const messages = [
+    msg("user", "llm", "hello", null),
+    msg("assistant", "mechanical", "OpenAI API key not set. Paste a key in Settings → Gryphon → OpenAI API key.", "uuid-cli-stale"),
+  ];
+  const out = filterMessagesForSave(messages, "uuid-cli-stale");
+  assert.equal(out.length, 2, "both failed-send messages survive together");
+});
+
+test("Bug #23 — pre-fix scenario: user message with stale CLI sessionId IS dropped (regression marker)", () => {
+  // This test pins the BEHAVIOR THAT EXISTED BEFORE THE FIX — if a
+  // future refactor removes the explicit `lastUserMsg.sessionId = null`
+  // assignment in the failed-send branch of sendMessage, the user
+  // message would inherit lastSessionId, match currentSessionId, and
+  // be dropped. This test makes that breakage detectable: it's the
+  // behavior we're working AROUND, not endorsing. If the chat-view
+  // code path is correct, no message should EVER hit this branch with
+  // matching sessionIds in a failed-send scenario.
+  const messages = [msg("user", "llm", "hello", "uuid-cli-stale")];
+  const out = filterMessagesForSave(messages, "uuid-cli-stale");
+  assert.equal(out.length, 0, "pre-fix behavior: stale-CLI-tagged llm message is dropped (this is what Bug #23's fix routes around in chat-view.js)");
+});
+
+// ---------- Bug #24 fix: SDK session detection across all three providers ----------
+//
+// Before the fix, filterMessagesForSave only recognized the legacy
+// anthropic-api "sdk-" prefix. OpenAI ("openai-sdk-...") and Gemini
+// ("gemini-sdk-...") sessions were misclassified as CLI sessions, so
+// the filter dropped llm messages tagged with the current SDK sessionId
+// — silent user data loss across every Stage 2 / Stage 3 turn whose
+// save happened to fire with a matching lastSessionId.
+
+test("Bug #24 — anthropic-api SDK session: llm messages tagged with current sessionId are KEPT (no CLI re-supply)", () => {
+  const messages = [
+    msg("user", "llm", "what is 2+2?", "sdk-12345"),
+    msg("assistant", "llm", "4", "sdk-12345"),
+  ];
+  const out = filterMessagesForSave(messages, "sdk-12345");
+  assert.equal(out.length, 2, "anthropic-api SDK turns must survive (no CLI jsonl to re-supply)");
+});
+
+test("Bug #24 — openai-api SDK session: llm messages tagged with current sessionId are KEPT", () => {
+  const messages = [
+    msg("user", "llm", "summarize this page", "openai-sdk-1777755129921"),
+    msg("assistant", "llm", "this page describes...", "openai-sdk-1777755129921"),
+  ];
+  const out = filterMessagesForSave(messages, "openai-sdk-1777755129921");
+  assert.equal(out.length, 2,
+    "OpenAI SDK turns must survive — would have been dropped before the #24 fix because the broken legacy " +
+    "startsWith('sdk-') check classified 'openai-sdk-' as CLI");
+});
+
+test("Bug #24 — google-api SDK session: llm messages tagged with current sessionId are KEPT (the user-reported wild bug)", () => {
+  // This is the exact scenario the user reported on 2026-05-02:
+  // "i asked gryphon summized the page before this test. but that
+  // dialogue is missing. it should be right after hello."
+  // The user's "summarize this page" turn was tagged with
+  // gemini-sdk-... matching lastSessionId, and the broken filter
+  // dropped both halves of the turn from chat-history.json.
+  const messages = [
+    msg("user", "llm", "hello", "gemini-sdk-OLD-id"),
+    msg("assistant", "llm", "Hello! How can I help?", "gemini-sdk-OLD-id"),
+    msg("user", "llm", "summarize this page", "gemini-sdk-1777772425263"),
+    msg("assistant", "llm", "The page describes...", "gemini-sdk-1777772425263"),
+  ];
+  // Save fires with currentSessionId matching the latest turn — the wild
+  // bug condition that was eating the user's data.
+  const out = filterMessagesForSave(messages, "gemini-sdk-1777772425263");
+  assert.equal(out.length, 4,
+    "Gemini SDK turns must ALL survive. Before the fix, the latest turn was dropped silently.");
+  assert.match(out[2].text, /summarize/);
+  assert.match(out[3].text, /describes/);
+});
+
+test("Bug #24 — CLI session (UUID): the existing 'drop current CLI session messages' optimization still applies", () => {
+  // This test pins the established behavior that the fix preserves: for
+  // genuine CLI sessions (UUID-shaped sessionIds), llm messages tagged
+  // with the current CLI sessionId still get dropped — Claude Code's
+  // jsonl re-supplies them on resume so we don't need to persist them.
+  const messages = [
+    msg("user", "llm", "hello", "d7f8906d-0bca-4003-b319-292de5a5d4f0"),
+    msg("assistant", "llm", "hi", "d7f8906d-0bca-4003-b319-292de5a5d4f0"),
+  ];
+  const out = filterMessagesForSave(messages, "d7f8906d-0bca-4003-b319-292de5a5d4f0");
+  assert.equal(out.length, 0, "CLI optimization preserved: messages tagged with current CLI session are dropped");
+});
+
+test("Bug #24 — mixed SDK + CLI history: SDK tags survive even when current is CLI", () => {
+  // Realistic scenario: user has prior SDK turns in history, currently
+  // on CLI mode. The current-CLI optimization must NOT touch the SDK
+  // turns (they're not in CLI's jsonl).
+  const messages = [
+    msg("user", "llm", "openai turn", "openai-sdk-aaa"),
+    msg("assistant", "llm", "openai response", "openai-sdk-aaa"),
+    msg("user", "llm", "gemini turn", "gemini-sdk-bbb"),
+    msg("assistant", "llm", "gemini response", "gemini-sdk-bbb"),
+    msg("user", "llm", "current cli", "uuid-current-cli"),
+    msg("assistant", "llm", "cli response", "uuid-current-cli"),
+  ];
+  const out = filterMessagesForSave(messages, "uuid-current-cli");
+  // Only the current-CLI pair (last 2) should be dropped.
+  assert.equal(out.length, 4);
+  assert.match(out[0].text, /openai/);
+  assert.match(out[2].text, /gemini turn/);
+});

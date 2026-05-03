@@ -4,6 +4,35 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.2.0] — 2026-05-02
+
+### Added
+
+- **OpenAI provider** ([#17](https://github.com/polleoai/gryphon/issues/17)): native SDK adapter using `openai@6.35`. Supports the GPT-5 family (gpt-5, gpt-5-mini, gpt-5.4, gpt-5.4-mini, gpt-5.5), GPT-4 family (gpt-4o, gpt-4.1), and o-series reasoning models (o3, o3-mini, o4-mini). Settings → Provider now offers "OpenAI API" alongside Anthropic and Claude Code. Tool dispatch routes through the same `executeTool` registry as Anthropic mode, so attack-detector + permission-gate guardrails fire identically across providers.
+- **Google Gemini provider** ([#18](https://github.com/polleoai/gryphon/issues/18)): native SDK adapter using `@google/genai@1.51`. Supports Gemini 2.5 Pro / 2.5 Flash / 2.5 Flash-Lite (current GA tier) plus 3.x preview models. Same security parity contract as OpenAI mode. Settings → Provider offers "Google Gemini API".
+- **Test key buttons** for OpenAI and Google API keys in Settings — same one-click validation flow that Anthropic already had.
+- **Per-provider model dropdowns:** the chat panel toolbar's model picker and Settings → Default model both adapt to the active provider's native model list.
+- **Cross-vendor aliases:** the Anthropic-style names `haiku` / `sonnet` / `opus` map to sensible counterparts on OpenAI (gpt-5-mini / gpt-5.4-mini / gpt-5.4) and Gemini (gemini-2.5-flash-lite / gemini-2.5-flash / gemini-2.5-pro).
+
+### Fixed
+
+- [#21](https://github.com/polleoai/gryphon/issues/21) / [#22](https://github.com/polleoai/gryphon/issues/22): the model toolbar and Settings → Defaults section showed Anthropic model labels even when Provider was non-Claude. Now provider-aware.
+- [#23](https://github.com/polleoai/gryphon/issues/23): failed-send chat history was lost across plugin disable+enable when the provider was misconfigured. Two-part fix on save sessionId + welcome-panel suppression.
+- [#25](https://github.com/polleoai/gryphon/issues/25): cross-provider Provider switch left a stale model id, causing the toolbar / Settings dropdown to disagree with the runtime API call. Fix: `getActiveProviderKind` helper + `_resetModelForProvider` proactive reset.
+- [#27](https://github.com/polleoai/gryphon/issues/27): cross-vendor model id leak — a stale `settings.model` from a prior provider could reach the new provider's API and 400. Fix: `coerceToVendorModel(alias)` in each provider's pricing.js.
+- [#24](https://github.com/polleoai/gryphon/issues/24): **silent data loss bug.** `filterMessagesForSave`'s SDK-detection check `startsWith("sdk-")` only matched the legacy anthropic-api format. OpenAI's `openai-sdk-` and Gemini's `gemini-sdk-` failed the check, classified as CLI sessions, and got their messages dropped on save. Replaced with a regex recognizing all three SDK prefixes. Reclassified from P3 latent to P0 after a user-reported wild bug confirmed real conversation turns going missing.
+
+### Changed
+
+- Provider dropdown labels now name only the provider (no model names) — model selection lives in its own dropdown.
+- Default model in OpenAI mode: gpt-5.4-mini. In Gemini mode: gemini-2.5-flash.
+- Bundle size: 374.9 KB → 1166.1 KB. The +791 KB delta is the combined weight of `openai` and `@google/genai`. Lazy-require deferral is queued for v1.3 ([#26](https://github.com/polleoai/gryphon/issues/26)).
+
+### Test coverage
+
+- Test count: 562 → 746 (+184).
+- New test files: 6 for OpenAI (translator, pricing, streaming, tool-loop, attack-detector, mock-client stub), 6 for Gemini (same shape), plus filter regression tests covering the #24 wild bug.
+
 ## [1.1.4] — 2026-04-29
 
 ### Fixed
