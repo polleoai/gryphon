@@ -459,3 +459,78 @@ test("every category title starts with the warning glyph", () => {
     assert.match(title, /^⚠ /, `category title should start with ⚠: ${title}`);
   }
 });
+
+// ── cross-CLI tool-name aliases (Stage 5 — HookDispatcher) ─────────────
+//
+// Different CLIs name the same tool differently. Without aliasing,
+// Gemini's `run_shell_command` would slip past the classifier and
+// destructive operations would land at the OS layer unfiltered.
+// User report 2026-05-03: canary file deleted because classify
+// returned null for tool="run_shell_command".
+
+test("classify recognizes Gemini's run_shell_command as Bash", () => {
+  const result = attackDetector.classify(
+    "run_shell_command",
+    { command: "rm -f /tmp/x" },
+    makeCtx(tempVault()),
+  );
+  assert.ok(result, "rm command must classify regardless of which CLI named the tool");
+  assert.equal(result.tool, "Bash");
+  assert.equal(result.category, "destructive-operation");
+});
+
+test("classify recognizes Gemini's write_file as Write", () => {
+  const vault = tempVault();
+  try {
+    const result = attackDetector.classify(
+      "write_file",
+      { file_path: path.join(vault, ".obsidian/plugins/gryphon/data.json") },
+      makeCtx(vault),
+    );
+    assert.ok(result, "write to protected path must classify regardless of CLI name");
+    assert.equal(result.tool, "Write");
+  } finally {
+    cleanup(vault);
+  }
+});
+
+test("classify recognizes Gemini's replace as Edit", () => {
+  const vault = tempVault();
+  try {
+    const result = attackDetector.classify(
+      "replace",
+      { file_path: path.join(vault, ".obsidian/plugins/gryphon/data.json") },
+      makeCtx(vault),
+    );
+    assert.ok(result);
+    assert.equal(result.tool, "Edit");
+  } finally {
+    cleanup(vault);
+  }
+});
+
+test("classify recognizes lowercase shell / bash aliases", () => {
+  for (const alias of ["shell", "bash", "command_execution"]) {
+    const result = attackDetector.classify(
+      alias,
+      { command: "rm -rf /etc" },
+      makeCtx(tempVault()),
+    );
+    assert.ok(result, `alias "${alias}" must normalize to Bash and classify`);
+    assert.equal(result.tool, "Bash");
+  }
+});
+
+test("classify still returns null for genuinely unknown tools", () => {
+  // "TodoWrite" / "Glob" / etc. are read-only or non-mutating;
+  // alias table doesn't cover them. They should still pass through
+  // the classifier unchanged (no false positives).
+  assert.equal(
+    attackDetector.classify("TodoWrite", { todos: [] }, makeCtx(tempVault())),
+    null,
+  );
+  assert.equal(
+    attackDetector.classify("some_future_tool", { foo: "bar" }, makeCtx(tempVault())),
+    null,
+  );
+});

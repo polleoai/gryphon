@@ -65,8 +65,13 @@ test("state 2: auto-deny returns refusal with prescriptive reason (protected)", 
   assert.equal(result.allow, false);
   assert.match(
     result.reason,
-    /protected patterns in Gryphon/,
-    "reason should name Gryphon and the pattern concept",
+    /Gryphon plugin is blocking/,
+    "reason should name Gryphon and identify the deny",
+  );
+  assert.match(
+    result.reason,
+    /protected patterns/,
+    "reason should reference the protected-patterns concept",
   );
   assert.match(
     result.reason,

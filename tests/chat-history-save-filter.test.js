@@ -284,3 +284,50 @@ test("Bug #24 — mixed SDK + CLI history: SDK tags survive even when current is
   assert.match(out[0].text, /openai/);
   assert.match(out[2].text, /gemini turn/);
 });
+
+// ---------- v1.3 codex-cli + gemini-cli: same-shape regression coverage ----------
+//
+// Both CLI providers spawn one-shot per turn and DO NOT re-stream
+// historical messages on `--resume`. The CLI's session storage is
+// server-side context, not a chat-view-replayable transcript — so
+// chat-history.json is the canonical record. Their session IDs MUST
+// match the SDK-prefix regex so filterMessagesForSave preserves the
+// llm messages tagged with the current session (bug-class identical
+// to Bug #24).
+
+test("v1.3 — codex-cli session: llm messages tagged with current sessionId are KEPT", () => {
+  const messages = [
+    msg("user", "llm", "ls", "codex-cli-019dec5c-15da-7370-ad10-46731b3a7820"),
+    msg("assistant", "llm", "files: a, b, c", "codex-cli-019dec5c-15da-7370-ad10-46731b3a7820"),
+  ];
+  const out = filterMessagesForSave(messages, "codex-cli-019dec5c-15da-7370-ad10-46731b3a7820");
+  assert.equal(out.length, 2,
+    "codex-cli is one-shot per turn — chat-history.json is canonical, " +
+    "messages must NOT be filtered. If they were, switching back to " +
+    "Codex CLI mode after a turn would lose the prior turn's text.");
+});
+
+test("v1.3 — gemini-cli session: llm messages tagged with current sessionId are KEPT", () => {
+  const messages = [
+    msg("user", "llm", "summarize", "gemini-cli-550e8400-e29b-41d4-a716-446655440000"),
+    msg("assistant", "llm", "the page says...", "gemini-cli-550e8400-e29b-41d4-a716-446655440000"),
+  ];
+  const out = filterMessagesForSave(messages, "gemini-cli-550e8400-e29b-41d4-a716-446655440000");
+  assert.equal(out.length, 2,
+    "gemini-cli is one-shot per turn — same data-loss risk as the SDK case.");
+});
+
+test("v1.3 — mixed history: CLI providers (codex-cli + gemini-cli) all survive when current is Claude-Code-style CLI", () => {
+  const messages = [
+    msg("user", "llm", "codex turn", "codex-cli-aaa"),
+    msg("assistant", "llm", "codex resp", "codex-cli-aaa"),
+    msg("user", "llm", "gemini cli turn", "gemini-cli-bbb"),
+    msg("assistant", "llm", "gemini cli resp", "gemini-cli-bbb"),
+    msg("user", "llm", "current cc", "uuid-current-cc"),
+    msg("assistant", "llm", "cc resp", "uuid-current-cc"),
+  ];
+  const out = filterMessagesForSave(messages, "uuid-current-cc");
+  assert.equal(out.length, 4, "only the current Claude-Code-style turn is dropped");
+  assert.match(out[0].text, /codex turn/);
+  assert.match(out[2].text, /gemini cli turn/);
+});

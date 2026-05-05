@@ -41,8 +41,26 @@ const OVERALL_DEADLINE_MS = 285_000;
 // fires (nicer error message).
 const IPC_TIMEOUT_MS = 270_000;
 
-/** Build the PermissionDecision payload CC expects. */
+/**
+ * Build the decision payload in the dialect the active CLI expects.
+ *
+ * Claude Code + Codex CLI: `{ hookSpecificOutput: { hookEventName,
+ * permissionDecision, permissionDecisionReason } }`
+ *
+ * Gemini CLI: `{ decision, reason }` (flat shape, no
+ * hookSpecificOutput envelope, different field names). The
+ * dispatcher passes `GRYPHON_HOOK_DIALECT=gemini` in the spawn env
+ * when the active provider is gemini-cli; absent / "claude" /
+ * "codex" all use the Claude-Code-shape output.
+ */
 function buildDecision(decision, reason) {
+  if (process.env.GRYPHON_HOOK_DIALECT === "gemini") {
+    const geminiDecision = decision === "ask" ? "ask_user" : decision;
+    return Object.assign(
+      { decision: geminiDecision },
+      reason ? { reason } : {},
+    );
+  }
   return {
     hookSpecificOutput: Object.assign(
       {

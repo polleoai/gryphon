@@ -24,13 +24,14 @@ const { runGeminiToolLoop } = require("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("./pricing");
 const { testApiKey } = require("./test-key");
 
-const GRYPHON_GEMINI_SYSTEM_PROMPT =
+const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("../shared/system-prompt-hints");
+const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
   "paths and shell commands require approval or are refused. " +
   "· When a tool returns a refusal with a `reason` field, output " +
   "ONLY that reason to the user — no preamble before it (no " +
-  "\"The Gryphon plugin is blocking this\", no \"The Gryphon hook\", " +
+  "\"Tool execution blocked:\", no \"Error:\", no \"The Gryphon hook\", " +
   "no \"You'll need to first\"), and no epilogue after it (no " +
   "\"I can't bypass this\", no \"it's enforced by the Gryphon " +
   "plugin\", no \"once you've done that, I can proceed\"). The " +
@@ -52,6 +53,12 @@ const GRYPHON_GEMINI_SYSTEM_PROMPT =
   "Say plainly that the operation matched one of the user's " +
   "protected patterns, and point them at Settings → Gryphon to " +
   "adjust the list.";
+
+// Append the shared compound-request rule (same rationale as
+// anthropic-api / openai-api — keeps multi-step prompts from
+// silently dropping their unsafe sub-request).
+const GRYPHON_GEMINI_SYSTEM_PROMPT =
+  GRYPHON_GEMINI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 
 class GoogleProvider {
   constructor(apiKey, cwd, options = {}) {
@@ -132,6 +139,18 @@ class GoogleProvider {
     }
     this.pending = true;
 
+    // SDK analog of the CLI tainted-session fix — see openai-api.js
+    // for the full rationale. Gemini's history carries
+    // functionResponse parts (tool results) as content entries; on a
+    // protected deny those carry the canonical Gryphon deny text and
+    // the model echoes them on the next turn without re-attempting
+    // the tool, so the user never sees the modal again. Resetting
+    // history before the new user prompt forces a fresh attempt.
+    if (this._needsHistoryReset) {
+      this.history.length = 0;
+      this._needsHistoryReset = false;
+    }
+
     const historyCheckpoint = this.history.length;
     // Gemini user turn: { role: "user", parts: [{ text }] }.
     this.history.push({ role: "user", parts: [{ text: prompt }] });
@@ -170,6 +189,31 @@ class GoogleProvider {
 
       this.activeStream = null;
       this.pending = false;
+
+      // Post-turn taint check. Gemini stores tool results as
+      // functionResponse parts inside content entries — typically on
+      // user-role messages or the dedicated "function" role
+      // depending on SDK version. We scan all parts in the new
+      // history slice for the canonical deny text in any
+      // functionResponse.response payload.
+      const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
+      const turnSlice = this.history.slice(historyCheckpoint);
+      const hadProtectedDeny = turnSlice.some((m) => {
+        if (!m || !Array.isArray(m.parts)) return false;
+        return m.parts.some((p) => {
+          if (!p || !p.functionResponse) return false;
+          const resp = p.functionResponse.response;
+          if (typeof resp === "string") return resp.includes(_GRYPHON_DENY_MARKER);
+          if (resp && typeof resp === "object") {
+            const json = JSON.stringify(resp);
+            return json.includes(_GRYPHON_DENY_MARKER);
+          }
+          return false;
+        });
+      });
+      if (hadProtectedDeny) {
+        this._needsHistoryReset = true;
+      }
 
       const { cost: turnCost } = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;

@@ -41,6 +41,8 @@ const { ClaudeCodeProvider } = require("./claude-code/claude-code");
 const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
 const { OpenAIProvider } = require("./openai-api/openai-api");
 const { GoogleProvider } = require("./google-api/google-api");
+const { CodexProvider } = require("./codex-cli/codex-cli");
+const { GeminiCliProvider } = require("./gemini-cli/gemini-cli");
 const { DEFAULT_PROVIDER_PREFERENCE } = require("../constants");
 
 /**
@@ -63,6 +65,8 @@ function createProvider(plugin, cwd, options = {}) {
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
   const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
+  const codexPath = settings.codexPath || _detectCodexBinary();
+  const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
 
   // claude-code provider receives `plugin` too, so it can read the
   // active protected-path / protected-command settings and translate
@@ -89,9 +93,28 @@ function createProvider(plugin, cwd, options = {}) {
     return new GoogleProvider(googleKey, cwd, { ...options, plugin });
   }
 
+  // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled
+  // by the CLI itself (`codex login`); we don't need an API key from
+  // settings. The binary must exist (settings override or autodetect).
+  if (preference === "codex-cli") {
+    if (!codexPath) return null;
+    return new CodexProvider(codexPath, cwd, { ...options, plugin });
+  }
+
+  // gemini-cli (v1.3): the Google Gemini CLI subprocess. Auth via
+  // settings.googleApiKey forwarded as GEMINI_API_KEY env. Binary must
+  // exist; key may also live in env (CLI handles that case itself).
+  if (preference === "gemini-cli") {
+    if (!geminiPath) return null;
+    return new GeminiCliProvider(geminiPath, cwd, { ...options, plugin });
+  }
+
   // auto: claude-code wins if available (subscription path is no extra
   // cost per prompt and has the full hook surface). Then any HTTP-API
-  // key in the order: anthropic → openai → google.
+  // key in the order: anthropic → openai → google. The CLI fallthroughs
+  // (codex-cli / gemini-cli) are NOT in the auto rotation — they have
+  // their own sandbox/approval UX that surprises users who didn't
+  // explicitly opt in. Selecting them must be intentional.
   if (claudePath) return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
   if (apiKey)     return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
   if (openaiKey)  return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
@@ -114,6 +137,8 @@ function explainUnavailable(plugin) {
   const hasKey = !!(settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
   const hasOpenAiKey = !!(settings.openaiApiKey || process.env.OPENAI_API_KEY);
   const hasGoogleKey = !!(settings.googleApiKey || process.env.GOOGLE_API_KEY);
+  const hasCodexCli = !!(settings.codexPath || _detectCodexBinary());
+  const hasGeminiCli = !!(settings.geminiCliPath || _detectGeminiBinary());
 
   if (preference === "claude-code" && !hasCli) {
     return _cliNotFoundMessage();
@@ -140,6 +165,30 @@ function explainUnavailable(plugin) {
     }
     // Stage 3 shipped — defensive fallback for construction failure.
     return "Google provider failed to initialize. Check your API key.";
+  }
+  if (preference === "codex-cli") {
+    if (!hasCodexCli) {
+      return (
+        "No local `codex` CLI found. Install Codex from " +
+        "https://chatgpt.com/codex (macOS app installs the CLI at " +
+        "/Applications/Codex.app/Contents/Resources/codex), or set " +
+        "the full path in Settings → Gryphon → Codex CLI path. After " +
+        "installing, run `codex login` in a terminal once. Or switch " +
+        "Provider to OpenAI API and supply an API key."
+      );
+    }
+    return "Codex CLI failed to initialize. Verify the binary path in Settings.";
+  }
+  if (preference === "gemini-cli") {
+    if (!hasGeminiCli) {
+      return (
+        "No local `gemini` CLI found. Install via `npm install -g " +
+        "@google/gemini-cli` (or your preferred package manager), or " +
+        "set the full path in Settings → Gryphon → Gemini CLI path. " +
+        "Or switch Provider to Google Gemini API and supply an API key."
+      );
+    }
+    return "Gemini CLI failed to initialize. Verify the binary path in Settings.";
   }
 
   // auto-fallthrough with NO key/CLI at all. All three SDK adapters now
@@ -202,6 +251,19 @@ function _detectClaudeBinary() {
   return _findClaudeBinary();
 }
 
+// Look these up fresh on every call rather than caching the function
+// reference at module scope — node's `require` itself caches the
+// module, and the freshness lets tests patch `utils.findCodexBinary`
+// at runtime without also having to invalidate a private factory
+// cache. The lookup cost is one property access on a cached module.
+function _detectCodexBinary() {
+  return require("../utils").findCodexBinary();
+}
+
+function _detectGeminiBinary() {
+  return require("../utils").findGeminiBinary();
+}
+
 /**
  * Inspect what's available right now, regardless of the user's selected
  * preference. Used by the welcome panel to render adaptive guidance:
@@ -256,11 +318,16 @@ function detectAvailable(plugin) {
     googleKeySource = "env";
   }
 
+  const codexPath = settings.codexPath || _detectCodexBinary() || null;
+  const geminiCliPath = settings.geminiCliPath || _detectGeminiBinary() || null;
+
   return {
     cliPath,
     apiKey, apiKeySource,
     openaiKey, openaiKeySource,
     googleKey, googleKeySource,
+    codexPath,
+    geminiCliPath,
   };
 }
 
@@ -284,13 +351,18 @@ function getActiveProviderKind(plugin) {
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
   const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
+  const codexPath = settings.codexPath || _detectCodexBinary();
+  const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
 
-  if (preference === "claude-code")   return claudePath ? "claude-code"   : null;
-  if (preference === "anthropic-api") return apiKey     ? "anthropic-api" : null;
-  if (preference === "openai-api")    return openaiKey  ? "openai-api"    : null;
-  if (preference === "google-api")    return googleKey  ? "google-api"    : null;
+  if (preference === "claude-code")   return claudePath  ? "claude-code"   : null;
+  if (preference === "anthropic-api") return apiKey      ? "anthropic-api" : null;
+  if (preference === "openai-api")    return openaiKey   ? "openai-api"    : null;
+  if (preference === "google-api")    return googleKey   ? "google-api"    : null;
+  if (preference === "codex-cli")     return codexPath   ? "codex-cli"     : null;
+  if (preference === "gemini-cli")    return geminiPath  ? "gemini-cli"    : null;
 
-  // auto: same priority as createProvider's auto-fallthrough.
+  // auto: same priority as createProvider's auto-fallthrough — CLI
+  // fallthroughs are NOT in this list (see createProvider for rationale).
   if (claudePath) return "claude-code";
   if (apiKey)     return "anthropic-api";
   if (openaiKey)  return "openai-api";

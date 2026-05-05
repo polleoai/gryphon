@@ -239,8 +239,28 @@
   background: transparent;
   padding: 2px 0 6px 0;
   width: 100%;
-  border-bottom: 1px solid var(--background-modifier-border-hover);
+  /* No bottom border — earlier rule (`border-bottom: 1px solid`) drew
+     a visible horizontal line below each Claude bubble that read as a
+     separator above the next message's content. User report
+     2026-05-04: "all the claude has a solid line before the summary
+     and the deny message. can we remove that solid line?" — the line
+     was decorative, not semantic; conversation flow is already clear
+     from bubble alignment + the user prompt's `>` prefix. */
   margin-bottom: 4px;
+}
+
+/* Suppress `<hr>` elements inside assistant bubbles. Claude (full-tier
+   models on both Anthropic API and Claude Code CLI) often emits `---`
+   between sections of its response — markdown renders that as a
+   horizontal rule, which the user reads as a visible solid line
+   between the summary and the canonical deny block. Other providers
+   (Codex, Gemini) don't use `---` separators as often, so the line
+   appears specifically on Claude responses. The line carries no
+   semantic information here — section breaks within a chat reply are
+   already conveyed by paragraph spacing. User report 2026-05-04
+   ("both claude cli and claude api still have the solid line"). */
+.gryphon-bubble-assistant .gryphon-text hr {
+  display: none;
 }
 
 .gryphon-bubble-assistant .gryphon-text {

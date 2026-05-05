@@ -17,6 +17,7 @@
  */
 
 const { Modal, Setting } = require("obsidian");
+const { buildDenyReason } = require("../../shared/deny-copy");
 
 // Per-session cache: filePath → "always" | "deny-always".
 // Lives on the plugin instance so it survives across tool calls within
@@ -88,19 +89,13 @@ async function checkPermission({
   // prescriptive so the model relays something useful to the user
   // instead of improvising "the path might not exist" speculation.
   if (isProtected && autoDenyProtected) {
-    const settingsPath = kind === "protected-exec"
-      ? "Protected commands"
-      : "Protected file paths";
-    const reason =
-      `This operation matches one of your protected patterns in Gryphon.` +
-      `\n\nTo allow it:\n` +
-      `- Open Obsidian → Settings → Gryphon → ${settingsPath}\n` +
-      `- Uncheck the matching pattern\n` +
-      `- Ask me again`;
-    // Direct chat-view render retired in v0.9.2 — the per-turn
-    // reminder injection reliably produces a verbatim model echo,
-    // making the dual render redundant. See plugin.js notes for
-    // the re-enable path if drift returns.
+    // Single source of truth for the deny copy lives in
+    // providers/shared/deny-copy.js. The auto-deny path doesn't
+    // have a classification.category here (the gate is being
+    // called outside the classifier's structured output), so
+    // category is null — the canonical text omits the
+    // parenthetical category in that case.
+    const reason = buildDenyReason({ action, target, category, kind });
     return { allow: false, reason };
   }
   if (isProtected) {
@@ -117,14 +112,25 @@ async function checkPermission({
   }
 
   // mode === "default" OR protected kind → prompt user.
-  // The session cache is opt-in per call: file edits cache by target so
-  // the user isn't re-prompted on the same file, but bash commands MUST
-  // NOT cache (each command is its own decision; caching `rm -rf` once
-  // would auto-allow it forever). Protected kinds also skip the cache —
-  // every attempt to modify Gryphon config / run a dangerous command
-  // should surface the warning every time.
-  const effectiveCacheable = cacheable && !isProtected;
-  const cache = effectiveCacheable ? _ensureSessionCache(ctx.plugin) : null;
+  //
+  // Cache policy:
+  //   - Non-protected: opt-in per call. File edits cache by target so
+  //     the user isn't re-prompted on the same file; bash commands
+  //     don't cache (each command is its own decision; caching
+  //     `rm -rf` once would auto-allow it forever).
+  //
+  //   - Protected: NEVER cache, in either direction. Allow doesn't
+  //     cache (security — re-confirm every "yes" on a sensitive op).
+  //     Deny doesn't cache either: the user must always be the one to
+  //     refuse a destructive op explicitly, every single attempt. An
+  //     auto-deny from cache is itself a silent decision, and silent
+  //     decisions on protected ops are exactly what Gryphon exists to
+  //     prevent. Reverted user report 2026-05-03 (orig request was
+  //     "stop popping the modal on retries"; trade-off rejected
+  //     same evening — explicit > convenient).
+  //
+  // Read the cache only for non-protected ops.
+  const cache = cacheable && !isProtected ? _ensureSessionCache(ctx.plugin) : null;
   if (cache && cache.has(target)) {
     const cached = cache.get(target);
     if (cached === "always") return { allow: true, reason: "" };
@@ -150,14 +156,26 @@ async function checkPermission({
     action,
     target,
     detail,
-    showRememberToggle: effectiveCacheable,
+    // Show the "remember" toggle only when the cache will actually
+    // honor a user-driven remember decision: non-protected ops that
+    // opted in via cacheable=true. Protected ops manage their own
+    // cache policy (auto-cache deny, never cache allow) — see the
+    // cache-write block below — so the toggle wouldn't change
+    // behavior and would just confuse the user.
+    showRememberToggle: cacheable && !isProtected,
     warning,
     isProtected,
     category,
     categoryTitle,
+    assistantName: _getAssistantName(ctx),
   });
 
-  if (decision.remember && cache) {
+  // Cache policy on write (mirror of read above):
+  //   - Non-protected + user checked "remember": cache decision.allow.
+  //   - Protected: NEVER cache, either direction. Every attempt at a
+  //     destructive op must show the modal so the user is the explicit
+  //     decision-maker each time. `cache` is null in that case.
+  if (cache && decision.remember) {
     cache.set(target, decision.allow ? "always" : "deny-always");
   }
 
@@ -173,18 +191,10 @@ async function checkPermission({
   // to point at, so the prescriptive recipe wouldn't apply.
   let refusalReason;
   if (isProtected) {
-    const categoryLabel = category
-      ? ` (${category.replace(/-/g, " ")})`
-      : "";
-    const settingsPath = kind === "protected-exec"
-      ? "Protected commands"
-      : "Protected file paths";
-    refusalReason =
-      `This operation matches one of your protected patterns in Gryphon` +
-      `${categoryLabel}.\n\nTo allow it:\n` +
-      `- Open Obsidian → Settings → Gryphon → ${settingsPath}\n` +
-      `- Uncheck the matching pattern\n` +
-      `- Ask me again`;
+    // Single source of truth — see deny-copy.js. Modal-deny path
+    // has the full classification context (category, kind) so the
+    // descriptive form renders with all fields populated.
+    refusalReason = buildDenyReason({ action, target, category, kind });
   } else {
     refusalReason = `User denied ${action} on ${target}.`;
   }
@@ -214,6 +224,26 @@ function _clip(text, max) {
   return text.slice(0, max) + `\n\n[truncated — ${elided} additional chars hidden; see full tool-use block in the chat log]`;
 }
 
+/**
+ * Resolve a human-friendly label for the active assistant so modal
+ * copy says "Codex is asking" / "Gemini is asking" / "Claude is
+ * asking" rather than hardcoding "Claude" everywhere. Pulled from
+ * the active provider kind via factory.getActiveProviderKind so the
+ * label matches what the user actually sees in the toolbar.
+ */
+function _getAssistantName(ctx) {
+  try {
+    const { getActiveProviderKind } = require("../../factory");
+    const kind = getActiveProviderKind(ctx && ctx.plugin);
+    if (kind === "openai-api" || kind === "codex-cli") return "Codex";
+    if (kind === "google-api" || kind === "gemini-cli") return "Gemini";
+    // claude-code, anthropic-api, and the null fallback all → "Claude"
+    return "Claude";
+  } catch (_) {
+    return "Claude";
+  }
+}
+
 function _showPermissionModal({
   app,
   action,
@@ -224,6 +254,7 @@ function _showPermissionModal({
   isProtected = false,
   category = null,
   categoryTitle = null,
+  assistantName = "Claude",
 }) {
   return new Promise((resolve) => {
     const modal = new Modal(app);
@@ -257,7 +288,7 @@ function _showPermissionModal({
 
       modal.contentEl.createEl("p", {
         cls: "gryphon-permission-summary",
-        text: `Claude is asking to ${action} ${safeTarget}.`,
+        text: `${assistantName} is asking to ${action} ${safeTarget}.`,
       });
 
       // Explicit consequence line — tells the user exactly what each
@@ -265,14 +296,14 @@ function _showPermissionModal({
       modal.contentEl.createEl("p", {
         cls: "gryphon-permission-consequence",
         text:
-          `If you click Approve, Claude will go ahead with this operation. ` +
-          `If you click Deny, Gryphon blocks it and tells Claude it was refused. ` +
+          `If you click Approve, ${assistantName} will go ahead with this operation. ` +
+          `If you click Deny, Gryphon blocks it and tells ${assistantName} it was refused. ` +
           `When in doubt, Deny.`,
       });
     } else {
       // Unprotected ordinary confirmation — inline form, no banner.
       modal.contentEl.createEl("p", {
-        text: `Claude wants to ${action} ${safeTarget}. Allow?`,
+        text: `${assistantName} wants to ${action} ${safeTarget}. Allow?`,
         cls: "gryphon-permission-summary",
       });
     }

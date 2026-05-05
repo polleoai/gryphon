@@ -21,11 +21,15 @@ const { execFileSync } = require("child_process");
 // null be a valid cached answer (= known not found).
 let _claudeBinaryCache;
 let _nodeBinaryCache;
+let _codexBinaryCache;
+let _geminiBinaryCache;
 let _flatpakCache;
 
 function clearBinaryDiscoveryCache() {
   _claudeBinaryCache = undefined;
   _nodeBinaryCache = undefined;
+  _codexBinaryCache = undefined;
+  _geminiBinaryCache = undefined;
   _flatpakCache = undefined;
 }
 
@@ -208,6 +212,106 @@ function _findViaLoginShell(binName) {
   }
 }
 
+/**
+ * Locate the OpenAI Codex CLI. Same search pattern as findClaudeBinary,
+ * with one extra macOS-specific candidate: the Codex.app bundle ships
+ * the binary at /Applications/Codex.app/Contents/Resources/codex, which
+ * isn't on PATH unless the user explicitly symlinks it.
+ *
+ * Returns absolute path or null. Cached.
+ */
+function findCodexBinary() {
+  if (_codexBinaryCache !== undefined) return _codexBinaryCache;
+  _codexBinaryCache = _findCodexBinaryUncached();
+  return _codexBinaryCache;
+}
+
+function _findCodexBinaryUncached() {
+  const home = os.homedir();
+  const isWindows = process.platform === "win32";
+  const candidates = [
+    // User-level installs (npm-global, volta, bun, etc.)
+    path.join(home, ".local", "bin", "codex"),
+    path.join(home, ".npm-global", "bin", "codex"),
+    path.join(home, ".volta", "bin", "codex"),
+    path.join(home, ".bun", "bin", "codex"),
+    path.join(home, "node_modules", ".bin", "codex"),
+    // macOS app bundle — primary install path on Mac. Codex.app
+    // ships the CLI at this location and the user often hasn't
+    // symlinked it onto PATH.
+    "/Applications/Codex.app/Contents/Resources/codex",
+    // System-level installs:
+    "/opt/homebrew/bin/codex",
+    "/usr/local/bin/codex",
+    "/usr/bin/codex",
+    "/snap/bin/codex",
+    // Windows common install locations:
+    path.join(process.env.APPDATA || "", "npm", "codex.cmd"),
+    path.join(process.env.APPDATA || "", "npm", "codex.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "codex", "codex.exe"),
+    "C:\\Program Files\\nodejs\\codex.cmd",
+    "C:\\Program Files\\nodejs\\codex.exe",
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+  }
+  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const c = path.join(dir, "codex" + ext);
+      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+    }
+  }
+  if (isWindows || detectFlatpakSandbox().isFlatpak) return null;
+  return _findViaLoginShell("codex");
+}
+
+/**
+ * Locate the Google Gemini CLI. Search pattern matches findClaudeBinary.
+ * Returns absolute path or null. Cached.
+ */
+function findGeminiBinary() {
+  if (_geminiBinaryCache !== undefined) return _geminiBinaryCache;
+  _geminiBinaryCache = _findGeminiBinaryUncached();
+  return _geminiBinaryCache;
+}
+
+function _findGeminiBinaryUncached() {
+  const home = os.homedir();
+  const isWindows = process.platform === "win32";
+  const candidates = [
+    path.join(home, ".local", "bin", "gemini"),
+    path.join(home, ".npm-global", "bin", "gemini"),
+    path.join(home, ".volta", "bin", "gemini"),
+    path.join(home, ".bun", "bin", "gemini"),
+    path.join(home, "node_modules", ".bin", "gemini"),
+    "/opt/homebrew/bin/gemini",
+    "/usr/local/bin/gemini",
+    "/usr/bin/gemini",
+    "/snap/bin/gemini",
+    path.join(process.env.APPDATA || "", "npm", "gemini.cmd"),
+    path.join(process.env.APPDATA || "", "npm", "gemini.exe"),
+    "C:\\Program Files\\nodejs\\gemini.cmd",
+    "C:\\Program Files\\nodejs\\gemini.exe",
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+  }
+  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const c = path.join(dir, "gemini" + ext);
+      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+    }
+  }
+  if (isWindows || detectFlatpakSandbox().isFlatpak) return null;
+  return _findViaLoginShell("gemini");
+}
+
 function buildEnhancedPath() {
   const home = os.homedir();
   return [
@@ -271,6 +375,8 @@ function displayPath(p) {
 
 module.exports = {
   findClaudeBinary,
+  findCodexBinary,
+  findGeminiBinary,
   findNodeBinary,
   buildEnhancedPath,
   detectFlatpakSandbox,

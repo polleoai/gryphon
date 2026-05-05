@@ -145,6 +145,17 @@ class AnthropicAPIProvider {
       this.abort();
     }
     this.pending = true;
+    // SDK analog of the CLI tainted-session fix: if the LAST turn ended
+    // with a Gryphon protected deny, the model echoes the canonical
+    // deny copy on the next turn without re-attempting the tool. Reset
+    // history before the new user prompt so each retry shows the modal.
+    // See openai-api.js for the full rationale. Chat-view UI bubbles
+    // are unaffected; only the model's working memory is wiped.
+    if (this._needsHistoryReset) {
+      this.history.length = 0;
+      this._needsHistoryReset = false;
+    }
+
     // Snapshot the history length so we can roll back on error to the
     // state before this turn started — including any tool_use loop turns
     // the failure left half-applied.
@@ -185,6 +196,31 @@ class AnthropicAPIProvider {
 
       this.activeStream = null;
       this.pending = false;
+
+      // Post-turn taint check. Anthropic's tool_result blocks live
+      // inside user-role messages as content array entries (not as
+      // a separate role like OpenAI's "tool"). Walk the new slice
+      // and look for the canonical Gryphon deny marker in any
+      // tool_result block.
+      const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
+      const turnSlice = this.history.slice(historyCheckpoint);
+      const hadProtectedDeny = turnSlice.some((m) => {
+        if (!m || m.role !== "user" || !Array.isArray(m.content)) return false;
+        return m.content.some((blk) => {
+          if (!blk || blk.type !== "tool_result") return false;
+          const c = blk.content;
+          if (typeof c === "string") return c.includes(_GRYPHON_DENY_MARKER);
+          if (Array.isArray(c)) {
+            return c.some((sub) =>
+              sub && typeof sub.text === "string" && sub.text.includes(_GRYPHON_DENY_MARKER)
+            );
+          }
+          return false;
+        });
+      });
+      if (hadProtectedDeny) {
+        this._needsHistoryReset = true;
+      }
 
       const turnCost = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;

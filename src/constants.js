@@ -790,6 +790,17 @@ const DEFAULT_SETTINGS = {
   // plugin data.json. The factory also accepts GOOGLE_API_KEY in
   // process.env. Same macOS GUI-launch caveat applies.
   googleApiKey: "",
+  // OpenAI Codex CLI absolute path (v1.3 — codex-cli mode). Empty
+  // string defers to autodetect via utils.findCodexBinary, which checks
+  // /Applications/Codex.app/Contents/Resources/codex (macOS) first
+  // then common bin paths and PATH. Set explicitly when the binary
+  // lives somewhere non-standard (Flatpak Obsidian, custom prefix).
+  codexPath: "",
+  // Google Gemini CLI absolute path (v1.3 — gemini-cli mode). Empty
+  // string defers to autodetect via utils.findGeminiBinary. Auth is
+  // sourced from googleApiKey above (forwarded as GEMINI_API_KEY env)
+  // — no separate field required.
+  geminiCliPath: "",
   // Brave Search API key for SDK-mode WebSearch. Free tier: 2000
   // queries/month at https://brave.com/search/api/. Empty string means
   // WebSearch returns an instructive error telling the user how to set it.
@@ -980,6 +991,8 @@ const PROVIDER_PREFS = [
   { value: "claude-code",   label: "Claude Code (advanced)",      desc: "Spawns a local `claude` subprocess — confirm your usage complies with that product's terms" },
   { value: "openai-api",    label: "OpenAI API",                  desc: "Uses your OpenAI API key" },
   { value: "google-api",    label: "Google Gemini API",           desc: "Uses your Google AI Studio key" },
+  { value: "codex-cli",     label: "Codex CLI (advanced)",        desc: "Spawns the OpenAI Codex CLI — uses its own auth (run `codex login` once); subject to that product's terms" },
+  { value: "gemini-cli",    label: "Gemini CLI (advanced)",       desc: "Spawns the Google Gemini CLI — auth via your Google API key" },
   { value: "auto",          label: "Auto",                        desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
 

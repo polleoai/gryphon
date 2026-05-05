@@ -55,16 +55,304 @@ const {
  * @param {string|null} currentSessionId — value of plugin.settings.lastSessionId
  * @returns {Array<object>}
  */
-// SDK provider session prefixes. The CLI optimization in
-// filterMessagesForSave drops llm messages tagged with the current CLI
-// session (because Claude Code's jsonl re-supplies them on resume) — but
-// SDK sessions have no such re-supply, so dropping them is data loss.
-// We detect SDK sessions by their synthetic prefix:
-//   - "sdk-..."          → anthropic-api (legacy; emit pre-Stage-2)
-//   - "openai-sdk-..."   → openai-api    (Stage 2)
-//   - "gemini-sdk-..."   → google-api    (Stage 3)
-// Anything else (typically a UUID) is treated as a CLI session.
-const _SDK_SESSION_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk)-/;
+// Provider session prefixes that indicate "the chat-view's saved
+// messages are the canonical record." The CLI optimization in
+// filterMessagesForSave drops llm messages tagged with the current
+// session because Claude Code's stream-json re-supplies the history on
+// --resume — but providers that DON'T do that re-supply rely on
+// chat-history.json as the only message store, so dropping is data loss.
+//
+// Tagged via synthetic prefix:
+//   - "sdk-..."          → anthropic-api SDK (legacy)
+//   - "openai-sdk-..."   → openai-api SDK
+//   - "gemini-sdk-..."   → google-api SDK
+//   - "codex-cli-..."    → codex-cli   (one-shot CLI; no resume re-supply)
+//   - "gemini-cli-..."   → gemini-cli  (one-shot CLI; no resume re-supply)
+//
+// Anything else (typically a UUID) is treated as a Claude-Code-style CLI
+// session whose history will be re-supplied on resume.
+const _SDK_SESSION_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli|gemini-cli)-/;
+
+/**
+ * Insert a paragraph break before any canonical Gryphon-emitted block
+ * that lands on the same line as the model's prior text. The model
+ * commonly emits a narration sentence ("I will now attempt to remove
+ * the file."), then a tool call, then echoes our canonical deny copy
+ * back to the user — and depending on how each provider's tool loop
+ * accumulates text (`+=`), the two segments smush together with no
+ * separator: `"...remove the file.This operation matches..."`.
+ *
+ * This normalizer runs once per "replace" stream event, so every
+ * provider (CLI: claude-code / codex-cli / gemini-cli; SDK:
+ * anthropic-api / openai-api / google-api) gets the same treatment in
+ * one place. The patterns matched are STABLE Gryphon-emitted strings
+ * (canonical deny copy and refusal preambles) — not arbitrary user
+ * content. We only inject a break when:
+ *   - the marker isn't at the start of the text, AND
+ *   - the character immediately before the marker isn't whitespace.
+ * That guarantees idempotence and avoids mangling cases where the
+ * upstream accumulator already inserted a separator correctly.
+ */
+const _CANONICAL_BLOCK_MARKERS = [
+  // Current canonical opening (2026-05-04). See providers/shared/deny-copy.js.
+  "The Gryphon plugin is blocking the ",
+  // Legacy canonical opening — still recognised so persisted history
+  // from earlier builds still gets paragraph-separated correctly when
+  // re-rendered. New emissions never produce this prefix.
+  "This operation matches one of your protected patterns in Gryphon",
+  "You declined ",
+  "User declined ",
+  "User previously denied ",
+];
+
+/**
+ * Forbidden preambles that have been observed directly preceding a
+ * canonical Gryphon deny marker. The model is supposed to quote the
+ * deny reason verbatim with NOTHING before it; in practice some
+ * models add a wrapper like "Tool execution blocked: " or "Error: "
+ * relayed from the underlying CLI's tool-error envelope. Strip these
+ * when they appear immediately before a canonical marker (on the
+ * same line, no other content between).
+ *
+ * Add to this list when a new variant surfaces in the wild. Keep
+ * entries SPECIFIC (full phrase + trailing colon-space) so we don't
+ * accidentally strip legitimate prose that happens to contain one
+ * of these words.
+ */
+const _FORBIDDEN_PREAMBLES_BEFORE_MARKER = [
+  "Tool execution blocked: ",                          // Gemini CLI tool-error envelope
+  "Error: ",                                           // Gemini SDK older shape, generic relay
+  // NOTE: "The Gryphon plugin is blocking this..." used to be
+  // forbidden; as of 2026-05-04 the canonical opening IS
+  // "The Gryphon plugin is blocking the {description}..." so we no
+  // longer strip that prefix. The strip-list now only covers
+  // wrappers added BY THE CLI/SDK (tool-error envelopes) ahead of
+  // the canonical, not paraphrases that overlap with the canonical.
+];
+
+/**
+ * Collapse consecutive identical paragraphs in streamed assistant
+ * text. Sometimes a model (notably Gemini-2.5 via the CLI on macOS)
+ * emits the same paragraph twice in a row before a tool call —
+ * either via the SDK delivering both a delta and a non-delta event
+ * with the same content, or via the model genuinely regenerating
+ * its first paragraph. The result in chat is two indistinguishable
+ * paragraphs back-to-back. This dedupes them at the rendering
+ * boundary so it can't leak to the bubble regardless of which
+ * provider produces it.
+ *
+ * Conservative: only collapses paragraphs that are byte-for-byte
+ * identical AND non-trivial (≥40 chars, so common short headings
+ * or list items aren't merged accidentally). Multi-paragraph
+ * sequences with different content pass through unchanged.
+ */
+function _dedupeConsecutiveParagraphs(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+
+  // Normalize line endings up front. Gemini CLI on Windows can emit
+  // `\r\n` in its stream-json output; without this normalization the
+  // `\n`-only regexes below treat `\r` as a non-newline character
+  // and the duplicate-collapse misses entirely. User report
+  // 2026-05-04 (Windows Gemini CLI 2.5 flash, after the inline-newline
+  // fix shipped — the test on a `\n`-normalized fixture passed but
+  // the VM still showed duplicates because its source had `\r\n`).
+  let dedup = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+
+  // First pass: collapse adjacent identical LONG runs separated by
+  // ZERO OR MORE whitespace characters. Three shapes observed in the
+  // wild from various provider accumulators (counterfeit-newline
+  // approximations of paragraph breaks):
+  //   - "S1.\nS1." — single newline (most common)
+  //   - "S1.\n\nS1." — paragraph break
+  //   - "S1.S1." — NO separator at all (Gemini CLI 2.5 flash on
+  //     Windows occasionally streams this — period directly butts
+  //     against the next sentence). User report 2026-05-04.
+  // The 40-char minimum keeps this from over-collapsing legitimate
+  // short repetitions ("Yes\nYes", list bullets, headings). Loop
+  // until stable so 3+ in-a-row collapses fully — each pass
+  // removes one duplicate at a time.
+  let previous;
+  do {
+    previous = dedup;
+    dedup = dedup.replace(
+      /([^\n]{40,})\s*\1(?=\s|[.!?,]|$)/g,
+      "$1",
+    );
+  } while (dedup !== previous);
+
+  // Second pass: paragraph-level dedupe with a permissive splitter
+  // that tolerates whitespace-only "blank" lines (a `\n \n` shape
+  // we've seen in the wild from line-by-line accumulators that
+  // emit single-space buffer flushes between paragraphs).
+  const paragraphs = dedup.split(/\n[ \t]*\n+/);
+  if (paragraphs.length < 2) return dedup;
+  const out = [];
+  for (const p of paragraphs) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && prev === p && p.length >= 40) continue;
+    out.push(p);
+  }
+  return out.join("\n\n");
+}
+
+/**
+ * Collapse "draft" summaries into a <details> disclosure when the
+ * model regenerates its answer on a refused turn. Pattern observed on
+ * Gemini 2.5 (CLI + flash-lite especially): the model emits one
+ * summary, calls a tool, the tool gets refused, and on its next pass
+ * it emits ANOTHER refined summary covering the same topic before
+ * quoting the deny copy. Result is two summary paragraphs of similar
+ * content + the canonical deny — visually noisy.
+ *
+ * This routine identifies "draft groups" — consecutive paragraphs
+ * BEFORE the canonical deny block that share enough vocabulary to be
+ * the same answer iterated — and wraps the earlier ones in a
+ * collapsed `<details>` element. The latest version stays the
+ * primary visible content. Same UX pattern Claude Code's thinking
+ * blocks use: secondary content present but click-to-expand.
+ *
+ * Safety nets:
+ *   1. Only fires when a canonical deny marker is in the text.
+ *      Without a refusal, multi-paragraph responses are legitimate
+ *      content — never collapse normal answers.
+ *   2. Both paragraphs must be ≥80 chars (real summaries, not
+ *      fragments / headings / bullets).
+ *   3. Jaccard similarity on word-stems ≥0.5 — high enough to require
+ *      genuine topic overlap, not coincidental keyword reuse.
+ */
+function _wordSetForSimilarity(text) {
+  // Lowercased, length-filtered word set. 4-char minimum keeps
+  // common short words (the, and, of, to) out of the comparison.
+  const matches = text.toLowerCase().match(/\b[a-z]{4,}\b/g);
+  return matches ? new Set(matches) : new Set();
+}
+
+function _jaccardSimilarity(a, b) {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  for (const w of a) if (b.has(w)) intersection++;
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function _collapseSummaryDrafts(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  const paragraphs = text.split(/\n{2,}/);
+  if (paragraphs.length < 3) return text;  // need draft + final + deny
+
+  // Find the canonical deny marker. If absent, do nothing — outside
+  // of refused-turn scenarios we leave multi-paragraph responses
+  // alone.
+  let denyIdx = -1;
+  for (let i = 0; i < paragraphs.length; i++) {
+    for (const marker of _CANONICAL_BLOCK_MARKERS) {
+      if (paragraphs[i].includes(marker)) { denyIdx = i; break; }
+    }
+    if (denyIdx >= 0) break;
+  }
+  if (denyIdx < 1) return text;  // <0: no deny; ==0: deny is first, no drafts to collapse
+
+  const before = paragraphs.slice(0, denyIdx);
+  const after = paragraphs.slice(denyIdx);
+  if (before.length < 2) return text;
+
+  // Group consecutive paragraphs by topic similarity. A "group" is a
+  // run of paragraphs where each adjacent pair has Jaccard ≥0.5 AND
+  // both are ≥80 chars (substantive summaries, not bullets).
+  const groups = [[before[0]]];
+  for (let i = 1; i < before.length; i++) {
+    const cur = before[i];
+    const prevGroup = groups[groups.length - 1];
+    const prev = prevGroup[prevGroup.length - 1];
+    const sim = _jaccardSimilarity(_wordSetForSimilarity(prev), _wordSetForSimilarity(cur));
+    if (sim >= 0.5 && cur.length >= 80 && prev.length >= 80) {
+      prevGroup.push(cur);
+    } else {
+      groups.push([cur]);
+    }
+  }
+
+  const out = [];
+  for (const group of groups) {
+    if (group.length === 1) {
+      out.push(group[0]);
+      continue;
+    }
+    // Multi-paragraph group: keep the last as canonical, collapse
+    // earlier into a <details> disclosure. Markdown renderers
+    // (Obsidian's included) honor raw <details> tags.
+    const drafts = group.slice(0, -1);
+    const finalP = group[group.length - 1];
+    const summaryLabel = drafts.length > 1 ? "Earlier drafts" : "Earlier draft";
+    out.push(
+      `<details class="gryphon-draft-fold"><summary>${summaryLabel}</summary>\n\n` +
+      drafts.join("\n\n") +
+      `\n\n</details>`
+    );
+    out.push(finalP);
+  }
+  return out.concat(after).join("\n\n");
+}
+
+function _separateCanonicalBlocks(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  let out = text;
+
+  // First pass: strip forbidden preambles that immediately precede a
+  // canonical deny marker. These are wrappers some models add when
+  // relaying the deny — "Tool execution blocked: ", "Error: ", etc.
+  // Stripping them at the rendering boundary keeps the deny copy
+  // verbatim regardless of which provider's relay shape is used.
+  // We loop until stable so multi-marker cases (rare but possible
+  // if a single bubble carries two denied operations) are all
+  // cleaned up.
+  let prev;
+  do {
+    prev = out;
+    for (const marker of _CANONICAL_BLOCK_MARKERS) {
+      for (const preamble of _FORBIDDEN_PREAMBLES_BEFORE_MARKER) {
+        const combined = preamble + marker;
+        const idx = out.indexOf(combined);
+        if (idx === -1) continue;
+        // Strip the preamble — keep the marker.
+        out = out.slice(0, idx) + out.slice(idx + preamble.length);
+      }
+    }
+  } while (out !== prev);
+
+  // Second pass: paragraph-separate the canonical marker from any
+  // preceding model narration.
+  for (const marker of _CANONICAL_BLOCK_MARKERS) {
+    let from = 0;
+    while (from < out.length) {
+      const idx = out.indexOf(marker, from);
+      if (idx === -1) break;
+      // Idempotent: skip if already separated, or if the marker is at
+      // the very start of the text.
+      if (idx === 0) { from = idx + marker.length; continue; }
+      const prevChar = out[idx - 1];
+      if (prevChar === "\n" || prevChar === " " || prevChar === "\t") {
+        // Already separated by some whitespace — only inject if it's
+        // a single non-paragraph space (e.g. ". This operation..."
+        // should become ".\n\nThis operation..."). Specifically: if
+        // the prior char is a space and the char two-back is a
+        // sentence terminator (.!?), this is a smushed paragraph
+        // boundary.
+        if (prevChar === " " && idx >= 2 && /[.!?]/.test(out[idx - 2])) {
+          out = out.slice(0, idx - 1) + "\n\n" + out.slice(idx);
+          from = idx - 1 + 2 + marker.length;
+        } else {
+          from = idx + marker.length;
+        }
+      } else {
+        // No whitespace at all — direct smush. Inject paragraph break.
+        out = out.slice(0, idx) + "\n\n" + out.slice(idx);
+        from = idx + 2 + marker.length;
+      }
+    }
+  }
+  return out;
+}
 
 function filterMessagesForSave(messages, currentSessionId) {
   const currentId = currentSessionId || null;
@@ -165,7 +453,10 @@ function modelButtonText(settingsOrPlugin) {
   const { getActiveProviderKind } = require("./providers/factory");
   const kind = getActiveProviderKind(plugin) || settings.providerPreference;
 
-  if (kind === "openai-api") {
+  if (kind === "openai-api" || kind === "codex-cli") {
+    // codex-cli reuses OpenAI's pricing tables / model dropdown — same
+    // labels, same defaults. The provider class accepts the same model
+    // ids (gpt-5.4, gpt-5-mini, etc.).
     const {
       getModelDropdownOptions,
       resolveModel: resolveOpenAIModel,
@@ -184,7 +475,8 @@ function modelButtonText(settingsOrPlugin) {
     const fitsDropdown = options.some((o) => o.value === resolved);
     return labelFor(options, fitsDropdown ? resolved : OPENAI_DEFAULT_MODEL);
   }
-  if (kind === "google-api") {
+  if (kind === "google-api" || kind === "gemini-cli") {
+    // gemini-cli reuses Google's pricing tables / model dropdown.
     const {
       getModelDropdownOptions: getGeminiOptions,
       resolveModel: resolveGeminiModel,
@@ -217,8 +509,13 @@ function modelButtonTitle(settingsOrPlugin) {
     ? settingsOrPlugin : { settings };
   const { getActiveProviderKind } = require("./providers/factory");
   const kind = getActiveProviderKind(plugin) || settings.providerPreference;
-  if (kind === "openai-api") return "Model (OpenAI)";
-  if (kind === "google-api") return "Model (Gemini)";
+  // Brand-only label — API and CLI variants share the same name so
+  // the toolbar matches the approve/deny modal's "Codex / Gemini /
+  // Claude" naming. Users care about the model family, not whether
+  // it's reached via HTTPS or a local subprocess.
+  if (kind === "openai-api" || kind === "codex-cli")  return "Model (Codex)";
+  if (kind === "google-api" || kind === "gemini-cli") return "Model (Gemini)";
+  if (kind === "anthropic-api" || kind === "claude-code") return "Model (Claude)";
   return "Model";
 }
 
@@ -236,6 +533,13 @@ class GryphonChatView extends ItemView {
     this.streamingText = "";
     this.claudeProcess = null;
     this.cumulativeCost = 0;
+    // One-shot flag set when the just-finalized assistant turn
+    // contained the canonical Gryphon protected-deny marker. The
+    // NEXT send injects a "post-deny clarifier" reminder block so
+    // the model doesn't misread the next user message as a no-op
+    // repeat / system notification. _consumePostDenyClarifier
+    // clears this after firing.
+    this._priorTurnHadProtectedDeny = false;
     // Issue #3: prompts the user submitted while a turn was streaming.
     // Each entry: { text: string, bubbleEl: HTMLElement }. Drained one at
     // a time after each turn finalizes. The bubbleEl is rendered with a
@@ -417,7 +721,7 @@ class GryphonChatView extends ItemView {
 
     // Input area
     const inputArea = container.createDiv("gryphon-input-area");
-    inputArea.createEl("span", { text: "\u276F", cls: "gryphon-input-prompt" });
+    inputArea.createEl("span", { text: ">", cls: "gryphon-input-prompt" });
 
     this.inputEl = inputArea.createEl("textarea", {
       cls: "gryphon-input",
@@ -709,10 +1013,13 @@ class GryphonChatView extends ItemView {
                  this.plugin.settings.providerPreference;
 
     let modelList = MODELS;
-    if (kind === "openai-api") {
+    if (kind === "openai-api" || kind === "codex-cli") {
+      // codex-cli reuses the OpenAI model list — both target the same
+      // gpt-5 family models on the backend.
       const { getModelDropdownOptions } = require("./providers/openai-api/pricing");
       modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
-    } else if (kind === "google-api") {
+    } else if (kind === "google-api" || kind === "gemini-cli") {
+      // gemini-cli reuses the Gemini model list.
       const { getModelDropdownOptions } = require("./providers/google-api/pricing");
       modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
     }
@@ -1832,7 +2139,7 @@ class GryphonChatView extends ItemView {
   _enqueuePrompt(text) {
     const msgEl = this.messagesEl.createDiv("gryphon-message gryphon-user gryphon-queued");
     const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-user gryphon-bubble-queued");
-    bubble.createEl("span", { text: "❯ ", cls: "gryphon-prompt-prefix" });
+    bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
     bubble.createEl("span", { text, cls: "gryphon-text" });
     bubble.createEl("span", { text: " · queued", cls: "gryphon-queued-tag" });
     this._queuedPrompts.push({ text, bubbleEl: msgEl });
@@ -2073,16 +2380,22 @@ class GryphonChatView extends ItemView {
    */
   _stripContextBlock(text) {
     if (typeof text !== "string") return text;
-    // Match the block shapes used by _buildContextPrefix() (vault-path
-    // context) and _buildReminderBlock() (anti-drift reminder for
-    // protected-pattern-likely prompts), tolerating trailing whitespace
-    // between the closing tag and the user's actual text. Both block
-    // types are stripped so the user's displayed bubble shows only
-    // their typed text, while the model still sees the full augmented
-    // payload.
-    return text
-      .replace(/^\s*\[gryphon-context\][\s\S]*?\[\/gryphon-context\]\s*/, "")
-      .replace(/^\s*\[gryphon-reminder\][\s\S]*?\[\/gryphon-reminder\]\s*/, "");
+    // Strip ALL leading Gryphon-injected blocks, in any order, until
+    // none remain. The augmented prompt currently includes up to four
+    // such blocks at the start (context + anti-drift reminder +
+    // compound reminder + post-deny clarifier), and a single-pass
+    // strip would leak the latter ones into the user-visible bubble
+    // and the up-arrow recall. Loop until stable so any future
+    // additions are absorbed automatically.
+    let prev;
+    do {
+      prev = text;
+      text = text.replace(
+        /^\s*\[gryphon-(?:context|reminder)\][\s\S]*?\[\/gryphon-(?:context|reminder)\]\s*/,
+        "",
+      );
+    } while (text !== prev);
+    return text;
   }
 
   /**
@@ -2234,6 +2547,148 @@ class GryphonChatView extends ItemView {
       "no manual delete).\n" +
       "[/gryphon-reminder]\n\n"
     );
+  }
+
+  /**
+   * Heuristic: does this prompt look like a compound request that
+   * includes a destructive sub-task? Used to inject a stronger
+   * per-turn reminder when SDK models otherwise silently drop the
+   * destructive half of "summarize X and delete Y" — RLHF safety
+   * bias makes them skip the rm step even when the system prompt
+   * tells them not to. The user already configured Gryphon to
+   * decide what's allowed; the model's job is to ATTEMPT every
+   * sub-task and let Gryphon answer. A per-turn reminder placed
+   * adjacent to the user message moves the directive from
+   * "general guidance" (system prompt) to "applies right now"
+   * (recency + adjacency lift compliance on smaller models).
+   *
+   * Detection: keyword-based, case-insensitive. Conservative —
+   * false positives just add ~80 tokens, no behavior change. We
+   * only trigger when a destructive verb appears AND the prompt
+   * has at least one connector ("and", "then", ".", "+", semicolon)
+   * suggesting multiple sub-tasks. Single-request prompts ("delete
+   * /tmp/x") don't need the compound reminder; the SDK system
+   * prompt's single-request rule already handles them.
+   */
+  _shouldInjectCompoundReminder(text) {
+    if (typeof text !== "string" || !text.trim()) return false;
+    const lower = text.toLowerCase();
+    // Destructive verbs that RLHF models commonly skip even when
+    // explicitly asked. Word-boundary matched.
+    const destructive = /\b(delete|remove|rm|erase|unlink|truncate|drop|destroy|wipe|shred|completely\s+remove)\b/i;
+    if (!destructive.test(lower)) return false;
+    // Must look like multiple sub-tasks. Connectors that indicate a
+    // second clause: "and", "then", ".", ";", "+", "also", "first/second",
+    // "after that". We require at least one and at least 30 chars of
+    // text (rules out one-word prompts like "delete X.").
+    if (text.trim().length < 30) return false;
+    const compound = /\b(and|then|also|after\s+that|first|second|next)\b|[.;]\s|[+]/i;
+    return compound.test(text);
+  }
+
+  /**
+   * Per-turn compound-request reminder. Strong, concrete, with the
+   * explicit instruction to call the tool. Placed adjacent to the
+   * user message (after _buildReminderBlock) so the model parses
+   * it as part of "what to do for THIS request" rather than as
+   * abstract guidance.
+   */
+  _buildCompoundReminderBlock() {
+    return (
+      "[gryphon-reminder]\n" +
+      "Your message contains MULTIPLE sub-tasks; one looks " +
+      "destructive (delete / remove / rm / drop / etc.). You MUST " +
+      "attempt every sub-task by calling the appropriate tool — do " +
+      "NOT skip the destructive one because it \"sounds dangerous\". " +
+      "The user has already configured Gryphon's protected patterns; " +
+      "Gryphon will refuse the operation and return a `reason` field " +
+      "if it's blocked, or run it if it's allowed. Either outcome is " +
+      "correct. What is INCORRECT is silently dropping the sub-task " +
+      "and answering only the safe part. Final reply shape: <safe " +
+      "answer>\\n\\n<reason verbatim from refused tool result>.\n" +
+      "[/gryphon-reminder]\n\n"
+    );
+  }
+
+  /**
+   * Post-deny clarifier reminder. Fires on the turn IMMEDIATELY
+   * AFTER a turn that ended with a Gryphon protected-pattern
+   * refusal. The aim: counter the model's "I already did this; this
+   * must be a system-only repeat" inference that surfaces on
+   * long-running CC processes when the prior turn ended in a deny
+   * (observed: Claude Code on Linux, attempt 2 of "summarize and
+   * delete X" responded with "your message came through empty").
+   *
+   * Why a per-turn reminder (vs killing the CC process):
+   *   - Kill+respawn would lose all conversation context — bad UX
+   *     for multi-turn work where only the LATEST sub-task got
+   *     refused.
+   *   - String-match on user prompt would miss valid variations
+   *     ("rm X" vs "delete X" vs "remove X" — same intent).
+   *   - This reminder triggers on the actual prior OUTCOME (the
+   *     deny was emitted to the user), not on prompt wording.
+   *
+   * One-shot — fires only on the very next turn, then the trigger
+   * flag clears. Doesn't accumulate or repeat across multiple turns
+   * after a single deny.
+   */
+  _buildPostDenyClarifierBlock() {
+    return (
+      "[gryphon-reminder]\n" +
+      "Your previous turn ended with a Gryphon protected-pattern " +
+      "refusal of a tool call. That refusal applied ONLY to that " +
+      "prior attempt. For THIS turn, treat the user's new message " +
+      "as a fresh, real, non-empty user request — process it fully " +
+      "on its own merits. The text after this reminder block IS " +
+      "the user's message, not a system notification, not an empty " +
+      "frame, not a repeat-noise artifact, not metadata. Attempt " +
+      "every tool call the user implies, including destructive " +
+      "ones; Gryphon will respond per the user's CURRENT " +
+      "protected-pattern settings (which the user may have changed " +
+      "between turns). Do NOT assume the prior refusal carries " +
+      "over. " +
+      "FORBIDDEN ANSWER SHAPES (any phrasing of these is wrong; " +
+      "the user has explicitly asked for content):\n" +
+      "  - \"Your message came through empty\"\n" +
+      "  - \"Your message appears to be empty\"\n" +
+      "  - \"It looks like your message came through empty\"\n" +
+      "  - \"just a system notification came through\"\n" +
+      "  - \"this looks like a system notification\"\n" +
+      "  - \"What can I help you with?\" (when the user already " +
+      "    asked something)\n" +
+      "  - any phrasing that says nothing arrived / nothing was " +
+      "    sent / the message was blank / the message was just " +
+      "    metadata.\n" +
+      "If you are about to write any of those, STOP and re-read " +
+      "the actual user text below this block — it is real, " +
+      "non-empty, and you must engage with it.\n" +
+      "[/gryphon-reminder]\n\n"
+    );
+  }
+
+  /**
+   * Set when the just-finalized assistant turn contained the
+   * canonical Gryphon protected-deny marker. Read by the next send
+   * to decide whether to inject the post-deny clarifier reminder.
+   * One-shot — _maybeInjectPostDenyClarifier clears it after firing.
+   */
+  _markPriorTurnDenyIfPresent(text) {
+    if (typeof text !== "string" || text.length === 0) return;
+    const marker = "matches one of your protected patterns in Gryphon";
+    if (text.includes(marker)) {
+      this._priorTurnHadProtectedDeny = true;
+    }
+  }
+
+  /**
+   * One-shot accessor — returns the post-deny clarifier block when
+   * the flag is set, else empty string. Clears the flag in either
+   * branch (one shot).
+   */
+  _consumePostDenyClarifier() {
+    if (!this._priorTurnHadProtectedDeny) return "";
+    this._priorTurnHadProtectedDeny = false;
+    return this._buildPostDenyClarifierBlock();
   }
 
   /**
@@ -2626,7 +3081,15 @@ class GryphonChatView extends ItemView {
       const bubble = msgEl.createDiv(msg.sideNote
         ? "gryphon-bubble gryphon-bubble-user gryphon-bubble-sidenote"
         : "gryphon-bubble gryphon-bubble-user");
-      bubble.createEl("span", { text: "\u276F ", cls: "gryphon-prompt-prefix" });
+      // Plain `>` for the prompt prefix \u2014 universally supported by
+      // every font on every platform. The earlier `\u276F` (HEAVY
+      // RIGHT-POINTING ANGLE QUOTATION MARK ORNAMENT, \u276F) lives in
+      // the Unicode Dingbats block and isn't covered by many default
+      // Linux Obsidian font stacks; it rendered as a missing-glyph
+      // box / blank space on those systems. User report 2026-05-04
+      // (Linux Claude Code: "the current Linux version doesn't have
+      // [the > prefix]"). ASCII `>` round-trips through every font.
+      bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
       bubble.createEl("span", { text: msg.text, cls: "gryphon-text" });
       if (msg.sideNote) {
         bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
@@ -3102,7 +3565,7 @@ class GryphonChatView extends ItemView {
       : "gryphon-bubble gryphon-bubble-user";
     const msgEl = this.messagesEl.createDiv(msgRowCls);
     const bubble = msgEl.createDiv(bubbleCls);
-    bubble.createEl("span", { text: "\u276F ", cls: "gryphon-prompt-prefix" });
+    bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
     bubble.createEl("span", { text: cleanText, cls: "gryphon-text" });
     if (opts.sideNote) {
       bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
@@ -3474,11 +3937,28 @@ class GryphonChatView extends ItemView {
   }
 
   updateStatus(toolNameOrText) {
-    // Map tool names to user-friendly status. Unknown PascalCase identifiers
-    // (likely tool names) become "Thinking..."; anything else passes through.
-    let status = this.toolStatusMap[toolNameOrText];
+    // Map tool names to user-friendly status. SDK providers (OpenAI,
+    // Gemini, Anthropic) emit snake_case tool names like
+    // `run_shell_command` and `read_file`; CLI providers and the
+    // classifier speak PascalCase Claude vocabulary (Bash, Read).
+    // Normalize via the same alias table the classifier uses so a
+    // single status mapping works for all providers — otherwise the
+    // raw snake_case tool name leaks into the UI.
+    let key = toolNameOrText;
+    try {
+      const { normalizeToolName } = require("./providers/shared/attack-detector");
+      if (typeof toolNameOrText === "string" && toolNameOrText) {
+        key = normalizeToolName(toolNameOrText);
+      }
+    } catch (_) { /* fall through with the raw name */ }
+
+    let status = this.toolStatusMap[key];
     if (!status) {
-      if (toolNameOrText && /^[A-Z][a-zA-Z_]{1,20}$/.test(toolNameOrText)) {
+      // Unknown identifier-shaped input (any tool-name-looking token,
+      // PascalCase OR snake_case OR kebab-case) becomes "Thinking..."
+      // — never the raw tool name. Only free-text status (e.g.
+      // "Connecting to Codex...") passes through unchanged.
+      if (toolNameOrText && /^[A-Za-z][A-Za-z0-9_\-]{1,40}$/.test(toolNameOrText)) {
         status = "Thinking...";
       } else {
         status = toolNameOrText || "Thinking...";
@@ -3835,7 +4315,17 @@ class GryphonChatView extends ItemView {
     }
 
     if (isNewProcess && this.streamingEl) {
-      this.updateStatus("Connecting to Claude...");
+      // Brand-aware label so codex-cli / gemini-cli sessions don't
+      // say "Connecting to Claude". Same naming convention as the
+      // approve/deny modal and the toolbar Model button.
+      const { getActiveProviderKind } = require("./providers/factory");
+      const kind = getActiveProviderKind(this.plugin) ||
+                   this.plugin.settings.providerPreference;
+      const assistant =
+        (kind === "openai-api" || kind === "codex-cli")  ? "Codex"  :
+        (kind === "google-api" || kind === "gemini-cli") ? "Gemini" :
+        "Claude";
+      this.updateStatus(`Connecting to ${assistant}...`);
     }
 
     let stderrLog = "";
@@ -3851,7 +4341,25 @@ class GryphonChatView extends ItemView {
         this._refreshModelTooltip();
       } else if (type === "replace") {
         this.clearStatus();
-        this.replaceStreamingContent(text);
+        // Universal smush-fix: insert a paragraph break before
+        // canonical Gryphon-emitted blocks if they land on the same
+        // line as the model's prior text. SDK deltas + CLI stream
+        // events accumulate text by `+=` per provider; when the
+        // model emits "narration." then a tool call then "This
+        // operation matches..." in the same iteration, the result
+        // is "...narration.This operation matches..." with no
+        // separator. Each provider could fix this in its own
+        // accumulator (CC's content_block_start handler does), but
+        // multiple providers share the same model behavior — a
+        // single normalization here covers all six provider modes
+        // in one place. User report 2026-05-04.
+        this.replaceStreamingContent(
+          _collapseSummaryDrafts(
+            _separateCanonicalBlocks(
+              _dedupeConsecutiveParagraphs(text),
+            ),
+          ),
+        );
       } else if (type === "tool") {
         this.updateStatus(text);
       }
@@ -3935,6 +4443,18 @@ class GryphonChatView extends ItemView {
         .replace(/\[gryphon-context\]/gi, "[gryphon-context-user]")
         .replace(/\[\/gryphon-context\]/gi, "[/gryphon-context-user]");
       const reminder = this._shouldInjectReminder(safeText) ? this._buildReminderBlock() : "";
+      // Per-turn compound-request reminder. Independent of the
+      // anti-drift reminder above (different problem class —
+      // anti-drift fights paraphrasing of refusal copy; this fights
+      // the model SKIPPING the refused sub-task entirely). Both can
+      // fire on the same turn: a "summarize and delete X" prompt
+      // hits both. RLHF safety bias on SDK-side models (GPT-5-mini,
+      // Gemini 2.5) makes them silently drop the destructive half
+      // even with a strong system prompt; placing the directive
+      // adjacent to the user message lifts compliance.
+      const compoundReminder = this._shouldInjectCompoundReminder(safeText)
+        ? this._buildCompoundReminderBlock()
+        : "";
       // Side-note wrap (issue #9, /btw): prepend the no-expansion
       // preamble so the model logs the note as context without burning
       // tokens on a full reply. The user bubble already shows the raw
@@ -3942,12 +4462,49 @@ class GryphonChatView extends ItemView {
       const sideNotePrefix = isSideNote
         ? "[Side note from user — no need to expand; reply in one sentence acknowledging it.]\n\n"
         : "";
-      const augmentedText = this._buildContextPrefix() + reminder + sideNotePrefix + safeText;
+      // Post-deny clarifier — fires only on the turn immediately
+      // after a Gryphon protected-deny, then auto-clears. Counters
+      // the "your message came through empty / system notification"
+      // misinterpretation that long-running CC sometimes produces
+      // on byte-identical retry prompts. Consume order matters:
+      // place this AFTER the anti-drift + compound reminders but
+      // BEFORE the user prompt so the model reads it as part of
+      // "context for THIS turn." See _buildPostDenyClarifierBlock.
+      const postDenyClarifier = this._consumePostDenyClarifier();
+      // When the post-deny clarifier fires, SUPPRESS the other
+      // reminder blocks for THIS turn. The model's "your message
+      // came through empty / system notification" misinterpretation
+      // is partly a function of the volume of leading metadata
+      // blocks — four blocks stacked at the start reinforces the
+      // "this is mostly system noise" inference. The clarifier is
+      // the most-important directive in that scenario; collapsing
+      // to only it (plus context) reduces the noise the model has
+      // to wade through to find the user's actual prompt at the
+      // bottom. User report 2026-05-04 (Linux Claude Code, second
+      // attempt of "summarize and delete X" repeatedly produced
+      // variations of the "empty message" rationalization despite
+      // increasingly explicit clarifier wording).
+      const effectiveReminder = postDenyClarifier ? "" : reminder;
+      const effectiveCompound = postDenyClarifier ? "" : compoundReminder;
+      const augmentedText = this._buildContextPrefix() + effectiveReminder + effectiveCompound + postDenyClarifier + sideNotePrefix + safeText;
       const result = await this.claudeProcess.send(augmentedText);
       if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
       if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
 
-      const responseText = (result && result.text) ? result.text : (this.streamingText || "(No response)");
+      const rawResponseText = (result && result.text) ? result.text : (this.streamingText || "(No response)");
+      // Apply the same normalizers we apply to live streaming text
+      // (`replaceStreamingContent` path) so the FINALIZED bubble
+      // matches what the user saw mid-stream — without this, the
+      // dedupe + canonical-block separator only ran on streaming
+      // updates and the final re-render of the bubble reverted to
+      // the provider's raw turnText, surfacing duplicate paragraphs
+      // we'd already collapsed live. User report 2026-05-04
+      // (macOS Gemini CLI run 2 with three summary paragraphs).
+      const responseText = _collapseSummaryDrafts(
+        _separateCanonicalBlocks(
+          _dedupeConsecutiveParagraphs(rawResponseText),
+        ),
+      );
       const thinking = (result && Array.isArray(result.thinking) && result.thinking.length > 0)
         ? result.thinking : null;
       // Core uses a generic "Done" status. Consuming plugins that want
@@ -3955,6 +4512,13 @@ class GryphonChatView extends ItemView {
       // this flow or override finalizeStreamingMessage — core stays
       // LLM-domain-agnostic per the file header contract.
       this.finalizeStreamingMessage(responseText, "Done", "llm", thinking);
+      // Detect a protected-deny in the just-finalized turn so the
+      // NEXT send can inject the post-deny clarifier reminder. This
+      // is what counters Claude Code's "your message came through
+      // empty" inference on byte-identical retry prompts after a
+      // deny — see _buildPostDenyClarifierBlock for the full
+      // rationale.
+      this._markPriorTurnDenyIfPresent(responseText);
 
       if (result) {
         this.addCostInfo(result.cost, result.duration);
@@ -4097,4 +4661,7 @@ module.exports = {
   nextContextWarningState,
   modelButtonText,
   modelButtonTitle,
+  _separateCanonicalBlocks,
+  _dedupeConsecutiveParagraphs,
+  _collapseSummaryDrafts,
 };

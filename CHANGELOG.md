@@ -4,6 +4,43 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.3.0] — 2026-05-04
+
+### Added
+
+- **Codex CLI provider**: native local-CLI integration alongside the existing Claude Code CLI mode. Settings → Provider now offers "Codex CLI." Same protected-pattern guardrails fire on shell and file-mutation tools as in API modes.
+- **Gemini CLI provider**: native local-CLI integration. Settings → Provider now offers "Gemini CLI." Same guardrail parity.
+- **Windows + Linux support across all CLI providers**: previously CLI modes were Mac-first. v1.3 adds full Windows and Linux compatibility for Claude Code CLI, Codex CLI, and Gemini CLI — protected-pattern gating, modals, and chat rendering all verified on all three platforms.
+- **Stale-session recovery for Codex + Gemini CLI**: when a CLI's stored session id is no longer on disk, Gryphon transparently starts a fresh session and re-sends the user's message instead of erroring out.
+- **Universal deny copy**: every provider now produces the same descriptive deny message when a protected pattern matches:
+  > The Gryphon plugin is blocking the deletion of `/tmp/x.md` because it matches one of your protected patterns (destructive operation).
+  >
+  > To allow it:
+  > - Open Obsidian → Settings → Gryphon → Protected commands
+  > - Uncheck the matching pattern
+  > - Ask me again
+
+  Wording adapts to the operation kind (deletion / write / edit / execution) and surfaces the file or command name so users see exactly what was blocked.
+- **Friendlier rate-limit messages on Gemini**: 429 responses no longer dump raw JSON; the new copy explains the per-day vs per-minute distinction and surfaces the matched quota dimension.
+- **Optimized dispatch to different LLM models**: under-the-hood improvements unify how Gryphon talks to each provider. Result: identical guardrail behaviour, identical deny copy, identical chat polish across every model and CLI.
+
+### Changed
+
+- **Protected-operation modal always re-prompts**: protected operations no longer cache in either direction. Every retry of a destructive action shows the modal so the user is the explicit decision-maker each time.
+- **Chat rendering polish**: duplicate paragraphs collapsed, smushed deny blocks paragraph-separated, draft summaries folded into a "Show earlier draft" disclosure when the model regenerates after a refusal. Snake_case tool names (`read_file`, `run_shell_command`) now render as friendly status labels in the toolbar instead of leaking raw identifiers.
+- **UI**: bubble prefix changed from Unicode chevron to plain `>` for universal font compatibility on Linux. Cleaned up assistant-bubble borders.
+
+### Fixed
+
+- **Windows spawn corruption**: certain prompts containing `"` characters caused CLI spawns to fail with "The system cannot find the file specified." Fixed.
+- **Up-arrow recall**: when multiple reminder blocks fired on the same turn, some leaked into the user-visible recall. Now stripped uniformly.
+- **Multi-line shell echoes**: heredocs and `python -c` blocks could leak the rest of the assistant message when scrubbed. Fixed.
+
+### Compatibility
+
+- **Cross-platform full pass**: macOS + Windows + Linux all six providers (Claude Code CLI, Codex CLI, Gemini CLI, Anthropic API, OpenAI API, Google API) verified end-to-end. On Linux kernels older than 5.13, Codex CLI auto-falls-back to a less restrictive sandbox with a console warning (Gryphon's protected-pattern gate remains the authoritative check).
+- **Test count**: 562 (pre-v1.3) → 950 (this release).
+
 ## [1.2.0] — 2026-05-02
 
 ### Added

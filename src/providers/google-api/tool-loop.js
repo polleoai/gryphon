@@ -188,11 +188,21 @@ async function runGeminiToolLoop({
  * Convert Gryphon's executeTool result (Anthropic-shape: `{ content: [...], isError }`)
  * into the `response` object Gemini's functionResponse expects. Gemini's
  * shape is a free-form `Record<string, unknown>` — we use a stable
- * `{ result?: string, error?: string }` envelope so the model sees the
- * same semantic distinction it sees from anthropic-api / openai-api.
+ * `{ result, success }` envelope so the model sees the same semantic
+ * distinction it sees from anthropic-api / openai-api.
+ *
+ * Field naming matters here. Earlier shape was `{ error: <body> }` for
+ * failures, but Gemini's model treated the literal field name `error`
+ * as a tag and prepended "Error: " to the content when echoing it
+ * back ("Error: This operation matches one of your protected
+ * patterns..."). Other providers don't have this hazard because their
+ * tool_result envelope flags `is_error` separately from the content.
+ * Renaming to `success: false` puts the failure signal in a boolean
+ * the model reads as state rather than as a presentational tag.
+ * User report 2026-05-04 (Windows VM, google-api).
  */
 function serializeToolResultAsGeminiResponse(result) {
-  if (!result) return { result: "" };
+  if (!result) return { result: "", success: true };
   const parts = [];
   if (Array.isArray(result.content)) {
     for (const block of result.content) {
@@ -202,8 +212,8 @@ function serializeToolResultAsGeminiResponse(result) {
     parts.push(result.content);
   }
   const body = parts.join("");
-  if (result.isError) return { error: body };
-  return { result: body };
+  if (result.isError) return { result: body, success: false };
+  return { result: body, success: true };
 }
 
 module.exports = {

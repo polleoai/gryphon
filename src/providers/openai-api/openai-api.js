@@ -32,13 +32,14 @@ const OpenAI = require("openai");
 const { runOpenAIToolLoop } = require("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("./pricing");
 
-const GRYPHON_OPENAI_SYSTEM_PROMPT =
+const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("../shared/system-prompt-hints");
+const GRYPHON_OPENAI_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
   "paths and shell commands require approval or are refused. " +
   "· When a tool returns a refusal with a `reason` field, output " +
   "ONLY that reason to the user — no preamble before it (no " +
-  "\"The Gryphon plugin is blocking this\", no \"The Gryphon hook\", " +
+  "\"Tool execution blocked:\", no \"Error:\", no \"The Gryphon hook\", " +
   "no \"You'll need to first\"), and no epilogue after it (no " +
   "\"I can't bypass this\", no \"it's enforced by the Gryphon " +
   "plugin\", no \"once you've done that, I can proceed\"). The " +
@@ -60,6 +61,12 @@ const GRYPHON_OPENAI_SYSTEM_PROMPT =
   "Say plainly that the operation matched one of the user's " +
   "protected patterns, and point them at Settings → Gryphon to " +
   "adjust the list.";
+
+// Append the shared compound-request rule. See anthropic-api/tool-loop.js
+// for the rationale — the SDK model otherwise drops one half of a
+// compound prompt silently.
+const GRYPHON_OPENAI_SYSTEM_PROMPT =
+  GRYPHON_OPENAI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 
 class OpenAIProvider {
   constructor(apiKey, cwd, options = {}) {
@@ -140,6 +147,20 @@ class OpenAIProvider {
     }
     this.pending = true;
 
+    // SDK analog of the CLI tainted-session fix: if the LAST turn ended
+    // with a Gryphon protected deny, the model's next call sees the
+    // deny outcome in history and frequently echoes the canonical deny
+    // copy without re-attempting the tool — exactly mirrors the
+    // CLI session-resume bug. Reset the history before the new user
+    // message so the model gets a fresh attempt and Gryphon's gate
+    // fires on every retry. Chat-view UI bubbles are preserved
+    // separately; only the model's working memory is wiped.
+    // User report 2026-05-04 (Windows VM, openai-api mode).
+    if (this._needsHistoryReset) {
+      this.history.length = 0;
+      this._needsHistoryReset = false;
+    }
+
     // Snapshot for rollback on error (mirror anthropic-api semantics).
     const historyCheckpoint = this.history.length;
     this.history.push({ role: "user", content: prompt });
@@ -178,6 +199,24 @@ class OpenAIProvider {
 
       this.activeStream = null;
       this.pending = false;
+
+      // After-turn check: did this turn produce a Gryphon protected
+      // deny? Scan the new history slice for a tool result whose
+      // content matches the canonical deny marker. If so, mark the
+      // session for reset on the next send. We sniff content rather
+      // than wire a callback through the tool loop because (a) the
+      // canonical text is a stable contract enforced by
+      // permission-gate.js + plugin.js, (b) it keeps the cross-cutting
+      // concern (taint propagation) localized to the SDK provider.
+      const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
+      const turnSlice = this.history.slice(historyCheckpoint);
+      const hadProtectedDeny = turnSlice.some((m) =>
+        m && m.role === "tool" && typeof m.content === "string" &&
+        m.content.includes(_GRYPHON_DENY_MARKER)
+      );
+      if (hadProtectedDeny) {
+        this._needsHistoryReset = true;
+      }
 
       const { cost: turnCost } = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;

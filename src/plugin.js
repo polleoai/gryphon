@@ -15,6 +15,9 @@ const { SkillRegistry } = require("./skills");
 const { testApiKey: testAnthropicApiKey } = require("./providers/anthropic-api/anthropic-api");
 const { testApiKey: testOpenAIApiKey } = require("./providers/openai-api/openai-api");
 const { testApiKey: testGoogleApiKey } = require("./providers/google-api/test-key");
+const { testCli: testCodexCli } = require("./providers/codex-cli/test-cli");
+const { testCli: testGeminiCli } = require("./providers/gemini-cli/test-cli");
+const { buildDenyReason } = require("./providers/shared/deny-copy");
 const {
   PermissionIPCServer,
   defaultSocketPath,
@@ -53,13 +56,17 @@ function _resetModelForProvider(plugin) {
   const current = settings.model;
   const kind = getActiveProviderKind(plugin) || settings.providerPreference;
 
-  if (kind === "openai-api") {
+  if (kind === "openai-api" || kind === "codex-cli") {
+    // codex-cli reuses the OpenAI model dropdown — Codex routes to OpenAI
+    // models, and the pricing table already covers gpt-5 family + o-series.
     const { getModelDropdownOptions, DEFAULT_MODEL } =
       require("./providers/openai-api/pricing");
     const options = getModelDropdownOptions();
     return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
   }
-  if (kind === "google-api") {
+  if (kind === "google-api" || kind === "gemini-cli") {
+    // gemini-cli reuses the Gemini model dropdown — both go to the same
+    // Google models, and pricing tables/aliases are identical.
     const { getModelDropdownOptions, DEFAULT_MODEL } =
       require("./providers/google-api/pricing");
     const options = getModelDropdownOptions();
@@ -398,6 +405,104 @@ class GryphonSettingTab extends PluginSettingTab {
         googleKeyStatusEl.style.marginTop = "4px";
       });
 
+    // Codex CLI + Gemini CLI binary path settings (v1.3 — codex-cli /
+    // gemini-cli modes). Symmetric with the Claude Code path field
+    // above. Test buttons run `<bin> --version` to verify the binary
+    // works without burning credits.
+    let codexStatusEl = null;
+    this._descToTooltip(
+      new Setting(containerEl).setName("Codex CLI path"),
+      "Optional. Required only when Provider is Codex CLI. Empty string " +
+      "auto-detects: macOS checks /Applications/Codex.app/Contents/Resources/codex " +
+      "first, then PATH and common bin directories. Auth is handled by the " +
+      "CLI itself — run `codex login` in a terminal once after installing.",
+    )
+      .addText((text) => {
+        const { findCodexBinary, displayPath } = require("./utils");
+        const detected = findCodexBinary();
+        return text
+          .setPlaceholder(
+            detected
+              ? displayPath(detected)
+              : "/Applications/Codex.app/Contents/Resources/codex",
+          )
+          .setValue(this.plugin.settings.codexPath || "")
+          .onChange(async (value) => {
+            this.plugin.settings.codexPath = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+            if (codexStatusEl) codexStatusEl.setText("");
+          });
+      })
+      .addButton((btn) =>
+        btn
+          .setButtonText("Test CLI")
+          .onClick(async () => {
+            btn.setDisabled(true).setButtonText("Testing...");
+            const { findCodexBinary } = require("./utils");
+            const codexPath =
+              (this.plugin.settings.codexPath || "").trim() ||
+              findCodexBinary() ||
+              "";
+            const { ok, message } = await testCodexCli(codexPath);
+            btn.setDisabled(false).setButtonText("Test CLI");
+            if (codexStatusEl) {
+              codexStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
+              codexStatusEl.style.color = ok ? "var(--color-green)" : "var(--color-red)";
+            }
+            new Notice(`Codex CLI: ${ok ? "OK" : message}`);
+          })
+      )
+      .then((setting) => {
+        codexStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
+        codexStatusEl.style.marginTop = "4px";
+      });
+
+    let geminiCliStatusEl = null;
+    this._descToTooltip(
+      new Setting(containerEl).setName("Gemini CLI path"),
+      "Optional. Required only when Provider is Gemini CLI. Empty string " +
+      "auto-detects via PATH and common bin directories. Auth uses the " +
+      "Google API key field above (forwarded as GEMINI_API_KEY env var " +
+      "to the CLI).",
+    )
+      .addText((text) => {
+        const { findGeminiBinary, displayPath } = require("./utils");
+        const detected = findGeminiBinary();
+        return text
+          .setPlaceholder(detected ? displayPath(detected) : "/opt/homebrew/bin/gemini")
+          .setValue(this.plugin.settings.geminiCliPath || "")
+          .onChange(async (value) => {
+            this.plugin.settings.geminiCliPath = value.trim();
+            await this.plugin.saveSettings();
+            this.plugin._resetActiveSessions();
+            if (geminiCliStatusEl) geminiCliStatusEl.setText("");
+          });
+      })
+      .addButton((btn) =>
+        btn
+          .setButtonText("Test CLI")
+          .onClick(async () => {
+            btn.setDisabled(true).setButtonText("Testing...");
+            const { findGeminiBinary } = require("./utils");
+            const geminiPath =
+              (this.plugin.settings.geminiCliPath || "").trim() ||
+              findGeminiBinary() ||
+              "";
+            const { ok, message } = await testGeminiCli(geminiPath);
+            btn.setDisabled(false).setButtonText("Test CLI");
+            if (geminiCliStatusEl) {
+              geminiCliStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
+              geminiCliStatusEl.style.color = ok ? "var(--color-green)" : "var(--color-red)";
+            }
+            new Notice(`Gemini CLI: ${ok ? "OK" : message}`);
+          })
+      )
+      .then((setting) => {
+        geminiCliStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
+        geminiCliStatusEl.style.marginTop = "4px";
+      });
+
     this._descToTooltip(
       new Setting(containerEl).setName("Brave Search API key"),
       "Optional. Enables SDK-mode WebSearch. Free at brave.com/search/api/ " +
@@ -443,7 +548,7 @@ class GryphonSettingTab extends PluginSettingTab {
     const activePref = getActiveProviderKind(this.plugin) ||
                        this.plugin.settings.providerPreference || "auto";
 
-    if (activePref === "google-api") {
+    if (activePref === "google-api" || activePref === "gemini-cli") {
       // Gemini adapter shipped Stage 3 — render the real Gemini model
       // dropdown with the same auto-correct pattern as the OpenAI branch:
       // if the persisted settings.model isn't a Gemini id (e.g. cross-vendor
@@ -489,7 +594,7 @@ class GryphonSettingTab extends PluginSettingTab {
             this.plugin._resetActiveSessions();
           });
         });
-    } else if (activePref === "openai-api") {
+    } else if (activePref === "openai-api" || activePref === "codex-cli") {
       // OpenAI's reasoning models (o-series) take a `reasoning.effort`
       // request param but the chat-completions models don't. For v1.2
       // we surface the same effort dropdown as Anthropic so the panel
@@ -1244,6 +1349,16 @@ class GryphonPlugin extends Plugin {
     this.provenanceStore = pluginDir ? new ProvenanceStore(pluginDir) : null;
     this._sessionFlags = new Map();  // session_id → { untrustedContentActive: bool }
 
+    // Sessions whose JSONL/transcript carries a Gryphon protected-deny
+    // result. CLI providers (codex-cli, gemini-cli, claude-code) check
+    // and CONSUME this set before deciding to `--resume <id>` on the
+    // next send: if the prior turn ended with a protected deny, the
+    // resumed context would let the model echo the canonical deny copy
+    // without actually re-issuing the tool call (no hook fires, no
+    // modal). Forcing a fresh spawn drops that tainted history. Cleared
+    // on unload. User report 2026-05-03.
+    this._taintedSessions = new Set();
+
     // ONE sweeper, called once per plugin load. Cleans up every
     // temp/state file Gryphon can leave behind across crashes and
     // reloads. Pid-liveness protects concurrent Obsidian windows
@@ -1892,9 +2007,25 @@ class GryphonPlugin extends Plugin {
     //   Any tool with a protected-pattern match:
     //     gate() upgrades kind to protected-exec / protected and
     //     ignores the mode fast-paths — always modal, even in YOLO.
+    // Normalize the incoming tool name to the Claude-Code vocabulary
+    // for downstream branching. Different CLIs name the same tool
+    // differently (Gemini: run_shell_command; Codex: command_execution
+    // for shells), and this branch checks `tool === "Bash"` etc. by
+    // name. Without normalization, a Gemini hook delivering a shell
+    // command would skip the isMutating branch, derive the wrong
+    // `kind`, and the modal would fail to render — manifesting to the
+    // user as "no approve/deny modal but deny still happened" via the
+    // fallback deny copy. classification.tool already carries the
+    // normalized form (the classifier uses the same alias table); we
+    // use that when classification fired, else normalize the raw name
+    // here as a defensive default.
+    const canonicalTool =
+      (classification && classification.tool) ||
+      attackDetector.normalizeToolName(tool) ||
+      tool;
     const isMutating =
-      tool === "Bash" || tool === "PowerShell" ||
-      tool === "Write" || tool === "Edit";
+      canonicalTool === "Bash" || canonicalTool === "PowerShell" ||
+      canonicalTool === "Write" || canonicalTool === "Edit";
     if (!classification && !isMutating) {
       return { decision: "allow" };
     }
@@ -1911,12 +2042,19 @@ class GryphonPlugin extends Plugin {
       return { decision: "allow" };
     }
 
-    const { action, target } = _deriveActionTarget(tool, input);
-    const kind = (tool === "Bash" || tool === "PowerShell") ? "exec" : "fileEdit";
+    const { action, target } = _deriveActionTarget(canonicalTool, input);
+    const kind = (canonicalTool === "Bash" || canonicalTool === "PowerShell") ? "exec" : "fileEdit";
     let gateResult;
     try {
       gateResult = await attackDetector.gate(classification, {
-        ctx, action, target, detail: null, kind, cacheable: false,
+        ctx, action, target, detail: null, kind,
+        // Allow the gate to use the session cache. Protected ops
+        // never cache in either direction — every retry of a
+        // destructive op shows the modal so the user is the explicit
+        // decision-maker each time. Non-protected file edits cache
+        // per-target when the user ticks "Remember"; bash never
+        // caches (per-command decisions).
+        cacheable: true,
       });
     } catch (e) {
       return {
@@ -1942,25 +2080,21 @@ class GryphonPlugin extends Plugin {
     if (gateResult && gateResult.allow) {
       displayReason = "";
     } else if (classification) {
-      const categoryLabel = classification.category
-        ? classification.category.replace(/-/g, " ")
-        : "protected pattern";
-      const settingsPath = tool === "Write" || tool === "Edit"
-        ? "Protected file paths"
-        : "Protected commands";
-      // Pre-bulleted format so the model has no reason to re-structure
-      // it. Earlier arrow-chain versions were frequently reformatted
-      // into bullet lists by Claude even under strict "quote verbatim"
-      // directives — giving the model a bulleted source removes the
-      // incentive. Markdown `- ` renders as bullets in Obsidian's
-      // message view; in plain-text fallbacks it reads as a dash list,
-      // which is still clean.
-      displayReason =
-        `This operation matches one of your protected patterns in Gryphon ` +
-        `(${categoryLabel}).\n\nTo allow it:\n` +
-        `- Open Obsidian → Settings → Gryphon → ${settingsPath}\n` +
-        `- Uncheck the matching pattern\n` +
-        `- Ask me again`;
+      // Single source of truth for the deny copy lives in
+      // providers/shared/deny-copy.js. The conversational
+      // descriptive form (action + target + category) is more
+      // user-friendly than the older "This operation matches..."
+      // generic form because it tells the user WHAT was blocked.
+      // User report 2026-05-04.
+      const protectedKind = (tool === "Bash" || tool === "PowerShell")
+        ? "protected-exec"
+        : "protected";
+      displayReason = buildDenyReason({
+        action,
+        target,
+        category: classification.category || null,
+        kind: protectedKind,
+      });
     } else {
       displayReason = `You declined ${action} on ${target}. Want me to try a different approach?`;
     }
@@ -1978,12 +2112,40 @@ class GryphonPlugin extends Plugin {
     // again in practice, uncomment the emit here and in
     // permission-gate.js to restore the safety-net UX.
 
+    const allow = !!(gateResult && gateResult.allow);
+
+    // Mark the originating CLI session as tainted on any protected
+    // deny so the next turn skips --resume. Without this, the prior
+    // canonical deny copy stays in the resumed transcript and the
+    // model on the next turn just echoes it WITHOUT calling the tool
+    // again — looking to the user like an "auto-deny" since no modal
+    // appears (the hook never fires because the model never tried).
+    // We taint only on classification-driven (protected) denies; a
+    // user-modal deny on a non-protected op doesn't need to break
+    // resume — the user already saw the modal and chose decline.
+    if (!allow && classification && req && typeof req.sessionId === "string" && req.sessionId) {
+      this._taintedSessions.add(req.sessionId);
+    }
+
     return {
-      decision: gateResult && gateResult.allow ? "allow" : "deny",
+      decision: allow ? "allow" : "deny",
       reason: displayReason,
       matchedPattern: classification ? classification.matchedPattern : undefined,
       category: classification ? classification.category : undefined,
     };
+  }
+
+  /**
+   * Returns true if the given raw CLI session id was marked tainted
+   * by a prior protected-deny in this plugin lifetime, AND removes it
+   * from the set (one-shot). Provider adapters call this before
+   * deciding whether to pass `--resume <id>` on a fresh spawn.
+   */
+  consumeTaintedSession(rawSessionId) {
+    if (!rawSessionId || typeof rawSessionId !== "string") return false;
+    if (!this._taintedSessions.has(rawSessionId)) return false;
+    this._taintedSessions.delete(rawSessionId);
+    return true;
   }
 
   async loadSettings() {
@@ -1993,6 +2155,53 @@ class GryphonPlugin extends Plugin {
     const userData = (await this.loadData()) || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, userData);
     this._migrateSettings(userData);
+    this._dropStalePerReloadSessionIds();
+  }
+
+  /**
+   * Drop `lastSessionId` for providers whose CLI-side session state can
+   * become stale across plugin reloads.
+   *
+   * Why this exists: Codex CLI and Gemini CLI bake the sandbox mode and
+   * approval policy into the session at SPAWN time. Subsequent
+   * `codex exec resume <id>` invocations inherit those settings — there
+   * is no API to override them on resume. So if Gryphon ships an update
+   * that changes how it maps `permissionMode` to the CLI's sandbox
+   * (e.g. v1.3.0 → Stage 5 dispatcher rewiring), every existing chat
+   * stays stuck on the OLD config until the user manually starts a new
+   * conversation. The user-reported "delete from read-only session"
+   * error on 2026-05-03 was exactly this trap.
+   *
+   * Chat history is preserved unconditionally — it lives in
+   * chat-history.json under each view's storage, separate from
+   * `settings.lastSessionId`. Dropping the session id only affects what
+   * the next `send()` passes to the CLI as `--resume`; the chat-view's
+   * stored messages array is untouched, and the new spawn renders the
+   * full transcript locally.
+   *
+   * Provider matrix:
+   *   - claude-code (UUID)         → KEEP. CC's `--resume` re-streams
+   *                                   the full conversation context to
+   *                                   the model, which the user wants
+   *                                   to preserve across reloads.
+   *   - SDK ("sdk-*", etc.)        → KEEP. Stateless — the session id
+   *                                   is just a chat-view bookkeeping
+   *                                   tag, not a server-side handle.
+   *   - codex-cli ("codex-cli-*")  → DROP. Server-side state may be
+   *                                   stale (sandbox baked in at spawn).
+   *   - gemini-cli ("gemini-cli-*")→ DROP. Same reason as codex-cli.
+   */
+  _dropStalePerReloadSessionIds() {
+    const sid = this.settings && this.settings.lastSessionId;
+    if (typeof sid !== "string" || !sid) return;
+    if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-")) {
+      console.log(
+        `[gryphon] dropping stale CLI lastSessionId on plugin load: ${sid} ` +
+        `(chat history preserved; next message starts a fresh CLI session ` +
+        `to pick up any sandbox/hook config changes from the new plugin build)`,
+      );
+      this.settings.lastSessionId = null;
+    }
   }
 
   /**

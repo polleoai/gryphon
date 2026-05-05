@@ -53,23 +53,28 @@ function functionCallTurn(name, args, id) {
 
 // ---------- serializeToolResultAsGeminiResponse ----------
 
-test("serializer: array-of-blocks → { result: 'joined' }", () => {
+test("serializer: array-of-blocks → { result: 'joined', success: true }", () => {
   const r = { content: [{ type: "text", text: "Hello " }, { type: "text", text: "world" }] };
-  assert.deepEqual(serializeToolResultAsGeminiResponse(r), { result: "Hello world" });
+  assert.deepEqual(serializeToolResultAsGeminiResponse(r), { result: "Hello world", success: true });
 });
 
-test("serializer: isError=true → { error: body } (NOT result)", () => {
+test("serializer: isError=true → { result: body, success: false } (NOT a field literally named 'error')", () => {
+  // Field name `error` was renamed to `success: false` because Gemini's
+  // model treated the literal key name as a presentational tag and
+  // prepended "Error: " to the content when echoing it back to the
+  // user. With `success: false` plus the body in `result`, the model
+  // reads the failure as state and quotes the body cleanly.
   const r = { content: [{ type: "text", text: "denied" }], isError: true };
-  assert.deepEqual(serializeToolResultAsGeminiResponse(r), { error: "denied" });
+  assert.deepEqual(serializeToolResultAsGeminiResponse(r), { result: "denied", success: false });
 });
 
-test("serializer: null/undefined → { result: '' }", () => {
-  assert.deepEqual(serializeToolResultAsGeminiResponse(null), { result: "" });
-  assert.deepEqual(serializeToolResultAsGeminiResponse(undefined), { result: "" });
+test("serializer: null/undefined → { result: '', success: true }", () => {
+  assert.deepEqual(serializeToolResultAsGeminiResponse(null), { result: "", success: true });
+  assert.deepEqual(serializeToolResultAsGeminiResponse(undefined), { result: "", success: true });
 });
 
-test("serializer: string content passes through as result", () => {
-  assert.deepEqual(serializeToolResultAsGeminiResponse({ content: "hello" }), { result: "hello" });
+test("serializer: string content passes through as result with success: true", () => {
+  assert.deepEqual(serializeToolResultAsGeminiResponse({ content: "hello" }), { result: "hello", success: true });
 });
 
 // ---------- single-turn (no tool calls) ----------
@@ -370,10 +375,14 @@ test("loop: unknown tool name reaches tool-registry's executeTool (proves no byp
 
   const toolMsg = history.find((c) => c.role === "user" && c.parts[0] && c.parts[0].functionResponse);
   assert.ok(toolMsg);
-  // Tool registry returns isError=true → serializer puts it in `error`
+  // Tool registry returns isError=true → serializer puts the body
+  // in `result` and signals failure via `success: false`. (Field
+  // was previously named `error`; renamed to keep Gemini's model
+  // from prepending "Error: " when echoing the content.)
   const fr = toolMsg.parts[0].functionResponse.response;
-  assert.match(fr.error || "", /Unknown tool/);
-  assert.match(fr.error || "", /RootKit/);
+  assert.strictEqual(fr.success, false);
+  assert.match(fr.result || "", /Unknown tool/);
+  assert.match(fr.result || "", /RootKit/);
 });
 
 process.on("exit", () => {

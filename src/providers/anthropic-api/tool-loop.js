@@ -37,13 +37,14 @@ const MAX_ITERATIONS = 25;
 // No mention of "Claude Code", "hooks", or "~/.claude" here — this is
 // the SDK path, so the CLI-specific vocabulary from
 // GRYPHON_SYSTEM_PROMPT_HINT (claude-code.js) doesn't apply.
-const GRYPHON_SDK_SYSTEM_PROMPT =
+const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("../shared/system-prompt-hints");
+const GRYPHON_SDK_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
   "paths and shell commands require approval or are refused. " +
   "· When a tool returns a refusal with a `reason` field, output " +
-  "ONLY that reason to the user — no preamble before it (no " +
-  "\"The Gryphon plugin is blocking this\", no \"The Gryphon hook\", " +
+  "ONLY that reason to the user — no wrapper before it (no " +
+  "\"Tool execution blocked:\", no \"Error:\", no \"The Gryphon hook\", " +
   "no \"You'll need to first\"), and no epilogue after it (no " +
   "\"I can't bypass this\", no \"it's enforced by the Gryphon " +
   "plugin\", no \"once you've done that, I can proceed\"). The " +
@@ -65,6 +66,15 @@ const GRYPHON_SDK_SYSTEM_PROMPT =
   "Say plainly that the operation matched one of the user's " +
   "protected patterns, and point them at Settings → Gryphon to " +
   "adjust the list.";
+
+// Compose the final system prompt by appending the compound-request
+// rule from the shared hints module. Without this rule, the SDK
+// model receives "summarize file AND delete it" and silently skips
+// the destructive sub-request — never even attempting the tool, so
+// Gryphon's permission gate never fires and the user sees no deny.
+// User report 2026-05-04 (Windows VM, openai-api mode).
+const GRYPHON_SDK_SYSTEM_PROMPT =
+  GRYPHON_SDK_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 
 /**
  * @param {object} args

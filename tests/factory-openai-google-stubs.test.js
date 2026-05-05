@@ -289,13 +289,15 @@ test("detectAvailable settings beats env (precedence)", () => {
 // PROVIDER_PREFS — the dropdown source of truth
 // ──────────────────────────────────────────────────────────────────────
 
-test("PROVIDER_PREFS contains five options including openai-api + google-api", () => {
+test("PROVIDER_PREFS contains seven options spanning all SDK + CLI providers", () => {
   const { PROVIDER_PREFS } = require("../src/constants");
   const values = PROVIDER_PREFS.map((p) => p.value).sort();
   assert.deepEqual(values, [
     "anthropic-api",
     "auto",
     "claude-code",
+    "codex-cli",
+    "gemini-cli",
     "google-api",
     "openai-api",
   ]);
@@ -427,10 +429,30 @@ test("Bug #21 (Stage 3 successor) — google-api with non-Gemini model id falls 
   assert.match(text, /Gemini/i);
 });
 
-test("Bug #21 (Stage 2 successor) — openai-api title is 'Model (OpenAI)', not pending hint", () => {
+test("Bug #21 (Stage 2 successor) — openai-api title carries the brand label, not a pending hint", () => {
+  // v1.3 Stage 5: brand-only labels — "Model (Codex)" for both
+  // openai-api and codex-cli, matching the modal's "Codex" naming.
   const title = modelButtonTitle({ providerPreference: "openai-api" });
-  assert.match(title, /OpenAI/);
+  assert.match(title, /Codex/);
   assert.doesNotMatch(title, /pending/i);
+});
+
+test("v1.3 Stage 5 — codex-cli + openai-api share the same toolbar title 'Model (Codex)'", () => {
+  // The Provider dropdown still distinguishes API vs CLI internally,
+  // but user-facing labels are unified to brand identity. See
+  // memory/project_provider_reorg_todo.md for the rationale.
+  assert.equal(modelButtonTitle({ providerPreference: "openai-api" }), "Model (Codex)");
+  assert.equal(modelButtonTitle({ providerPreference: "codex-cli" }), "Model (Codex)");
+});
+
+test("v1.3 Stage 5 — gemini-cli + google-api share 'Model (Gemini)'", () => {
+  assert.equal(modelButtonTitle({ providerPreference: "google-api" }), "Model (Gemini)");
+  assert.equal(modelButtonTitle({ providerPreference: "gemini-cli" }), "Model (Gemini)");
+});
+
+test("v1.3 Stage 5 — anthropic-api + claude-code share 'Model (Claude)'", () => {
+  assert.equal(modelButtonTitle({ providerPreference: "anthropic-api" }), "Model (Claude)");
+  assert.equal(modelButtonTitle({ providerPreference: "claude-code" }), "Model (Claude)");
 });
 
 // Round 18 F23-1 regression: cross-provider switch with a non-OpenAI persisted
@@ -562,9 +584,12 @@ test("Bug #21 (Stage 3 successor) — google-api title is 'Model (Gemini)', not 
   assert.doesNotMatch(title, /pending/i);
 });
 
-test("Bug #21 — modelButtonTitle returns plain 'Model' for Anthropic modes (no regression)", () => {
-  assert.equal(modelButtonTitle({ providerPreference: "anthropic-api" }), "Model");
-  assert.equal(modelButtonTitle({ providerPreference: "claude-code" }), "Model");
+test("Bug #21 — modelButtonTitle returns brand label for Anthropic modes; plain 'Model' for unknown/auto", () => {
+  // v1.3 Stage 5: anthropic-api + claude-code now share "Model (Claude)"
+  // matching the modal's brand-only naming. "auto" stays plain "Model"
+  // until the active provider resolves (it's the user's catch-all).
+  assert.equal(modelButtonTitle({ providerPreference: "anthropic-api" }), "Model (Claude)");
+  assert.equal(modelButtonTitle({ providerPreference: "claude-code" }), "Model (Claude)");
   assert.equal(modelButtonTitle({ providerPreference: "auto" }), "Model");
 });
 

@@ -95,17 +95,69 @@ function _categoryTitle(category) {
  *   null if no protected pattern matched; otherwise:
  *   { tool, matchedPattern, category, title, userRisk, technicalDetail }
  */
+/**
+ * Cross-CLI tool-name aliases. Different CLIs name the same tool
+ * differently — Claude Code's "Bash" is Gemini's "run_shell_command",
+ * Codex's "command_execution", and so on. The classifier internally
+ * speaks Claude Code's tool vocabulary (Bash / Write / Edit /
+ * PowerShell), so we normalize incoming names before dispatching.
+ *
+ * Adding a new CLI = add its tool names here. The classifier itself
+ * stays vocabulary-pure.
+ */
+const TOOL_ALIASES = {
+  // Shell / command execution
+  "Bash": "Bash",
+  "PowerShell": "PowerShell",
+  "run_shell_command": "Bash",  // Gemini CLI / Gemini SDK
+  "shell": "Bash",              // Gemini variants seen in older builds
+  "bash": "Bash",                // ditto
+  "command_execution": "Bash",   // Codex JSONL item.type (defensive — Codex's hook
+                                  //   uses tool_name, not item.type, but hook input
+                                  //   shape may evolve)
+  // File mutation
+  "Write": "Write",
+  "Edit": "Edit",
+  "write_file": "Write",         // Gemini CLI / SDK
+  "replace": "Edit",             // Gemini CLI / SDK
+  "edit_file": "Edit",           // Gemini variant
+  // File read — not protected (read-only tools never reach the
+  // permission gate), but listed here so downstream consumers like
+  // chat-view's status-line normalizer can map snake_case SDK names
+  // ("read_file") to a single user-friendly label ("Reading...")
+  // without leaking the raw identifier into the UI.
+  "Read": "Read",
+  "read_file": "Read",           // OpenAI / Gemini SDK
+  "Glob": "Glob",
+  "glob": "Glob",
+  "list_directory": "Glob",      // Gemini SDK
+  "list_files": "Glob",          // OpenAI / common variant
+  "Grep": "Grep",
+  "grep": "Grep",
+  "search_files": "Grep",        // common SDK variant
+  "search_file_content": "Grep", // Gemini SDK
+};
+
 function classify(tool, input, ctx) {
   if (!tool || !input) return null;
   const settings = (ctx && ctx.plugin && ctx.plugin.settings) || {};
 
-  if (tool === "Write" || tool === "Edit") {
+  // Normalize provider-specific tool names to the Claude-Code vocabulary
+  // the per-tool branches below understand. Unknown names pass through
+  // and hit the "not currently gated" branch (correct default).
+  const canonical = TOOL_ALIASES[tool] || tool;
+
+  if (canonical === "Write" || canonical === "Edit") {
     // Master toggle — when the user turns off Protected file paths
     // entirely, return null so gate() treats it as non-protected and
     // the normal permission-mode policy applies (Prompt/Safe/YOLO all
     // respected as the user chose for routine operations).
     if (settings.protectedPathsEnabled === false) return null;
-    return _classifyFilePath(tool, input, ctx, settings);
+    // Gemini's write_file uses `file_path` already, but `replace`
+    // uses `file_path` too (Gemini's docs). _classifyFilePath reads
+    // input.file_path; if a future CLI uses a different field, add
+    // a normalizer here similar to TOOL_ALIASES.
+    return _classifyFilePath(canonical, input, ctx, settings);
   }
   // "PowerShell" is CC's shell-command tool on Windows; it carries the
   // same `{command, description}` shape as Bash and needs the same
@@ -113,9 +165,9 @@ function classify(tool, input, ctx) {
   // protection on shell-style deletes (Remove-Item, del /s, format D:) —
   // CC's cwd-restriction happened to catch obvious cases but missed any
   // destructive command targeting a path inside the vault.
-  if (tool === "Bash" || tool === "PowerShell") {
+  if (canonical === "Bash" || canonical === "PowerShell") {
     if (settings.protectedCommandsEnabled === false) return null;
-    return _classifyCommand(tool, input, ctx, settings);
+    return _classifyCommand(canonical, input, ctx, settings);
   }
   // Read / Glob / Grep / WebFetch / WebSearch are not currently gated —
   // their outputs carry the threat, not their inputs. Returning null
@@ -280,10 +332,27 @@ async function gate(classification, opts) {
   });
 }
 
+/**
+ * Public helper: normalize a provider-specific tool name to the
+ * Claude-Code vocabulary. Returns the input unchanged when no alias
+ * is registered. Exposed because `_handleClassifyRequest` in
+ * plugin.js needs to make the same isMutating / kind decisions
+ * `classify()` makes internally — without it, the Bash/PowerShell
+ * branches there fail to fire for Gemini's `run_shell_command`,
+ * the modal-construction picks wrong kind, and the user sees a
+ * generic deny instead of the category-specific reason
+ * ("(destructive operation)"). User report 2026-05-03.
+ */
+function normalizeToolName(tool) {
+  return TOOL_ALIASES[tool] || tool;
+}
+
 module.exports = {
   classify,
   gate,
+  normalizeToolName,
   // Exported for unit tests only:
   _activePatternDefs,
   _categoryTitle,
+  TOOL_ALIASES,
 };
