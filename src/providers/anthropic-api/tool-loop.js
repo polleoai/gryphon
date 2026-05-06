@@ -111,8 +111,30 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
+  // Issue #31: separate "peak" usage = the LAST iteration's input counts.
+  // Each iteration's input_tokens already includes the FULL history at
+  // that point (history grows iteration-by-iteration). Summing across
+  // iterations counts the same growing context multiple times, which made
+  // contextTokens 3–5× too high for tool-heavy turns and tripped
+  // auto-compact way before the real window was full. The last iteration
+  // is the high-water mark of context occupancy for the turn — that's the
+  // right number for the auto-compact threshold. totalUsage stays as the
+  // cumulative billing figure (every API call is billed for its own input
+  // re-send, even if the bytes overlap).
+  const peakUsage = {
+    input_tokens: 0,
+    cache_creation_input_tokens: 0,
+    cache_read_input_tokens: 0,
+  };
 
   let turnText = "";
+  // Issue #32: text accumulated from prior iterations within this turn.
+  // When the model emits prose, calls a tool that gets denied, then emits
+  // a follow-up message (e.g. quoting the deny copy), the bubble used to
+  // show ONLY the latest iteration — wiping the prior prose the user had
+  // just read. Carry earlier iterations forward so the bubble shows the
+  // full turn (e.g. "summary." + "\n\n" + deny copy).
+  let priorTurnText = "";
   let finalMessage = null;
   let iterations = 0;
   // Issue #4: thinking blocks accumulated across loop iterations. Each
@@ -133,13 +155,16 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     });
     if (callbacks.onStream) callbacks.onStream(stream);
 
-    // Reset turnText each iteration: the streaming bubble shows ONLY the
-    // assistant's most recent text block, not concatenated tool dialogue.
-    // (Tool results don't render to the user; they go back into history.)
+    // `iterationText` collects the current iteration's deltas. The bubble
+    // snapshot we forward via onMessage("replace") is `priorTurnText` +
+    // separator + `iterationText`, so prior iterations' prose is preserved
+    // (issue #32) without our mutating any tool-result content.
     let iterationText = "";
     stream.on("text", (delta) => {
       iterationText += delta;
-      turnText = iterationText;
+      turnText = priorTurnText
+        ? `${priorTurnText}\n\n${iterationText}`
+        : iterationText;
       if (callbacks.onMessage) callbacks.onMessage(turnText, "replace");
     });
 
@@ -155,6 +180,10 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     totalUsage.output_tokens += u.output_tokens || 0;
     totalUsage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
     totalUsage.cache_read_input_tokens += u.cache_read_input_tokens || 0;
+    // Issue #31: peak = last-iteration input snapshot (overwrite, not add).
+    peakUsage.input_tokens = u.input_tokens || 0;
+    peakUsage.cache_creation_input_tokens = u.cache_creation_input_tokens || 0;
+    peakUsage.cache_read_input_tokens = u.cache_read_input_tokens || 0;
 
     // Issue #4: harvest thinking blocks for cross-provider parity.
     if (Array.isArray(finalMessage.content)) {
@@ -168,12 +197,22 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
       }
     }
 
+    // Issue #32: fold this iteration's emitted text into the carry-forward
+    // buffer BEFORE the next iteration's `iterationText` resets. The next
+    // iteration will prepend `priorTurnText` to its snapshot so the bubble
+    // shows the full conversational turn.
+    if (iterationText) {
+      priorTurnText = priorTurnText
+        ? `${priorTurnText}\n\n${iterationText}`
+        : iterationText;
+    }
+
     // Append assistant turn to history (always — tool_use or end_turn)
     history.push({ role: "assistant", content: finalMessage.content });
 
     if (finalMessage.stop_reason !== "tool_use") {
       // Pure text response — we're done
-      return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
     }
 
     // Execute all tool_use blocks from this turn
@@ -181,7 +220,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     if (toolUseBlocks.length === 0) {
       // stop_reason said tool_use but no blocks present — defensive exit
       console.warn("[gryphon/sdk] stop_reason=tool_use but no tool_use blocks");
-      return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
     }
 
     const toolResults = [];
@@ -205,7 +244,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
   if (callbacks.onError) {
     callbacks.onError(`Tool loop exceeded ${MAX_ITERATIONS} iterations — stopping. The model may be stuck in a tool loop.`);
   }
-  return { turnText, finalMessage, totalUsage, iterations, thinkingBlocks };
+  return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
 }
 
 module.exports = { runToolLoop, MAX_ITERATIONS };

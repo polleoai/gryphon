@@ -51,8 +51,21 @@ async function runOpenAIToolLoop({
     completion_tokens: 0,
     prompt_tokens_details: { cached_tokens: 0 },
   };
+  // Issue #31: peak window occupancy = last iteration's prompt_tokens.
+  // OpenAI's prompt_tokens already includes the full chat history up to
+  // that call, so the FINAL iteration's value is the peak — not the sum,
+  // which counts the same growing history multiple times. Used by the
+  // provider for `contextTokens`; `totalUsage` remains cumulative billing.
+  const peakUsage = { prompt_tokens: 0 };
 
   let turnText = "";
+  // Issue #32: text from prior iterations within this turn. When the
+  // model emits prose, calls a tool, the tool is denied, then the model
+  // emits a follow-up message, the bubble used to show ONLY the latest
+  // iteration's text — wiping the prior prose the user had just read.
+  // Carry earlier iterations' text forward so the bubble shows the full
+  // turn (e.g. "summary." + "\n\n" + deny copy) instead of replacing.
+  let priorTurnText = "";
   let finalMessage = null;
   let iterations = 0;
 
@@ -79,7 +92,11 @@ async function runOpenAIToolLoop({
     let iterationText = "";
     stream.on("content", (_delta, snapshot) => {
       iterationText = snapshot;
-      turnText = snapshot;
+      // Issue #32: include prior iterations' text in the bubble snapshot
+      // so the chat-view "replace" event shows the full accumulated turn.
+      turnText = priorTurnText
+        ? `${priorTurnText}\n\n${iterationText}`
+        : iterationText;
       if (callbacks.onMessage) callbacks.onMessage(turnText, "replace");
     });
 
@@ -101,6 +118,19 @@ async function runOpenAIToolLoop({
     if (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) {
       totalUsage.prompt_tokens_details.cached_tokens += u.prompt_tokens_details.cached_tokens;
     }
+    // Issue #31: peak = last iteration's prompt_tokens (overwrite, not add).
+    peakUsage.prompt_tokens = u.prompt_tokens || 0;
+
+    // Issue #32: fold this iteration's emitted text into the carry-forward
+    // buffer BEFORE the next iteration starts a fresh `iterationText`.
+    // Future iterations will prepend `priorTurnText` to their snapshot
+    // so the bubble shows the full conversational turn instead of
+    // overwriting earlier prose with a deny copy.
+    if (iterationText) {
+      priorTurnText = priorTurnText
+        ? `${priorTurnText}\n\n${iterationText}`
+        : iterationText;
+    }
 
     // Append assistant turn to history. OpenAI requires preserving
     // tool_calls verbatim on the assistant message so subsequent tool
@@ -116,7 +146,7 @@ async function runOpenAIToolLoop({
 
     // Stop reasons: "stop" (normal end), "length" (max_tokens), "tool_calls"
     if (choice.finish_reason !== "tool_calls") {
-      return { turnText, finalMessage, totalUsage, iterations };
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations };
     }
 
     // Execute tool calls. Each call has shape:
@@ -125,7 +155,7 @@ async function runOpenAIToolLoop({
     if (toolCalls.length === 0) {
       // finish_reason said tool_calls but list is empty — defensive exit
       console.warn("[gryphon/openai] finish_reason=tool_calls with no tool_calls present");
-      return { turnText, finalMessage, totalUsage, iterations };
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations };
     }
 
     for (const call of toolCalls) {
@@ -176,7 +206,7 @@ async function runOpenAIToolLoop({
       `Tool loop exceeded ${MAX_ITERATIONS} iterations — stopping. The model may be stuck in a tool loop.`,
     );
   }
-  return { turnText, finalMessage, totalUsage, iterations };
+  return { turnText, finalMessage, totalUsage, peakUsage, iterations };
 }
 
 /**

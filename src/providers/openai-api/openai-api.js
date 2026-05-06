@@ -175,7 +175,7 @@ class OpenAIProvider {
     };
 
     try {
-      const { turnText, finalMessage, totalUsage } = await runOpenAIToolLoop({
+      const { turnText, finalMessage, totalUsage, peakUsage } = await runOpenAIToolLoop({
         client: this.client,
         model: this.resolvedModel,
         systemPrompt: GRYPHON_OPENAI_SYSTEM_PROMPT,
@@ -220,7 +220,13 @@ class OpenAIProvider {
 
       const { cost: turnCost } = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;
-      this.contextTokens = (totalUsage && totalUsage.prompt_tokens) || 0;
+      // Issue #31: contextTokens uses the LAST iteration's prompt_tokens
+      // (peak window occupancy), not the cumulative sum. Each iteration's
+      // prompt_tokens already includes the full chat history at that
+      // call, so summing across iterations counts the same growing
+      // context multiple times and trips auto-compact too early.
+      const peak = peakUsage || totalUsage;
+      this.contextTokens = (peak && peak.prompt_tokens) || 0;
 
       const result = {
         text: turnText || (finalMessage && finalMessage.content) || "",

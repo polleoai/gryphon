@@ -267,6 +267,102 @@ test("loop: prompt+completion tokens aggregate across iterations", async () => {
   assert.equal(result.totalUsage.prompt_tokens, 300);
   assert.equal(result.totalUsage.completion_tokens, 75);
   assert.equal(result.totalUsage.prompt_tokens_details.cached_tokens, 50);
+  // Issue #31: peakUsage.prompt_tokens is the LAST iteration's count
+  // (200), not the cumulative sum (300). Each iteration's prompt_tokens
+  // already includes the full history at that call, so summing
+  // overcounts. The provider uses peak for `contextTokens` and
+  // total for cost/billing — verify the two are decoupled.
+  assert.equal(result.peakUsage.prompt_tokens, 200,
+    "peakUsage.prompt_tokens must equal the LAST iteration's prompt_tokens, not the sum");
+});
+
+// ---------- issue #32: deny notice must NOT erase prior iteration text ----------
+
+test("loop (issue #32): iteration 2's text APPENDS to iteration 1's, not replace", async () => {
+  const vault = tmpVault();
+  fs.writeFileSync(path.join(vault, "x.txt"), "x");
+
+  const client = new MockClient();
+  // Iteration 1: model emits assistant prose AND a tool_call
+  // (note: real OpenAI completions can't carry both content and
+  // tool_calls in the same final message simultaneously, but the
+  // streaming path delivers content deltas before the tool_calls,
+  // so the chunks array emits the prose).
+  client.queueResponse({
+    chunks: ["summary."],
+    completion: {
+      id: "m1",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "summary.",
+          tool_calls: [{
+            id: "c1",
+            type: "function",
+            function: { name: "Read", arguments: JSON.stringify({ file_path: "x.txt" }) },
+          }],
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5 },
+    },
+  });
+  // Iteration 2: model quotes the (synthetic) deny copy
+  client.queueResponse({
+    chunks: ["The Gryphon plugin is blocking the deletion of `x.md`..."],
+    completion: {
+      id: "m2",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: "The Gryphon plugin is blocking the deletion of `x.md`...",
+        },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 50, completion_tokens: 20 },
+    },
+  });
+
+  const seenSnapshots = [];
+  const history = [{ role: "user", content: "summarize then delete" }];
+  const result = await runOpenAIToolLoop({
+    client,
+    model: "gpt-4o",
+    systemPrompt: "sys",
+    history,
+    ctx: { vaultRoot: vault },
+    callbacks: {
+      onMessage: (text, type) => {
+        if (type === "replace") seenSnapshots.push(text);
+      },
+    },
+  });
+
+  // The final turnText must contain BOTH iteration 1's prose AND
+  // iteration 2's deny quote, separated by a blank line. Pre-fix,
+  // this was just iteration 2's text — the user's view wiped the
+  // summary the moment the deny landed.
+  assert.match(result.turnText, /^summary\./,
+    "issue #32: turnText must START with iteration 1's prose");
+  assert.match(result.turnText, /The Gryphon plugin is blocking/,
+    "issue #32: turnText must also contain iteration 2's deny copy");
+  assert.match(result.turnText, /summary\.\n\nThe Gryphon plugin is blocking/,
+    "issue #32: iterations must be separated by a blank line");
+
+  // The streaming snapshots emitted to the chat-view must show
+  // monotonic growth — the second-iteration snapshot must INCLUDE
+  // iteration 1's prose, not replace it.
+  const iter2Snapshots = seenSnapshots.filter((s) =>
+    s.includes("The Gryphon plugin is blocking"),
+  );
+  assert.ok(iter2Snapshots.length > 0,
+    "iteration 2 must have produced at least one streaming snapshot");
+  for (const s of iter2Snapshots) {
+    assert.ok(s.startsWith("summary."),
+      `streaming snapshot during iteration 2 must preserve iteration 1's prose. Got: ${JSON.stringify(s.slice(0, 80))}`);
+  }
 });
 
 // ---------- max-iterations safety rail ----------

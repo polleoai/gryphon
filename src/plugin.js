@@ -166,6 +166,9 @@ class GryphonSettingTab extends PluginSettingTab {
         for (const p of PROVIDER_PREFS) drop.addOption(p.value, `${p.label} — ${p.desc}`);
         drop.setValue(this.plugin.settings.providerPreference || "auto");
         drop.onChange(async (value) => {
+          // Issue #29: capture the prior preference BEFORE writing the
+          // new value so the announcement message can compare from→to.
+          const prevPreference = this.plugin.settings.providerPreference || "auto";
           this.plugin.settings.providerPreference = value;
           // When the new provider doesn't recognize the persisted model id
           // (e.g. switching from openai-api → claude-code with model
@@ -177,6 +180,13 @@ class GryphonSettingTab extends PluginSettingTab {
           this.plugin.settings.model = _resetModelForProvider(this.plugin);
           await this.plugin.saveSettings();
           this.plugin._resetActiveSessions();
+          // Issue #29: tell open chat views that the provider changed
+          // so each can flash a one-shot notice naming the new provider
+          // + seed-history count. Skipped automatically when there's
+          // no prior conversation to forward.
+          if (prevPreference !== value) {
+            this.plugin._announceProviderChange(prevPreference, value);
+          }
           // Bug #22 fix: re-render the Settings tab so the Defaults
           // section (Default model + Default effort) reflects the new
           // Provider. Without this, switching to openai-api leaves
@@ -531,6 +541,26 @@ class GryphonSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.autoCompactSdk !== false).onChange(async (value) => {
           this.plugin.settings.autoCompactSdk = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // Issue #34 deferred: opt-in auto-retry on rate-limit. Off by
+    // default — automatic retries can pile up unintended cost on
+    // metered APIs. When on, a single retry fires after the parsed
+    // retry-after window (capped at 60s); a second 429 does not chain.
+    this._descToTooltip(
+      new Setting(containerEl).setName("Auto-retry on rate-limit"),
+      "When a send fails with a rate-limit error and the response " +
+      "includes a precise retry-after delay (≤60s), Gryphon will " +
+      "automatically resubmit your prompt once after the window expires. " +
+      "If turned off, your prompt is preserved in the input box and " +
+      "you press Send manually when ready. Per-day quota errors are " +
+      "never auto-retried.",
+    )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.autoRetryOnRateLimit === true).onChange(async (value) => {
+          this.plugin.settings.autoRetryOnRateLimit = value;
           await this.plugin.saveSettings();
         })
       );
@@ -1359,6 +1389,19 @@ class GryphonPlugin extends Plugin {
     // on unload. User report 2026-05-03.
     this._taintedSessions = new Set();
 
+    // Issue #33: per-CLI-provider "force fresh next spawn" signal.
+    // Parallel safety net to `_taintedSessions` (which keys by raw
+    // session_id) — but session_id matching has proved fragile in
+    // practice: a Codex thread_id rotation, a hook input that omits
+    // session_id, or a CLI that resumes a session with a different
+    // internal id all leave taint orphaned and the next spawn resumes
+    // on a poisoned transcript. This Set keys ONLY by provider kind
+    // ("codex-cli" / "gemini-cli" / "claude-code") so any CLI provider
+    // whose hook reported a protected deny is forced to spawn fresh
+    // next time, regardless of which session id we have. One-shot per
+    // entry — consumed at the start of the next spawn for that kind.
+    this._forceFreshSpawnByProvider = new Set();
+
     // ONE sweeper, called once per plugin load. Cleans up every
     // temp/state file Gryphon can leave behind across crashes and
     // reloads. Pid-liveness protects concurrent Obsidian windows
@@ -1521,6 +1564,28 @@ class GryphonPlugin extends Plugin {
    * panel (so it disappears once the user configures a provider in
    * settings, no plugin reload required).
    */
+  /**
+   * Issue #29: surface a one-shot status-bar notice in every open chat
+   * view when the user changes Provider. The notice names the new
+   * provider explicitly and tells the user how much prior conversation
+   * will seed the next message — so a Provider switch doesn't silently
+   * forward 100 turns of unrelated context to a different vendor.
+   *
+   * Skipped automatically when there's no prior conversation to forward
+   * (first-time setup) — the chat view's helper checks _fullHistory.
+   */
+  _announceProviderChange(prevPreference, newPreference) {
+    if (!prevPreference || !newPreference) return;
+    if (prevPreference === newPreference) return;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view && typeof view._flashProviderChangeNotice === "function") {
+        try { view._flashProviderChangeNotice(prevPreference, newPreference); }
+        catch (e) { console.warn("[gryphon] provider-change notice failed:", e.message); }
+      }
+    }
+  }
+
   _resetActiveSessions() {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       const view = leaf.view;
@@ -2127,6 +2192,17 @@ class GryphonPlugin extends Plugin {
       this._taintedSessions.add(req.sessionId);
     }
 
+    // Issue #33: also mark the CLI provider that emitted this hook for
+    // a fresh next spawn — robust to session_id mismatches (the hook
+    // input may not include session_id, or it may not match what the
+    // provider tracks internally). Without this, repeated denies on
+    // the same provider can leave a poisoned resume transcript that
+    // makes the model echo the prior deny copy without re-issuing the
+    // tool call, so no modal fires on the third attempt.
+    if (!allow && classification && req && typeof req.provider === "string" && req.provider) {
+      this._forceFreshSpawnByProvider.add(req.provider);
+    }
+
     return {
       decision: allow ? "allow" : "deny",
       reason: displayReason,
@@ -2145,6 +2221,21 @@ class GryphonPlugin extends Plugin {
     if (!rawSessionId || typeof rawSessionId !== "string") return false;
     if (!this._taintedSessions.has(rawSessionId)) return false;
     this._taintedSessions.delete(rawSessionId);
+    return true;
+  }
+
+  /**
+   * Issue #33: returns true if the named CLI provider had a protected
+   * deny since its last spawn AND removes the entry. Provider adapters
+   * call this in their pre-spawn block — alongside the older
+   * `consumeTaintedSession` — to force a fresh spawn even when the
+   * session_id-based check would miss (orphaned taint from a CLI that
+   * rotated thread ids, a hook input with no session_id, etc.).
+   */
+  consumeForceFreshSpawn(providerKind) {
+    if (!providerKind || typeof providerKind !== "string") return false;
+    if (!this._forceFreshSpawnByProvider.has(providerKind)) return false;
+    this._forceFreshSpawnByProvider.delete(providerKind);
     return true;
   }
 

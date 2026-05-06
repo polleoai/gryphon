@@ -37,12 +37,19 @@
  * detector, but no extra hook layer.
  */
 
-const { ClaudeCodeProvider } = require("./claude-code/claude-code");
-const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
-const { OpenAIProvider } = require("./openai-api/openai-api");
-const { GoogleProvider } = require("./google-api/google-api");
-const { CodexProvider } = require("./codex-cli/codex-cli");
-const { GeminiCliProvider } = require("./gemini-cli/gemini-cli");
+// Issue #26: provider classes are lazy-required inside each branch of
+// `createProvider` rather than at module load. Each SDK pulls in
+// significant transitive bytes:
+//   - @anthropic-ai/sdk ~150 KB
+//   - openai            ~163 KB
+//   - @google/genai     ~625 KB
+// A user on a single provider used to pay parse + side-effect cost for
+// the other two. esbuild bundles all of them either way (no DCE), but
+// Node defers `_compile` until `require()` actually runs — so deferring
+// the require defers the V8 parse + module-init work for branches the
+// user never takes. claude-code / codex-cli / gemini-cli are subprocess-
+// based and have no heavy SDK, but lazy-requiring them too keeps the
+// pattern symmetric and makes future SDK additions impossible to forget.
 const { DEFAULT_PROVIDER_PREFERENCE } = require("../constants");
 
 /**
@@ -73,23 +80,27 @@ function createProvider(plugin, cwd, options = {}) {
   // them to Claude Code's `--disallowedTools` flags on spawn.
   if (preference === "claude-code") {
     if (!claudePath) return null;
+    const { ClaudeCodeProvider } = require("./claude-code/claude-code");
     return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
   }
 
   if (preference === "anthropic-api") {
     if (!apiKey) return null;
+    const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
     return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
   }
 
   // openai-api: Stage 2 (#17) shipped — real OpenAIProvider when key present.
   if (preference === "openai-api") {
     if (!openaiKey) return null;
+    const { OpenAIProvider } = require("./openai-api/openai-api");
     return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
   }
 
   // google-api: Stage 3 (#18) shipped — real GoogleProvider when key present.
   if (preference === "google-api") {
     if (!googleKey) return null;
+    const { GoogleProvider } = require("./google-api/google-api");
     return new GoogleProvider(googleKey, cwd, { ...options, plugin });
   }
 
@@ -98,6 +109,7 @@ function createProvider(plugin, cwd, options = {}) {
   // settings. The binary must exist (settings override or autodetect).
   if (preference === "codex-cli") {
     if (!codexPath) return null;
+    const { CodexProvider } = require("./codex-cli/codex-cli");
     return new CodexProvider(codexPath, cwd, { ...options, plugin });
   }
 
@@ -106,6 +118,7 @@ function createProvider(plugin, cwd, options = {}) {
   // exist; key may also live in env (CLI handles that case itself).
   if (preference === "gemini-cli") {
     if (!geminiPath) return null;
+    const { GeminiCliProvider } = require("./gemini-cli/gemini-cli");
     return new GeminiCliProvider(geminiPath, cwd, { ...options, plugin });
   }
 
@@ -115,10 +128,22 @@ function createProvider(plugin, cwd, options = {}) {
   // (codex-cli / gemini-cli) are NOT in the auto rotation — they have
   // their own sandbox/approval UX that surprises users who didn't
   // explicitly opt in. Selecting them must be intentional.
-  if (claudePath) return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
-  if (apiKey)     return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
-  if (openaiKey)  return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
-  if (googleKey)  return new GoogleProvider(googleKey, cwd, { ...options, plugin });
+  if (claudePath) {
+    const { ClaudeCodeProvider } = require("./claude-code/claude-code");
+    return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
+  }
+  if (apiKey) {
+    const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
+    return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
+  }
+  if (openaiKey) {
+    const { OpenAIProvider } = require("./openai-api/openai-api");
+    return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
+  }
+  if (googleKey) {
+    const { GoogleProvider } = require("./google-api/google-api");
+    return new GoogleProvider(googleKey, cwd, { ...options, plugin });
+  }
   return null;
 }
 

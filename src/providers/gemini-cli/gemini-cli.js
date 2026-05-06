@@ -342,6 +342,12 @@ class GeminiCliProvider {
           rawSessionId && plugin.consumeTaintedSession(rawSessionId)) {
         this.sessionId = null;
       }
+      // Issue #33: parallel safety net keyed only by provider kind.
+      // Robust to the cases the session_id-keyed taint misses.
+      if (plugin && typeof plugin.consumeForceFreshSpawn === "function" &&
+          plugin.consumeForceFreshSpawn("gemini-cli")) {
+        this.sessionId = null;
+      }
 
       // HookDispatcher: install Gryphon's BeforeTool / AfterTool /
       // SessionStart hooks for this spawn. On success, we get env

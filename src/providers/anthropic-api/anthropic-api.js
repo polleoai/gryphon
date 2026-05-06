@@ -173,7 +173,7 @@ class AnthropicAPIProvider {
     };
 
     try {
-      const { turnText, finalMessage, totalUsage, thinkingBlocks } = await runToolLoop({
+      const { turnText, finalMessage, totalUsage, peakUsage, thinkingBlocks } = await runToolLoop({
         client: this.client,
         model: this.resolvedModel,
         history: this.history,
@@ -224,10 +224,17 @@ class AnthropicAPIProvider {
 
       const turnCost = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;
+      // Issue #31: contextTokens is the peak window occupancy (last
+      // iteration's input snapshot), NOT the cumulative sum across
+      // tool-use iterations. The sum overcounts the same growing history
+      // by ~3–5× on a 5-iteration agentic turn and trips auto-compact
+      // long before the real window is full. Cost stays cumulative —
+      // every API call bills for the full input it sent.
+      const peak = peakUsage || totalUsage;
       this.contextTokens =
-        (totalUsage.input_tokens || 0) +
-        (totalUsage.cache_creation_input_tokens || 0) +
-        (totalUsage.cache_read_input_tokens || 0);
+        (peak.input_tokens || 0) +
+        (peak.cache_creation_input_tokens || 0) +
+        (peak.cache_read_input_tokens || 0);
 
       // Prefer streaming-accumulated text (turnText). If the API ever
       // returns a response that produced no text deltas in-flight but

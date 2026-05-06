@@ -354,8 +354,148 @@ function _separateCanonicalBlocks(text) {
   return out;
 }
 
+/**
+ * Issue #29: short brand-y label used in the provider-change status
+ * notice ("will continue with Gemini"). Different from PROVIDER_PREFS's
+ * `label` field — that one carries qualifier suffixes ("(recommended)",
+ * "(advanced)") which clutter a one-line status bar string.
+ */
+/**
+ * Issue #34: classify a thrown send() error as a rate-limit / quota
+ * error so the chat-view can preserve the user's prompt for retry.
+ *
+ * Covers wire shapes from all four SDK providers + the two CLI providers:
+ *   - HTTP 429 status (status / statusCode property, or "429" in message)
+ *   - "Too Many Requests" / "rate limited" / "rate-limit" / "rate_limit"
+ *   - Gemini's "RESOURCE_EXHAUSTED" + quota markers
+ *   - "Please retry in <Xs>" copy from Gemini's friendly formatter
+ *
+ * Conservative — false negatives (missing a real rate-limit) just
+ * preserve the existing behavior (user re-types). False positives
+ * (treating a non-rate-limit error as one) only cost a prompt restore,
+ * which is harmless for the user.
+ */
+function _isRateLimitError(err) {
+  if (!err) return false;
+  const status = err.status || err.statusCode || (err.error && err.error.status);
+  if (status === 429) return true;
+  const msg = String(err.message || err);
+  if (!msg) return false;
+  return /\b429\b|Too Many Requests|rate[\s\-_]?limit(?:ed)?|RESOURCE_EXHAUSTED|[Pp]lease retry in|quota[ _]?(?:exceeded|exhausted)/i.test(msg);
+}
+
+/**
+ * Issue #34 deferred: extract the retry-after delay (in seconds) from a
+ * rate-limit error so the auto-retry path can schedule a precise
+ * resubmit instead of guessing. Returns null when no delay is parseable
+ * — the caller should NOT auto-retry without a value (avoids tight
+ * loops against unknown-cooldown rate limits).
+ *
+ * Recognized shapes:
+ *   - `Retry-After` header (seconds OR HTTP-date) on err.headers / err.response.headers
+ *   - "Please retry in 12.3s" / "retry in 500ms" copy in the error body
+ *   - SDK-specific `retryAfterSeconds` / `retry_after` fields
+ *
+ * Capped at 60s — a per-day Gemini quota reports values like 86400s,
+ * and queueing a 24h auto-retry is a footgun (background tab, cost,
+ * staleness). Anything longer than 60 returns null so the user
+ * deliberately decides whether to re-press Send later.
+ */
+function _parseRetryAfterSeconds(err) {
+  if (!err) return null;
+  const tooLong = (s) => s == null || !isFinite(s) || s <= 0 || s > 60;
+  // Direct fields some SDKs expose.
+  if (typeof err.retryAfterSeconds === "number" && !tooLong(err.retryAfterSeconds)) {
+    return err.retryAfterSeconds;
+  }
+  if (typeof err.retry_after === "number" && !tooLong(err.retry_after)) {
+    return err.retry_after;
+  }
+  // HTTP Retry-After header — fetch shape (`err.headers.get`) or plain object.
+  const headers =
+    (err.headers && (typeof err.headers.get === "function"
+      ? { "retry-after": err.headers.get("retry-after") }
+      : err.headers)) ||
+    (err.response && err.response.headers) ||
+    null;
+  if (headers) {
+    const raw = headers["retry-after"] || headers["Retry-After"];
+    if (raw) {
+      const n = Number(raw);
+      if (!tooLong(n)) return n;
+      // HTTP-date variant: parse and convert delta to seconds.
+      const t = Date.parse(raw);
+      if (isFinite(t)) {
+        const delta = (t - Date.now()) / 1000;
+        if (!tooLong(delta)) return Math.ceil(delta);
+      }
+    }
+  }
+  // "Please retry in 12.3s" / "retry in 500ms" body parse.
+  const msg = String(err.message || err || "");
+  const m = msg.match(/\b[Pp]lease retry in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b/);
+  if (m) {
+    const v = parseFloat(m[1]);
+    const seconds = m[2] === "ms" ? v / 1000 : v;
+    if (!tooLong(seconds)) return seconds;
+  }
+  return null;
+}
+
+/**
+ * Claude Code emits the synthetic placeholder `"No response requested."`
+ * as the assistant text whenever a turn ends without a real text response
+ * — e.g. tool-only turns, pass-through interpretations of short ambiguous
+ * prompts ("continue"), or aborts mid-stream. The string comes from CC's
+ * own `NO_RESPONSE_REQUESTED` constant (cc/src/utils/messages.ts), where
+ * it lives in a `SYNTHETIC_MESSAGES` set that the CLI treats as "not real
+ * content." Rendering it verbatim in the user's chat reads as a bewildering
+ * non-sequitur ("I asked the model something, it said 'No response
+ * requested'") — so we replace it with copy that names what actually
+ * happened and points at recovery actions.
+ *
+ * The match is exact to the CC constant; near-matches ("No response
+ * required", model-paraphrased variants) are LEFT ALONE — they could be
+ * legitimate model output. Same idempotent on already-clean text.
+ */
+const _CC_NO_RESPONSE_REQUESTED = "No response requested.";
+
+function _replaceNoResponsePlaceholder(text) {
+  if (typeof text !== "string") return text;
+  // Allow leading/trailing whitespace but no other surrounding content —
+  // the placeholder always arrives as the entire assistant text, never
+  // embedded in a longer reply.
+  if (text.trim() !== _CC_NO_RESPONSE_REQUESTED) return text;
+  return (
+    "_(The model returned no text response — this often happens on tool-only " +
+    "turns, very short prompts, or aborted streams. Try a more specific " +
+    "prompt, or run `/context` to inspect session state.)_"
+  );
+}
+
+function _providerLabelFor(preference) {
+  switch (preference) {
+    case "anthropic-api":  return "Anthropic API";
+    case "claude-code":    return "Claude Code CLI";
+    case "openai-api":     return "OpenAI API";
+    case "google-api":     return "Google Gemini API";
+    case "codex-cli":      return "Codex CLI";
+    case "gemini-cli":     return "Gemini CLI";
+    case "auto":           return "Auto-selected provider";
+    default:               return preference || "the new provider";
+  }
+}
+
 function filterMessagesForSave(messages, currentSessionId) {
   const currentId = currentSessionId || null;
+  // Issue #36: aborted/errored user prompts must always survive the
+  // save filter, even when their sessionId matches the current CLI
+  // session. The session-id-keyed drop assumes the CLI's jsonl has a
+  // copy — but for prompts whose response failed (timeout, rate-limit,
+  // network error), the CLI may never have received the prompt, so
+  // dropping leaves NO copy anywhere and up-arrow recall loses the
+  // user's typed text after reload. The `failed` flag is set in
+  // sendMessage's catch block; handled below.
   // Bug #24 fix: detect SDK sessions across all three providers, not just
   // the legacy anthropic-api "sdk-" prefix. Before the fix, OpenAI / Gemini
   // session ids ("openai-sdk-...", "gemini-sdk-...") didn't match the
@@ -367,6 +507,10 @@ function filterMessagesForSave(messages, currentSessionId) {
     if (!m || !m.source) return false;
     if (m.source !== "llm") return true;
     if (!currentIsCli) return true;
+    // Issue #36: aborted/errored user prompts always survive — they
+    // may not be in the CLI's jsonl (the prompt failed to land), and
+    // the existing save-drop assumption breaks for that case.
+    if (m.failed === true) return true;
     return m.sessionId !== currentId;
   });
 }
@@ -988,6 +1132,14 @@ class GryphonChatView extends ItemView {
   async onClose() {
     if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
     if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+    // Issue #34 deferred: cancel any pending rate-limit auto-retry so a
+    // closed view doesn't fire a phantom resubmit after the user moved
+    // on (or closed Obsidian).
+    if (this._autoRetryTimeout) {
+      clearTimeout(this._autoRetryTimeout);
+      this._autoRetryTimeout = null;
+      this._autoRetryFired = false;
+    }
     if (this.claudeProcess) {
       this.claudeProcess.abort();
       this.claudeProcess = null;
@@ -1215,6 +1367,11 @@ class GryphonChatView extends ItemView {
     // arg from `text` to preserve case, the matcher checks `cmd`.
     const handlers = [
       { match: (c) => c === "/clear", run: () => this._cmdClearSession() },
+      // Issue #28: /new (also /reset-context) clears seed context without
+      // touching visible bubbles. The user sees the full history; the
+      // next provider only sees turns AFTER the boundary marker.
+      { match: (c) => c === "/new" || c === "/reset-context",
+        run: () => this._cmdResetContext() },
       { match: (c) => c === "/compact", run: () => this._cmdCompact() },
       { match: (c) => c === "/context", run: () => this._cmdShowContext() },
       { match: (c) => c === "/cost" || c.startsWith("/cost "), run: () =>
@@ -1343,6 +1500,14 @@ class GryphonChatView extends ItemView {
     }
 
     if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
+    // Cancel any pending rate-limit auto-retry — /clear means the user
+    // is resetting the session deliberately, and firing a stale retry
+    // would resubmit a prompt against a now-empty conversation.
+    if (this._autoRetryTimeout) {
+      clearTimeout(this._autoRetryTimeout);
+      this._autoRetryTimeout = null;
+      this._autoRetryFired = false;
+    }
     this.plugin.settings.lastSessionId = null;
     await this.plugin.saveSettings();
     this.messages = [];
@@ -2120,10 +2285,39 @@ class GryphonChatView extends ItemView {
     if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
     this.isStreaming = false;
     this._clearQueuedPrompts();
+    // Issue #36: every path through here is an abort or timeout — the
+    // turn didn't complete. Mark the just-sent user prompt as failed
+    // BEFORE finalizeStreamingMessage triggers a save, so the save
+    // filter (which otherwise drops CLI llm messages on the assumption
+    // CC's jsonl has them) preserves the prompt for up-arrow recall.
+    this._markLastUserPromptFailed();
     if (bubbleText !== undefined && this.streamingEl) {
       this.finalizeStreamingMessage(bubbleText, doneStatus);
     } else if (fallbackFlash) {
       this._flashStatus(fallbackFlash);
+    }
+  }
+
+  /**
+   * Issue #36: walk back from the tail of `this.messages` and tag the
+   * most recent unflagged `source: "llm"`, `role: "user"` entry with
+   * `failed: true`. Called by every abort/timeout cleanup so the save
+   * filter preserves prompts the CLI never received. Bounded scan (10
+   * entries) — the user prompt is at most a few entries back from the
+   * tail in any abort scenario.
+   */
+  _markLastUserPromptFailed() {
+    if (!Array.isArray(this.messages)) return;
+    for (let i = this.messages.length - 1, n = 0; i >= 0 && n < 10; i--, n++) {
+      const m = this.messages[i];
+      if (!m) continue;
+      if (m.role === "user" && m.source === "llm") {
+        // Idempotent: if already flagged, leave it (and don't walk
+        // past to flag an older prompt — the older one belonged to a
+        // different turn). If not yet flagged, flag it once.
+        if (!m.failed) m.failed = true;
+        return;
+      }
     }
   }
 
@@ -2333,21 +2527,129 @@ class GryphonChatView extends ItemView {
    * fresh, or the model can reason from the persisted UI history shown
    * above the input box.
    */
+  /**
+   * Issue #30: stats from the last `_extractLlmTurnsFromFullHistory`
+   * call. `dropped` is the count of llm turns that were over the cap
+   * and got silently truncated. Used by the provider-change notice
+   * (#29) to surface truncation to the user instead of letting it
+   * happen invisibly.
+   *
+   * Stored on `this` rather than threaded through return shapes so the
+   * existing call sites (which only consume the seed array) don't have
+   * to change. Read AFTER calling `_extractLlmTurnsFromFullHistory`.
+   */
   _extractLlmTurnsFromFullHistory() {
-    const MAX_SDK_SEED_TURNS = 100;
+    // Issue #30: scale the seed cap by the active model's context window.
+    // The pre-fix hard-coded 100 was a sensible default for 200K-window
+    // Anthropic models — but for users on Opus 1M / Sonnet 1M the model
+    // can comfortably hold 5× more conversation. Limiting them to the
+    // same 100 turns silently dropped early context after Provider /
+    // Model switches with no UI signal.
+    //
+    // Linear scaling against a 200K baseline (the original cap's
+    // implicit assumption): 200K → 100, 1M → 500. Falls back to 100
+    // when the model id isn't in MODEL_CONTEXT (Openai / Gemini ids
+    // not yet enrolled — strictly safer than a larger guess that could
+    // overflow an unknown model's actual window).
+    const SEED_CAP_BASE = 100;
+    const SEED_CAP_BASE_WINDOW = 200_000;
+    const model = (this.plugin && this.plugin.settings && this.plugin.settings.model) || "";
+    const window = MODEL_CONTEXT[model] || SEED_CAP_BASE_WINDOW;
+    const MAX_SDK_SEED_TURNS = Math.max(
+      SEED_CAP_BASE,
+      Math.round(SEED_CAP_BASE * (window / SEED_CAP_BASE_WINDOW)),
+    );
+    // Reset the truncation stats up front so a no-history return below
+    // doesn't leave a stale value from a prior call. The notice path
+    // (#29) reads these AFTER each extraction.
+    this._lastSeedStats = { kept: 0, dropped: 0, cap: MAX_SDK_SEED_TURNS };
     if (!this._fullHistory || this._fullHistory.length === 0) return [];
-    const llmOnly = this._fullHistory.filter(
+    // Issue #28: respect the most recent /new (`context-reset`) boundary
+    // marker. Anything before it stays in the visible chat (so the user
+    // can scroll back) but is NOT sent to the next provider as seed
+    // history. This is the privacy escape hatch — switch from Anthropic
+    // to OpenAI without leaking the prior conversation.
+    let history = this._fullHistory;
+    let lastResetIdx = -1;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i] && history[i].source === "context-reset") {
+        lastResetIdx = i;
+        break;
+      }
+    }
+    if (lastResetIdx >= 0) {
+      history = history.slice(lastResetIdx + 1);
+    }
+    const llmOnly = history.filter(
       (m) => m.source === "llm" && (m.role === "user" || m.role === "assistant")
     );
+    // Issue #30: record how many llm turns were dropped by the cap so
+    // the provider-change notice (#29) can tell the user "older N turns
+    // were silently dropped" instead of letting truncation happen
+    // invisibly. Only counts what the cap drops — pre-/new turns
+    // stripped above are an explicit user choice and don't surface as
+    // "loss" in the notice.
+    const dropped = Math.max(0, llmOnly.length - MAX_SDK_SEED_TURNS);
     const tail = llmOnly.slice(-MAX_SDK_SEED_TURNS);
     // Ensure we start with a user turn — Anthropic's API rejects
     // histories that begin with an assistant message.
     const firstUserIdx = tail.findIndex((m) => m.role === "user");
     if (firstUserIdx < 0) return [];
-    return tail.slice(firstUserIdx).map((m) => ({
+    const seed = tail.slice(firstUserIdx).map((m) => ({
       role: m.role,
       content: m.text,
     }));
+    this._lastSeedStats = {
+      kept: seed.length,
+      dropped,
+      cap: MAX_SDK_SEED_TURNS,
+    };
+    return seed;
+  }
+
+  /**
+   * Issue #28: handler for /new (and /reset-context alias). Inserts a
+   * boundary marker into the persisted history so the NEXT seed-history
+   * extraction (when the next provider instance is constructed) drops
+   * everything before the marker. Visible chat is untouched — the user
+   * can still scroll back to see what they typed.
+   *
+   * Marker shape:
+   *   { role: "system", source: "context-reset", text: "...", ts, sessionId }
+   *
+   * `source: "context-reset"` is a NEW source value. `filterMessagesForSave`
+   * preserves it (only LLM messages of the current session are dropped on
+   * save), and `_extractLlmTurnsFromFullHistory` looks for it explicitly.
+   */
+  _cmdResetContext() {
+    const ts = new Date().toISOString();
+    const marker = {
+      role: "system",
+      source: "context-reset",
+      text: "── Context cleared — prior conversation stays visible above ──",
+      ts,
+      sessionId: this.plugin.settings.lastSessionId || null,
+    };
+    this.messages.push(marker);
+    if (Array.isArray(this._fullHistory)) {
+      this._fullHistory.push(marker);
+    }
+    // Render a thin separator so the user sees the boundary in the
+    // chat scroll. Distinguished from regular system banners by class
+    // so it can be styled as a divider rather than a notice card.
+    const sepEl = this.messagesEl.createDiv("gryphon-message gryphon-context-reset");
+    sepEl.createEl("span", {
+      text: marker.text,
+      cls: "gryphon-context-reset-text",
+    });
+    this._saveChatHistory();
+    // Drop any pre-built seed history for the active provider; it will
+    // be recomputed on the next send and naturally honor the marker.
+    this._pendingSdkHistory = null;
+    this.scrollToBottom();
+    this._flashStatus(
+      "Context cleared for next message — prior conversation stays visible.",
+    );
   }
 
   /**
@@ -2874,6 +3176,21 @@ class GryphonChatView extends ItemView {
       this.messages,
       this.plugin.settings.lastSessionId,
     );
+    // Defense-in-depth: regardless of how a user message ended up in
+    // `this.messages`, the persisted form must never include the auto-
+    // injected [gryphon-context] / [gryphon-reminder] composite. The load
+    // path strips both sources, but a bug in any future write site would
+    // re-introduce the leak silently. Strip here as the last gate before
+    // bytes hit disk. `filter()` returns a new array with the original
+    // element references; clone any user message we need to rewrite so we
+    // don't mutate the live in-memory chat view. See issue #35.
+    const persistable = filtered.map((m) => {
+      if (m && m.role === "user" && typeof m.text === "string") {
+        const clean = this._stripContextBlock(m.text);
+        if (clean !== m.text) return { ...m, text: clean };
+      }
+      return m;
+    });
     const realPath = this._chatHistoryPath();
     // Per-call tmp suffix — defense-in-depth against tmp-path collisions
     // across views or processes. The save chain already serializes within
@@ -2885,7 +3202,7 @@ class GryphonChatView extends ItemView {
       // races the directory can briefly be absent — a pending save that
       // fires in that window would otherwise ENOENT.
       await fs.promises.mkdir(path.dirname(realPath), { recursive: true });
-      await fs.promises.writeFile(tmpPath, JSON.stringify(filtered));
+      await fs.promises.writeFile(tmpPath, JSON.stringify(persistable));
       await fs.promises.rename(tmpPath, realPath);
       // Clear the "already warned" flag so future failures re-notify.
       this._chatHistorySaveError = null;
@@ -2925,9 +3242,39 @@ class GryphonChatView extends ItemView {
         if (data.trim()) {
           try {
             const parsed = JSON.parse(data);
+            // One-shot in-place migration: if any persisted user message
+            // still carries a literal [gryphon-context] / [gryphon-reminder]
+            // wrapper from older builds (or from a session-id rotation that
+            // copied a CC composite into chat-history.json), strip it now and
+            // write the cleaned form back to disk so the leak heals on the
+            // first load after upgrade. Best-effort — if the write-back
+            // fails the in-memory copy is still clean and the next save
+            // will heal the file naturally. See issue #35.
+            let migrated = false;
             for (const m of parsed) {
               if (!m.ts) m.ts = "2000-01-01T00:00:00Z"; // backward compat
+              if (m.role === "user" && typeof m.text === "string") {
+                const clean = this._stripContextBlock(m.text);
+                if (clean !== m.text) {
+                  m.text = clean;
+                  migrated = true;
+                }
+              }
               merged.push(m);
+            }
+            if (migrated) {
+              try {
+                const tmpPath = `${localPath}.tmp-${process.pid}-${Date.now()}-migrate`;
+                fs.writeFileSync(tmpPath, JSON.stringify(parsed));
+                fs.renameSync(tmpPath, localPath);
+                console.warn(
+                  "[gryphon] chat-history.json migrated: stripped [gryphon-context] from existing user messages (issue #35)",
+                );
+              } catch (e) {
+                console.warn(
+                  `[gryphon] chat-history.json migrate write-back failed: ${e.message}`,
+                );
+              }
             }
           } catch (parseErr) {
             // Corrupted non-empty file — preserve for user inspection.
@@ -2993,7 +3340,17 @@ class GryphonChatView extends ItemView {
               // legacy messages and persists them to chat-history.json,
               // where they'd duplicate on the next reload.
               if (d.type === "queue-operation" && d.operation === "enqueue" && d.content) {
-                merged.push({ role: "user", text: d.content, ts, source: "llm", sessionId });
+                // Strip the auto-injected [gryphon-context] / [gryphon-reminder]
+                // composite that Gryphon sent to CC. CC persists what it
+                // receives, so the raw jsonl content includes the wrapper —
+                // re-rendering it in the user bubble is the issue #35 leak.
+                merged.push({
+                  role: "user",
+                  text: this._stripContextBlock(d.content),
+                  ts,
+                  source: "llm",
+                  sessionId,
+                });
               }
               // Assistant messages (text + thinking blocks). Same
               // sessionId tag for the same reason. Issue #4: preserve
@@ -3029,7 +3386,37 @@ class GryphonChatView extends ItemView {
     }
 
     merged.sort((a, b) => (a.ts || "").localeCompare(b.ts || ""));
-    return merged;
+
+    // Issue #36 follow-on: dedupe user prompts that appear in BOTH
+    // sources (chat-history.json + CC's jsonl). The new `failed: true`
+    // fix keeps aborted prompts in chat-history.json — but if CC also
+    // received the prompt before timing out, jsonl has it too. Naive
+    // merge would render both as separate user bubbles. Dedupe by
+    // (role=user, source=llm, exact text) within a 10-second window;
+    // prefer the chat-history.json entry (it carries the `failed`
+    // flag, which the CLI jsonl entry doesn't, and we want that flag
+    // to round-trip across reloads so future saves keep preserving
+    // the prompt).
+    const seenUserKeys = new Map(); // text → { idx, ts }
+    const dedup = [];
+    for (const m of merged) {
+      if (m && m.role === "user" && m.source === "llm" && typeof m.text === "string") {
+        const ts = Date.parse(m.ts) || 0;
+        const prior = seenUserKeys.get(m.text);
+        if (prior && Math.abs(ts - prior.ts) < 10_000) {
+          // Same prompt, within 10s. Keep the one with `failed`
+          // tagged (preserves the marker across reloads); else keep
+          // the first-seen.
+          if (m.failed && !dedup[prior.idx].failed) {
+            dedup[prior.idx] = m;
+          }
+          continue;
+        }
+        seenUserKeys.set(m.text, { idx: dedup.length, ts });
+      }
+      dedup.push(m);
+    }
+    return dedup;
   }
 
   /**
@@ -3090,7 +3477,17 @@ class GryphonChatView extends ItemView {
       // (Linux Claude Code: "the current Linux version doesn't have
       // [the > prefix]"). ASCII `>` round-trips through every font.
       bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
-      bubble.createEl("span", { text: msg.text, cls: "gryphon-text" });
+      // Defense-in-depth render-time strip: ANY persisted composite that
+      // slipped past the load/save/migrate gates (e.g. a chat-history.json
+      // entry from a session that ran before the migration shipped, OR a
+      // consumer-side wrapper that pushed already-augmented text into
+      // `this.messages` directly) renders clean here. The strip is idem-
+      // potent on already-clean text. See issue #35 \u2014 Athena vendor user
+      // reported the leak still appearing in their session even after
+      // the load/save fix; this render-layer strip closes the residual
+      // path independently of any caller's discipline.
+      const renderText = this._stripContextBlock(msg.text);
+      bubble.createEl("span", { text: renderText, cls: "gryphon-text" });
       if (msg.sideNote) {
         bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
       }
@@ -3110,8 +3507,17 @@ class GryphonChatView extends ItemView {
       return msgEl;
     } else if (msg.role === "system") {
       const msgEl = document.createElement("div");
-      msgEl.className = "gryphon-message gryphon-system";
-      msgEl.createEl("span", { text: msg.text, cls: "gryphon-system-text" });
+      // Issue #28: context-reset markers render as a thin divider, not
+      // a system notice card. Distinguished by the source field so the
+      // CSS class can style them as a horizontal separator.
+      const isReset = msg.source === "context-reset";
+      msgEl.className = isReset
+        ? "gryphon-message gryphon-context-reset"
+        : "gryphon-message gryphon-system";
+      msgEl.createEl("span", {
+        text: msg.text,
+        cls: isReset ? "gryphon-context-reset-text" : "gryphon-system-text",
+      });
       return msgEl;
     }
     return null;
@@ -3422,9 +3828,52 @@ class GryphonChatView extends ItemView {
    * refresh the panel so it disappears once a provider can resolve.
    */
   async _activateProvider(preference) {
+    const prev = this.plugin.settings.providerPreference || "auto";
     this.plugin.settings.providerPreference = preference;
     await this.plugin.saveSettings();
     this.plugin._resetActiveSessions();
+    if (prev !== preference) {
+      // Issue #29: same announcement path the Settings-tab dropdown uses
+      // so the welcome-panel "Activate provider" buttons surface the
+      // same context-forward notice.
+      this.plugin._announceProviderChange(prev, preference);
+    }
+  }
+
+  /**
+   * Issue #29: one-shot status notice that fires when the user changes
+   * Provider in Settings. Wording answers the user's implicit question
+   * "what happens to my conversation when I switch?" — names the new
+   * provider explicitly, the seed-history turn count (so the user knows
+   * how much context flows forward), and the /new escape hatch.
+   *
+   * Skipped on first-time setup (no prior llm turns = nothing to
+   * forward = no notice needed). Skipped also when the Provider
+   * preference is the same value as before (idempotent saves).
+   *
+   * The seed count comes from the SAME function that produces the
+   * provider's actual seed (`_extractLlmTurnsFromFullHistory`) so the
+   * user-visible number can never drift from what's actually sent.
+   */
+  _flashProviderChangeNotice(prevPreference, newPreference) {
+    if (!this._fullHistory || this._fullHistory.length === 0) return;
+    const seed = this._extractLlmTurnsFromFullHistory();
+    if (!seed || seed.length === 0) return; // nothing forward; skip
+    const label = _providerLabelFor(newPreference);
+    // Issue #30 deferred half: when the cap dropped older turns, surface
+    // it in the notice so the user knows early context was lost — they
+    // can /new to start truly fresh OR proceed knowing the new provider
+    // only sees the recent tail. Without this signal, truncation
+    // happens silently and "the model forgot what we discussed earlier"
+    // looks like a model bug rather than a configurable seed cap.
+    const stats = this._lastSeedStats || { dropped: 0 };
+    const droppedSuffix = stats.dropped > 0
+      ? ` (older ${stats.dropped} turn${stats.dropped === 1 ? "" : "s"} dropped — increase the model's context window or /new to start fresh)`
+      : "";
+    this._flashStatus(
+      `Prior conversation (last ${seed.length} turns) will continue with ${label}${droppedSuffix}. Run /new to start fresh.`,
+      6000,
+    );
   }
 
   /**
@@ -3910,7 +4359,10 @@ class GryphonChatView extends ItemView {
       if (msg.role === "user") {
         lines.push("## User");
         lines.push("");
-        lines.push(msg.text);
+        // Issue #35 defense-in-depth: strip any composite that slipped
+        // past the load/save gates so the export markdown matches what
+        // the user TYPED, not the augmented form sent to the model.
+        lines.push(this._stripContextBlock(msg.text));
         lines.push("");
       } else if (msg.role === "assistant") {
         lines.push("## Assistant");
@@ -4128,8 +4580,28 @@ class GryphonChatView extends ItemView {
 
   async sendMessage() {
     this._userInitiatedAbort = false;
+    // Cancel any pending rate-limit auto-retry — a fresh send (manual or
+    // programmatic) supersedes the scheduled retry so we don't double-fire
+    // the same prompt. Reset BOTH the timer handle AND the `_autoRetryFired`
+    // gate so a future rate-limit later in this session can engage auto-
+    // retry again. Round 3 R-1 fix: leaving the flag at `true` here meant
+    // the auto-retry feature silently disabled itself for the rest of the
+    // session after the first manual override of a scheduled retry. /clear
+    // and onClose already reset both; sendMessage entry must do the same.
+    if (this._autoRetryTimeout) {
+      clearTimeout(this._autoRetryTimeout);
+      this._autoRetryTimeout = null;
+    }
+    this._autoRetryFired = false;
     let text = this.inputEl.value.trim();
     if (!text) return;
+
+    // Issue #34: capture the user's raw typed text BEFORE any expansion
+    // (skills, /quote, /btw, etc.) so we can restore it to the input box
+    // on rate-limit / quota errors. The downstream `text` variable gets
+    // rewritten by those transforms, but the user typed the original —
+    // re-typing after an error is the UX wart the issue calls out.
+    const originalRawText = text;
 
     // Hide autocomplete and clear input up front so slash commands (which
     // can run during streaming, e.g. /stop) don't leak the typed text.
@@ -4356,7 +4828,9 @@ class GryphonChatView extends ItemView {
         this.replaceStreamingContent(
           _collapseSummaryDrafts(
             _separateCanonicalBlocks(
-              _dedupeConsecutiveParagraphs(text),
+              _dedupeConsecutiveParagraphs(
+                _replaceNoResponsePlaceholder(text),
+              ),
             ),
           ),
         );
@@ -4500,9 +4974,15 @@ class GryphonChatView extends ItemView {
       // the provider's raw turnText, surfacing duplicate paragraphs
       // we'd already collapsed live. User report 2026-05-04
       // (macOS Gemini CLI run 2 with three summary paragraphs).
+      // `_replaceNoResponsePlaceholder` runs FIRST so the dedupe /
+      // separator passes don't fight with the CC synthetic-message
+      // string — we want to swap it for a meaningful explanation
+      // before any other scrubber sees it.
       const responseText = _collapseSummaryDrafts(
         _separateCanonicalBlocks(
-          _dedupeConsecutiveParagraphs(rawResponseText),
+          _dedupeConsecutiveParagraphs(
+            _replaceNoResponsePlaceholder(rawResponseText),
+          ),
         ),
       );
       const thinking = (result && Array.isArray(result.thinking) && result.thinking.length > 0)
@@ -4611,8 +5091,57 @@ class GryphonChatView extends ItemView {
         // the toggle) — surface the original error.
       }
 
+      // Issue #36: tag the just-sent user prompt as failed BEFORE the
+      // first save fires (finalizeStreamingMessage + addSystemMessage
+      // each trigger one). See _markLastUserPromptFailed for the why.
+      this._markLastUserPromptFailed();
       this.finalizeStreamingMessage(this.streamingText || "");
       this.addSystemMessage(`Error: ${err.message}`);
+      // Issue #34: when the failure is a rate-limit / quota error, put
+      // the user's original typed text back in the input box so they
+      // don't have to re-type. Same UX consideration as form validation
+      // errors. Detection covers Anthropic + OpenAI + Gemini wire shapes
+      // (HTTP 429, RESOURCE_EXHAUSTED, "Too Many Requests", "Please
+      // retry in", "rate-limited"). Only restores when the input is
+      // currently empty so we don't clobber whatever the user has
+      // already started typing for the next prompt.
+      if (_isRateLimitError(err) && originalRawText && !this.inputEl.value) {
+        this.inputEl.value = originalRawText;
+        // Issue #34 deferred: when the user has opted in to auto-retry
+        // AND we can parse a precise retry-after delay, schedule a
+        // single auto-resubmit. No retry without a parsed delay
+        // (avoids tight loops against unknown-cooldown rate limits)
+        // and no chained retries (a second 429 is the user's call,
+        // not ours — saves them from burning quota in a loop).
+        const retryAfter = _parseRetryAfterSeconds(err);
+        const autoRetry =
+          this.plugin.settings.autoRetryOnRateLimit === true &&
+          retryAfter !== null &&
+          !this._autoRetryFired;
+        if (autoRetry) {
+          this._autoRetryFired = true;
+          const ms = Math.ceil(retryAfter * 1000);
+          this._flashStatus(
+            `Rate limited — auto-retrying in ${Math.ceil(retryAfter)}s (turn off in Settings → Auto-retry on rate-limit).`,
+            ms + 500,
+          );
+          this._autoRetryTimeout = setTimeout(() => {
+            this._autoRetryTimeout = null;
+            // Bail if the user has typed something else, /clear'd, or
+            // closed the view in the meantime.
+            if (!this.inputEl) return;
+            if (this.inputEl.value !== originalRawText) return;
+            this.sendMessage().finally(() => {
+              this._autoRetryFired = false;
+            });
+          }, ms);
+        } else {
+          this._flashStatus(
+            "Your prompt was preserved — press Send again when the rate limit clears.",
+            6000,
+          );
+        }
+      }
       // Tear down the dead provider instance but PRESERVE the server
       // session ID. A generic abort (connection timeout, network error,
       // SDK 4xx/5xx) doesn't mean the server-side session is gone — it
@@ -4664,4 +5193,7 @@ module.exports = {
   _separateCanonicalBlocks,
   _dedupeConsecutiveParagraphs,
   _collapseSummaryDrafts,
+  _isRateLimitError,
+  _parseRetryAfterSeconds,
+  _replaceNoResponsePlaceholder,
 };

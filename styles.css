@@ -410,6 +410,23 @@
   padding: 2px 0;
 }
 
+/* Issue #28: /new boundary marker — thin centered divider so the user
+   sees the seed-history boundary in the scroll without it looking like
+   a regular system notice. The text reads "── Context cleared ──". */
+.gryphon-context-reset {
+  display: flex;
+  justify-content: center;
+  margin: 8px 0;
+  opacity: 0.55;
+}
+
+.gryphon-context-reset-text {
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.04em;
+  text-align: center;
+}
+
 /* Cost info */
 .gryphon-cost {
   display: flex;

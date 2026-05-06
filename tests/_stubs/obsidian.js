@@ -53,8 +53,40 @@ async function requestUrl() {
   return { status: 200, json: {}, text: "", headers: {} };
 }
 
+// Minimal Plugin base class stub — covers `class GryphonPlugin extends
+// Plugin { ... }` at module load. Real instances are never constructed
+// in tests; we only need the prototype chain to exist so the require()
+// doesn't blow up at class-definition time.
+class PluginSettingTab {
+  constructor(app, plugin) {
+    this.app = app;
+    this.plugin = plugin;
+    this.containerEl = { empty() {}, createEl() { return {}; } };
+  }
+  display() {}
+  hide() {}
+}
+
+class Plugin {
+  constructor(app, manifest) {
+    this.app = app;
+    this.manifest = manifest;
+  }
+  registerEvent() {}
+  registerInterval() {}
+  registerDomEvent() {}
+  registerView() {}
+  addCommand() {}
+  addRibbonIcon() { return { addClass() {} }; }
+  addStatusBarItem() { return document.createElement("div"); }
+  addSettingTab() {}
+  loadData() { return Promise.resolve({}); }
+  saveData() { return Promise.resolve(); }
+}
+
 module.exports = {
   Modal, Setting, TFile, TFolder,
   ItemView, MarkdownView, Menu, MarkdownRenderer,
+  Plugin, PluginSettingTab,
   setTooltip, requestUrl,
 };

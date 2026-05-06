@@ -881,6 +881,17 @@ const DEFAULT_SETTINGS = {
   // gets an explicit "context full" warning at 95% and can /compact manually.
   // CC mode ignores this — Claude Code handles its own auto-compaction.
   autoCompactSdk: true,
+
+  // Issue #34: when true and a send fails with a rate-limit / quota
+  // error that includes a parseable retry-after delay, Gryphon
+  // automatically resubmits the user's prompt after the window expires
+  // (capped at 60s — a per-day cap returns "retry in tomorrow morning"
+  // and we'd never auto-fire that). When false (default), the prompt
+  // is preserved in the input box for manual retry — no automatic
+  // network activity. Off by default because automatic retries can
+  // pile up unintended cost on metered APIs; opt-in for power users
+  // who'd rather wait than re-press Send.
+  autoRetryOnRateLimit: false,
 };
 
 // Aliases — resolved to concrete versions by the local CLI at spawn.
@@ -928,6 +939,7 @@ const AUTO_COMPACT_SDK_THRESHOLD_PCT = 95;
 const SLASH_COMMANDS = [
   { cmd: "/btw",         desc: "Add a side note — model logs it without expanding (costs ~30 tokens)", takesArgs: true },
   { cmd: "/clear",       desc: "Start a new session" },
+  { cmd: "/new",         desc: "Clear seed context for next message — visible bubbles stay" },
   { cmd: "/compact",     desc: "Summarize the conversation and start fresh with the summary as context" },
   { cmd: "/context",     desc: "Show context window usage" },
   { cmd: "/cost",        desc: "Show session cost" },

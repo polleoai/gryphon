@@ -165,7 +165,7 @@ class GoogleProvider {
     };
 
     try {
-      const { turnText, finalMessage, totalUsage } = await runGeminiToolLoop({
+      const { turnText, finalMessage, totalUsage, peakUsage } = await runGeminiToolLoop({
         client: this.client,
         model: this.resolvedModel,
         systemPrompt: GRYPHON_GEMINI_SYSTEM_PROMPT,
@@ -217,7 +217,13 @@ class GoogleProvider {
 
       const { cost: turnCost } = computeCost(totalUsage, this.resolvedModel);
       this.cumulativeCost += turnCost;
-      this.contextTokens = (totalUsage && totalUsage.promptTokenCount) || 0;
+      // Issue #31: contextTokens uses the LAST iteration's promptTokenCount
+      // (peak window occupancy), not the cumulative sum. Each iteration's
+      // promptTokenCount already includes the full `contents` history at
+      // that call, so summing across iterations counts the same growing
+      // context multiple times and trips auto-compact too early.
+      const peak = peakUsage || totalUsage;
+      this.contextTokens = (peak && peak.promptTokenCount) || 0;
 
       const result = {
         text: turnText || _extractFinalText(finalMessage) || "",

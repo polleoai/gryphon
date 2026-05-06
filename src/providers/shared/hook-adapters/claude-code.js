@@ -48,6 +48,12 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, permissionsOnly 
     });
     settingsFile = writeHookSettingsFile(settings);
     extraEnv.GRYPHON_PERMISSION_SOCKET = ipcSocketPath;
+    // Issue #33: identify this hook spawn's parent CLI to the plugin
+    // (parallel to codex-cli + gemini-cli adapters). On a protected
+    // deny, the plugin marks claude-code for force-fresh next spawn,
+    // robust to session_id mismatches between the hook input and
+    // the provider's stored sessionId.
+    extraEnv.GRYPHON_HOOK_PROVIDER = KIND;
   }
 
   const cleanup = () => {

@@ -104,6 +104,15 @@ async function main() {
     return;
   }
 
+  // Issue #33: identify which CLI host invoked this hook so the plugin
+  // can mark the correct provider for "force fresh next spawn" on a
+  // protected deny — robust to the cases where session_id-keyed taint
+  // misses (hook input without session_id, CLI thread-id rotation
+  // across resume, etc.). GRYPHON_HOOK_PROVIDER is set by each CLI's
+  // hook adapter at spawn time. Purely advisory: classify decisions
+  // don't depend on it; it only targets the next-spawn signal.
+  const provider = process.env.GRYPHON_HOOK_PROVIDER || null;
+
   let result;
   try {
     result = await sendToGryphon({
@@ -113,6 +122,7 @@ async function main() {
       permissionMode: input.permission_mode || null,
       cwd: input.cwd || null,
       sessionId: input.session_id || null,
+      provider,
     }, { timeoutMs: IPC_TIMEOUT_MS });
   } catch (e) {
     await emitAndExit(buildDecision(

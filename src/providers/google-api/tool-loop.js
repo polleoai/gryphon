@@ -55,8 +55,19 @@ async function runGeminiToolLoop({
     candidatesTokenCount: 0,
     cachedContentTokenCount: 0,
   };
+  // Issue #31: peak window occupancy = last iteration's promptTokenCount.
+  // Gemini's promptTokenCount already includes the full `contents` history
+  // at the call, so the FINAL iteration's value is the peak — not the sum,
+  // which counts the same growing history multiple times. Used by the
+  // provider for `contextTokens`; `totalUsage` remains cumulative billing.
+  const peakUsage = { promptTokenCount: 0 };
 
   let turnText = "";
+  // Issue #32: text accumulated from prior iterations within this turn.
+  // Mirrors the SDK Anthropic + OpenAI loops — when the model emits prose,
+  // calls a tool that gets denied, then emits a follow-up message, the
+  // bubble preserves the earlier prose instead of having it overwritten.
+  let priorTurnText = "";
   let finalMessage = null;
   let iterations = 0;
 
@@ -88,7 +99,11 @@ async function runGeminiToolLoop({
         for (const part of parts) {
           if (typeof part.text === "string" && part.text.length > 0) {
             iterationText += part.text;
-            turnText = iterationText;
+            // Issue #32: prepend prior iterations' text so the bubble shows
+            // the full turn (not just the latest segment).
+            turnText = priorTurnText
+              ? `${priorTurnText}\n\n${iterationText}`
+              : iterationText;
             if (callbacks.onMessage) callbacks.onMessage(turnText, "replace");
           }
           // functionCalls accumulate verbatim — we'll dispatch them after
@@ -111,6 +126,17 @@ async function runGeminiToolLoop({
       totalUsage.promptTokenCount += lastUsage.promptTokenCount || 0;
       totalUsage.candidatesTokenCount += lastUsage.candidatesTokenCount || 0;
       totalUsage.cachedContentTokenCount += lastUsage.cachedContentTokenCount || 0;
+      // Issue #31: peak = last iteration's promptTokenCount (overwrite, not add).
+      peakUsage.promptTokenCount = lastUsage.promptTokenCount || 0;
+    }
+
+    // Issue #32: fold this iteration's emitted text into the carry-forward
+    // buffer BEFORE the next iteration's `iterationText` resets. Future
+    // iterations will prepend `priorTurnText` to their snapshot.
+    if (iterationText) {
+      priorTurnText = priorTurnText
+        ? `${priorTurnText}\n\n${iterationText}`
+        : iterationText;
     }
 
     // Append the model's turn to history so subsequent iterations + future
@@ -148,7 +174,7 @@ async function runGeminiToolLoop({
         // the response was clipped or filtered.
         callbacks.onError(`Gemini stopped with finishReason=${lastFinishReason}.`);
       }
-      return { turnText, finalMessage, totalUsage, iterations };
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations };
     }
 
     // Dispatch tool calls. Gryphon's executeTool returns Anthropic-shape
@@ -181,7 +207,7 @@ async function runGeminiToolLoop({
       `Tool loop exceeded ${MAX_ITERATIONS} iterations — stopping. The model may be stuck in a tool loop.`,
     );
   }
-  return { turnText, finalMessage, totalUsage, iterations };
+  return { turnText, finalMessage, totalUsage, peakUsage, iterations };
 }
 
 /**

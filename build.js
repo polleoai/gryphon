@@ -1,6 +1,7 @@
 const esbuild = require("esbuild");
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const watch = process.argv.includes("--watch");
 
@@ -243,6 +244,99 @@ function resolveVendorTargets() {
   return discoverSyncTargets().vendors;
 }
 
+/**
+ * After mirroring artifacts into each vendor target, ALSO trigger that
+ * consumer's `build:all` (or `build`) script so the consumer's bundled
+ * plugin picks up the latest vendored source. Without this step, consumer
+ * bundles only refresh on `git push` (via the gryphon repo's pre-push
+ * hook), which leaves local-iteration sessions consuming a stale snapshot
+ * and surfaces user-confusing "fix doesn't take effect" symptoms.
+ *
+ * Detection: a vendor path of `<consumer>/vendor/gryphon` implies the
+ * consumer root is its grandparent. If the root has a `package.json`
+ * with a `build:all` (preferred — typically rsyncs full src/ + bundles)
+ * or `build` (fallback) script, run it.
+ *
+ * The consumer's `build:all` typically includes its OWN `rsync` from
+ * `${GRYPHON_SRC:-../gryphon}/` to vendor/gryphon — we set GRYPHON_SRC
+ * to point at this build's repo root so the consumer rsyncs the right
+ * source tree even when launched from an unusual CWD.
+ *
+ * Failures are warnings, not fatal: a broken consumer build should not
+ * halt Gryphon's own development cycle. Opt out by setting
+ * `GRYPHON_NO_VENDOR_REBUILD=1` (CI / workflows that don't want
+ * cascading rebuilds, or when the consumer is being edited concurrently).
+ *
+ * Uses `execFileSync` (no shell) — `script` is sourced from package.json
+ * but only used as an argument to `npm run`, never spliced into a shell
+ * string, so no injection surface.
+ */
+function rebuildConsumers(vendorPaths) {
+  if (vendorPaths.length === 0) return;
+  if (process.env.GRYPHON_NO_VENDOR_REBUILD === "1") {
+    console.log("[consumer-rebuild] skipped — GRYPHON_NO_VENDOR_REBUILD=1");
+    return;
+  }
+  // Recursion guard. A consumer's `build:all` typically does:
+  //   npm run sync:gryphon && cd vendor/gryphon && npm run build && ...
+  // The inner `npm run build` runs OUR build.js again from inside the
+  // synced source tree. Without this guard, the inner invocation would
+  // discover the same consumer's vendor/gryphon, fire build:all again,
+  // and fork-bomb the system. Setting GRYPHON_INSIDE_CASCADE in the
+  // child env lets us short-circuit on that re-entry.
+  if (process.env.GRYPHON_INSIDE_CASCADE === "1") {
+    console.log("[consumer-rebuild] skipped — already running inside a cascade (GRYPHON_INSIDE_CASCADE=1)");
+    return;
+  }
+  for (const vendorPath of vendorPaths) {
+    // vendorPath = <consumer>/vendor/gryphon → consumer root is two levels up.
+    const consumerRoot = path.resolve(vendorPath, "..", "..");
+    const pkgPath = path.join(consumerRoot, "package.json");
+    if (!fs.existsSync(pkgPath)) continue;
+    let pkg;
+    try {
+      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    } catch (e) {
+      console.warn(`[consumer-rebuild] ${consumerRoot}: package.json parse failed (${e.message}); skipped.`);
+      continue;
+    }
+    const scripts = (pkg && pkg.scripts) || {};
+    // Prefer build:all (full pipeline) over plain build.
+    const script = scripts["build:all"]
+      ? "build:all"
+      : (scripts.build ? "build" : null);
+    if (!script) {
+      console.log(`[consumer-rebuild] ${consumerRoot}: no build / build:all script; skipped.`);
+      continue;
+    }
+    const consumerName = path.basename(consumerRoot);
+    console.log(`[consumer-rebuild] ${consumerName}: npm run ${script} (cwd: ${consumerRoot})`);
+    try {
+      execFileSync("npm", ["run", script], {
+        cwd: consumerRoot,
+        stdio: "inherit",
+        // Most consumers' build:all rsyncs from ${GRYPHON_SRC:-../gryphon}.
+        // Setting GRYPHON_SRC to this repo's root keeps that resolution
+        // honest regardless of the consumer's relative-path assumption.
+        // GRYPHON_INSIDE_CASCADE prevents the inner Gryphon build (which
+        // runs from the consumer's vendor/gryphon) from recursing back
+        // into another consumer rebuild — see the guard at the top of
+        // this function.
+        env: {
+          ...process.env,
+          GRYPHON_SRC: __dirname,
+          GRYPHON_INSIDE_CASCADE: "1",
+        },
+      });
+      console.log(`[consumer-rebuild] ${consumerName}: ${script} ✓`);
+    } catch (e) {
+      console.warn(
+        `[consumer-rebuild] ${consumerName}: ${script} failed (${e.message}). Gryphon build continues; consumer bundle may be stale.`,
+      );
+    }
+  }
+}
+
 // esbuild plugin that syncs artifacts to GRYPHON_VAULT after every successful
 // build (one-shot AND watch). Failures inside esbuild don't trigger the
 // copy — we'd rather the vault keep its last good build than replace it
@@ -263,7 +357,14 @@ const installToVaultPlugin = {
         console.warn(`[hooks] sync failed: ${e.message}`);
       }
       copyToVault(resolveSyncTargets());
-      copyToVendor(resolveVendorTargets());
+      const vendorTargets = resolveVendorTargets();
+      copyToVendor(vendorTargets);
+      // Cascade-build each consumer (e.g. Athena) so its bundle picks
+      // up the latest vendored source on every Gryphon build, not only
+      // on git push. Closes the staleness window the user hit when
+      // testing in Athena: vendor/gryphon had the fix but Athena's
+      // main.js bundle still had the pre-fix code.
+      rebuildConsumers(vendorTargets);
     });
   },
 };

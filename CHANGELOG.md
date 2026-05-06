@@ -4,42 +4,68 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.3.1] — 2026-05-06
+
+### Added
+
+- **`/new` command** ([#28](https://github.com/polleoai/gryphon/issues/28)): clear the conversation context for the next message without losing the visible chat. Lets you switch Provider mid-thread without forwarding earlier turns to a different vendor — useful for privacy boundaries (separate Anthropic vs. OpenAI work in one session) and for starting clean when the model has gone off-track. Visible bubbles stay; only the seed sent to the next model is trimmed at the marker. Renders as a thin centered divider.
+- **Status notice on Provider change** ([#29](https://github.com/polleoai/gryphon/issues/29)): when you switch Provider in Settings, a one-line notice flashes naming the new provider and reporting how many prior turns will be sent forward as context. Run `/new` to start clean. When the conversation is too long for the cap, the notice also tells you exactly how many older turns are dropped.
+- **Auto-retry on rate limit** ([#34](https://github.com/polleoai/gryphon/issues/34)): new Settings toggle. When on AND the rate-limit response includes a precise retry-after delay (≤ 60 s), Gryphon automatically resubmits your prompt once after the window expires. Off by default — automatic retries can pile up unintended cost on metered APIs. Per-day quotas (8-hour-plus cooldowns) are never auto-retried; you decide.
+
+### Changed
+
+- **Conversation cap scales with the model's context window** ([#30](https://github.com/polleoai/gryphon/issues/30)): Provider switches and reloads previously capped seed history at the last 100 turns regardless of model. Gryphon now scales the cap with each model's actual window — 200K models stay at 100, Opus / Sonnet 1M get 500. Power users on long-running threads keep more context after Provider switches.
+- **Friendlier message when a turn ends without text**: instead of the bare phrase "No response requested." (an internal placeholder from the underlying CLI), the bubble now explains what happened — tool-only turn, very short prompt, or aborted stream — and points at `/context` for state.
+- **Cold-start is faster for single-provider users** ([#26](https://github.com/polleoai/gryphon/issues/26)): provider SDKs are now loaded only when their respective branch fires. A user on Claude Code only doesn't pay the parse cost for the OpenAI + Gemini SDKs they don't use.
+
+### Fixed
+
+- **Rate-limit messages preserve your typed prompt** ([#34](https://github.com/polleoai/gryphon/issues/34)): when a send fails with a rate-limit, your original text is restored to the input box for one-keystroke retry. No more re-typing.
+- **Aborted prompts stay reachable via up-arrow** ([#36](https://github.com/polleoai/gryphon/issues/36)): a prompt whose response timed out, errored, or was stopped no longer vanishes from up-arrow recall on next reload. Aborted prompts are exactly the ones you want to retry.
+- **Context window measurement no longer over-counts on tool-heavy turns** ([#31](https://github.com/polleoai/gryphon/issues/31)): SDK providers used to sum input tokens across all tool-use iterations of a single turn. Each iteration's count already includes the full history at that point, so summing produced 3-5× over-counts on agentic turns and triggered auto-compact long before the real window was full. Fixed: context measurement uses the last iteration's input count (the true window occupancy); cost still uses the cumulative sum (every API call bills for its own input re-send).
+- **Deny notices keep the model's prior text in view** ([#32](https://github.com/polleoai/gryphon/issues/32)): when the model emitted a summary, called a denied tool, then quoted the deny copy, the bubble used to show only the deny text — wiping the summary you'd just read. Both are now preserved in the bubble.
+- **Repeated protected-command attempts always show the modal** ([#33](https://github.com/polleoai/gryphon/issues/33)): a third attempt at the same blocked command (after two prior denies) used to skip the approve / deny modal and show the deny notice directly. Fixed: the modal fires every time, regardless of how many times the same command has been tried.
+- **Internal context block no longer leaks into your bubble** ([#35](https://github.com/polleoai/gryphon/issues/35)): chat-history sometimes rendered the internal "active file" context wrapper inside user bubbles after restart. Added defenses at every read, write, and render path so the wrapper never appears in the user's view, regardless of when the chat was created. Existing chat-history files are migrated automatically on first load.
+
+### Compatibility
+
+- **Test count**: 950 (v1.3.0) → 1016 (this release).
+- **Build size**: 1217.5 KB → 1225.6 KB (slight growth from new behaviors and defensive paths).
+- **No breaking changes**: existing settings, chat-history, and provider configs carry forward without action.
+
 ## [1.3.0] — 2026-05-04
 
 ### Added
 
-- **Codex CLI provider**: native local-CLI integration alongside the existing Claude Code CLI mode. Settings → Provider now offers "Codex CLI." Same protected-pattern guardrails fire on shell and file-mutation tools as in API modes.
-- **Gemini CLI provider**: native local-CLI integration. Settings → Provider now offers "Gemini CLI." Same guardrail parity.
-- **Windows + Linux support across all CLI providers**: previously CLI modes were Mac-first. v1.3 adds full Windows and Linux compatibility for Claude Code CLI, Codex CLI, and Gemini CLI — protected-pattern gating, modals, and chat rendering all verified on all three platforms.
-- **Stale-session recovery for Codex + Gemini CLI**: when a CLI's stored session id is no longer on disk, Gryphon transparently starts a fresh session and re-sends the user's message instead of erroring out.
-- **Universal deny copy**: every provider now produces the same descriptive deny message when a protected pattern matches:
-  > The Gryphon plugin is blocking the deletion of `/tmp/x.md` because it matches one of your protected patterns (destructive operation).
-  >
-  > To allow it:
-  > - Open Obsidian → Settings → Gryphon → Protected commands
-  > - Uncheck the matching pattern
-  > - Ask me again
-
-  Wording adapts to the operation kind (deletion / write / edit / execution) and surfaces the file or command name so users see exactly what was blocked.
-- **Friendlier rate-limit messages on Gemini**: 429 responses no longer dump raw JSON; the new copy explains the per-day vs per-minute distinction and surfaces the matched quota dimension.
-- **Optimized dispatch to different LLM models**: under-the-hood improvements unify how Gryphon talks to each provider. Result: identical guardrail behaviour, identical deny copy, identical chat polish across every model and CLI.
+- **HookDispatcher architecture**: single shared dispatcher (`src/providers/shared/hook-dispatcher.js`) wires Gryphon's PreToolUse / BeforeTool gate into every CLI provider through a small per-provider adapter (`hook-adapters/{claude-code,codex-cli,gemini-cli}.js`). One IPC server, one classify path, one modal, one session-cache, three adapters. See `docs/adr/0005-hook-dispatcher.md` for the architecture, adapter contract, and how-to-add-a-new-provider guide.
+- **Codex CLI provider** (real, not stub): full SDK-parity hook gating via Codex CLI v0.117+'s PreToolUse hook system. Codex's own sandbox + Gryphon's gate compose without redundancy.
+- **Gemini CLI provider** (real, not stub): same pattern via Gemini CLI's BeforeTool / AfterTool events. `--approval-mode yolo` is forced when hooks are wired so the full tool palette stays available headlessly; the hook is the authoritative gate.
+- **Cross-platform spawn safety**: new `src/providers/shared/win-spawn.js` replaces `shell:true` for `.cmd`/`.bat` shims with `cmd.exe /d /s /c <quoted-cmdline>` + `windowsVerbatimArguments:true`. Preserves multi-line context blocks and embedded `"` characters in the system prompt. Wired into all three CLI providers.
+- **Linux landlock fallback**: Codex CLI's `workspace-write` sandbox needs landlock (Linux ≥5.13). On older kernels (e.g. Debian Bullseye 5.10) the sandbox failed to initialize and every shell call returned "local command runner failed." Gryphon now detects this and falls back to `danger-full-access` automatically with a one-time console warning. The PreToolUse hook remains the authoritative gate.
+- **Stale-session recovery for Codex + Gemini CLI**: when `--resume <id>` references a session whose JSONL has been wiped, Gryphon catches the error, drops the stored session id, and re-spawns fresh on the same Promise.
+- **Tainted-session reset**: protected denies break the session-resume chain across all six providers (CLI + SDK) so subsequent retries always re-trigger the gate instead of model echoing the prior deny verbatim.
+- **Universal canonical deny copy**: single source of truth in `src/providers/shared/deny-copy.js` produces the same descriptive deny text across every provider. Operation description adapts: `deletion of <path>` for `rm`/`del`/`erase`/`unlink`/`shred`/`rmdir` (with optional `sudo`), `write to <path>` / `edit of <path>` for file mutations, `execution of <command>` for other shell.
+- **Chat-view rendering normalizers** (universal across all six providers): `_collapseSummaryDrafts`, `_separateCanonicalBlocks`, `_dedupeConsecutiveParagraphs`, `_buildPostDenyClarifierBlock`, `_buildCompoundReminderBlock`. Counters small-model tendencies to skip the safe sub-task on compound prompts, rationalize repeat prompts as "system noise," or emit duplicate paragraphs.
 
 ### Changed
 
-- **Protected-operation modal always re-prompts**: protected operations no longer cache in either direction. Every retry of a destructive action shows the modal so the user is the explicit decision-maker each time.
-- **Chat rendering polish**: duplicate paragraphs collapsed, smushed deny blocks paragraph-separated, draft summaries folded into a "Show earlier draft" disclosure when the model regenerates after a refusal. Snake_case tool names (`read_file`, `run_shell_command`) now render as friendly status labels in the toolbar instead of leaking raw identifiers.
-- **UI**: bubble prefix changed from Unicode chevron to plain `>` for universal font compatibility on Linux. Cleaned up assistant-bubble borders.
+- **Permission-gate cache policy**: protected operations no longer cache in either direction. Every retry shows the modal so the user is the explicit decision-maker each time.
+- **Tool-status normalization**: SDK snake_case tool names (`read_file`, `run_shell_command`, etc.) now map through the same alias table the classifier uses, so the toolbar status renders friendly natural-language labels regardless of which provider emitted them.
+- **UI polish**: bubble prefix changed from Unicode `❯` to ASCII `>` for universal Linux font compatibility. Removed `border-bottom` on assistant bubbles and hidden `<hr>` inside assistant bubbles (Claude `---` separators were rendering as visible solid lines).
 
 ### Fixed
 
-- **Windows spawn corruption**: certain prompts containing `"` characters caused CLI spawns to fail with "The system cannot find the file specified." Fixed.
-- **Up-arrow recall**: when multiple reminder blocks fired on the same turn, some leaked into the user-visible recall. Now stripped uniformly.
-- **Multi-line shell echoes**: heredocs and `python -c` blocks could leak the rest of the assistant message when scrubbed. Fixed.
+- **Windows spawn argv corruption**: embedded `"` characters in Gryphon's system prompt prematurely closed cmd.exe's wrapper quote, causing ENOENT on every Codex / Gemini / Claude Code spawn. Fixed by routing through `wrapForCmdShim`.
+- **Gemini CLI rate-limit dump**: 429 responses arrived as raw JSON dumps in the chat bubble. Now normalized via `_formatRateLimitMessage` into a friendly form that distinguishes per-day cap exhaustion from per-minute throttling.
+- **Up-arrow recall leak**: `_stripContextBlock` was single-pass; with multiple reminder blocks firing, the second + third blocks leaked into the user-visible bubble. Now iterates until stable.
+- **Trailing `Command:` echo scrubber**: regex updated to fence-aware multi-line so heredocs / `python -c` blocks don't leak into chat.
+- **Hook-adapter partial-write rollback**: `_createCodexHomeOverlay` and `_writeSettingsFile` paths now roll back the first artifact when the second write fails, preventing tmpdir leaks.
 
 ### Compatibility
 
-- **Cross-platform full pass**: macOS + Windows + Linux all six providers (Claude Code CLI, Codex CLI, Gemini CLI, Anthropic API, OpenAI API, Google API) verified end-to-end. On Linux kernels older than 5.13, Codex CLI auto-falls-back to a less restrictive sandbox with a console warning (Gryphon's protected-pattern gate remains the authoritative check).
+- **Cross-platform full pass**: macOS + Windows + Linux all six providers (Claude Code CLI, Codex CLI, Gemini CLI, Anthropic API, OpenAI API, Google API) verified end-to-end. Linux requires the landlock fallback for kernels <5.13.
 - **Test count**: 562 (pre-v1.3) → 950 (this release).
+- **Build size**: 1217.5 kb (slight growth from new providers + normalizers).
 
 ## [1.2.0] — 2026-05-02
 

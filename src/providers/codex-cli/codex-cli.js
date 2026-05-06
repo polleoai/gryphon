@@ -390,6 +390,14 @@ class CodexProvider {
           rawSessionId && plugin.consumeTaintedSession(rawSessionId)) {
         this.sessionId = null;
       }
+      // Issue #33: parallel safety net keyed only by provider kind.
+      // Robust to the cases the session_id-keyed taint misses (hook
+      // input without session_id, Codex thread_id rotation across
+      // resume, etc.). Either signal triggers a fresh spawn.
+      if (plugin && typeof plugin.consumeForceFreshSpawn === "function" &&
+          plugin.consumeForceFreshSpawn("codex-cli")) {
+        this.sessionId = null;
+      }
 
       const args = this._buildArgs(prompt);
 

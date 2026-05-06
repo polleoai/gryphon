@@ -277,6 +277,11 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath }) {
     env: {
       CODEX_HOME: overlay,
       GRYPHON_PERMISSION_SOCKET: ipcSocketPath,
+      // Issue #33: identify this hook spawn's parent CLI to the plugin
+      // so a protected deny here marks codex-cli (specifically) as
+      // needing a fresh spawn next time, regardless of whether the
+      // hook input's session_id matches what the provider tracks.
+      GRYPHON_HOOK_PROVIDER: KIND,
     },
     args: [], // Codex picks up hooks from <CODEX_HOME>/config.toml — no CLI flag needed.
     cleanup: () => _cleanupOverlay(overlay),

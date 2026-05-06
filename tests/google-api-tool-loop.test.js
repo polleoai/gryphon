@@ -235,6 +235,12 @@ test("loop: prompt+candidates token counts aggregate across iterations", async (
   assert.equal(result.totalUsage.promptTokenCount, 300);
   assert.equal(result.totalUsage.candidatesTokenCount, 75);
   assert.equal(result.totalUsage.cachedContentTokenCount, 50);
+  // Issue #31: peakUsage.promptTokenCount is the LAST iteration's count
+  // (200), not the cumulative sum (300). Each iteration's prompt count
+  // already includes the full history at that call, so summing overcounts.
+  // Provider uses peak for `contextTokens`; total stays for billing.
+  assert.equal(result.peakUsage.promptTokenCount, 200,
+    "peakUsage.promptTokenCount must equal the LAST iteration's count, not the sum");
 });
 
 // ---------- max-iterations safety rail ----------

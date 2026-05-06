@@ -222,6 +222,11 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath }) {
       GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsFile,
       GRYPHON_PERMISSION_SOCKET: ipcSocketPath,
       GRYPHON_HOOK_DIALECT: "gemini",
+      // Issue #33: identify this hook spawn's parent CLI to the plugin
+      // (parallel to codex-cli + claude-code adapters). On a protected
+      // deny, the plugin marks gemini-cli for force-fresh next spawn,
+      // regardless of session_id matching.
+      GRYPHON_HOOK_PROVIDER: KIND,
       // GEMINI_SYSTEM_MD points Gemini at a markdown file to use as
       // additional model instructions (parallel to Codex's
       // model_instructions_file). Without this, the model
