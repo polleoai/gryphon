@@ -892,6 +892,15 @@ const DEFAULT_SETTINGS = {
   // pile up unintended cost on metered APIs; opt-in for power users
   // who'd rather wait than re-press Send.
   autoRetryOnRateLimit: false,
+
+  // Issue #38: override for the cold-start connection-timeout budget.
+  // null = use the model-adaptive default from COLD_START_BUDGET_MS
+  // (Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s; non-Anthropic
+  // models fall back to DEFAULT_COLD_START_BUDGET_MS = 60s).
+  // A number (in milliseconds, must be in [MIN, MAX] from the bounds
+  // below) overrides for slow networks or unusually large prompts.
+  // Set via Settings → Gryphon → Connection timeout.
+  connectionTimeoutMs: null,
 };
 
 // Aliases — resolved to concrete versions by the local CLI at spawn.
@@ -922,6 +931,54 @@ const MODEL_CONTEXT = {
   haiku: 200000, sonnet: 200000, opus: 200000,
   "opus[1m]": 1000000,
 };
+
+// Issue #38: cold-start latency varies materially by model. Haiku spawns
+// fast; Opus 1M is slow because of KV-cache allocation for its larger
+// context window. A single hardcoded 60s budget aborted long-cold-start
+// sessions before the model could stream its first token, leaving an
+// empty bubble and a confusing "Connection timed out" message.
+//
+// These are the model-adaptive defaults that apply when the user's
+// `connectionTimeoutMs` setting is null. Only Anthropic-family models
+// have entries — non-Anthropic providers (OpenAI / Google) make
+// stateless HTTPS calls without a comparable cold-start cost, so they
+// fall through to DEFAULT_COLD_START_BUDGET_MS.
+const COLD_START_BUDGET_MS = {
+  haiku: 30_000,
+  sonnet: 60_000,
+  opus: 120_000,
+  "opus[1m]": 180_000,
+};
+// Used when settings.model isn't in COLD_START_BUDGET_MS (non-Anthropic
+// providers, future model identifiers we haven't tabulated yet).
+const DEFAULT_COLD_START_BUDGET_MS = 60_000;
+// Bounds for a user-set override. Below 5s, the timeout would fire
+// before any reasonable network roundtrip completes; above 10 minutes,
+// the user is masking a real problem they should investigate.
+const MIN_COLD_START_BUDGET_MS = 5_000;
+const MAX_COLD_START_BUDGET_MS = 600_000;
+
+/**
+ * Resolve the connection-timeout budget for the current send.
+ *
+ * Pure function so it can be unit-tested without touching the chat-view
+ * subsystem. Returns a finite positive number of milliseconds.
+ *
+ * @param {Object} args
+ * @param {number|null|undefined} args.override   settings.connectionTimeoutMs
+ * @param {string} args.model                     settings.model identifier
+ * @returns {number}                              budget in ms
+ */
+function resolveConnectionTimeoutMs({ override, model }) {
+  if (typeof override === "number"
+      && Number.isFinite(override)
+      && override >= MIN_COLD_START_BUDGET_MS
+      && override <= MAX_COLD_START_BUDGET_MS) {
+    return override;
+  }
+  // null / undefined / out-of-range / NaN / non-number → model-adaptive.
+  return COLD_START_BUDGET_MS[model] || DEFAULT_COLD_START_BUDGET_MS;
+}
 
 // Context-utilization thresholds (issue #5 / v1.1.0). Centralized here
 // so the meter colors, the proactive warning, and the SDK auto-compact
@@ -1033,4 +1090,7 @@ module.exports = {
   MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS,
   CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
+  COLD_START_BUDGET_MS, DEFAULT_COLD_START_BUDGET_MS,
+  MIN_COLD_START_BUDGET_MS, MAX_COLD_START_BUDGET_MS,
+  resolveConnectionTimeoutMs,
 };

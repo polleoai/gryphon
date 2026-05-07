@@ -565,6 +565,46 @@ class GryphonSettingTab extends PluginSettingTab {
         })
       );
 
+    // Issue #38: cold-start connection-timeout override. Empty input
+    // (or out-of-range) means "use the model-adaptive default" —
+    // Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s, others 60s.
+    // Bounds chosen so users can't disable the timer or set it so
+    // long that a hung process is indistinguishable from a slow one.
+    this._descToTooltip(
+      new Setting(containerEl).setName("Connection timeout (seconds)"),
+      "How long to wait for the model's first token before treating " +
+      "the request as stuck. Leave empty for the model-adaptive " +
+      "default (Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s; " +
+      "non-Anthropic providers 60s). Set 5–600 to override for slow " +
+      "networks or unusually large prompts.",
+    )
+      .addText((text) => {
+        const stored = this.plugin.settings.connectionTimeoutMs;
+        const display = (typeof stored === "number" && Number.isFinite(stored) && stored > 0)
+          ? String(Math.round(stored / 1000))
+          : "";
+        text
+          .setPlaceholder("default")
+          .setValue(display)
+          .onChange(async (value) => {
+            const trimmed = (value || "").trim();
+            if (!trimmed) {
+              this.plugin.settings.connectionTimeoutMs = null;
+              await this.plugin.saveSettings();
+              return;
+            }
+            const sec = Number(trimmed);
+            if (Number.isFinite(sec) && sec >= 5 && sec <= 600) {
+              this.plugin.settings.connectionTimeoutMs = Math.round(sec) * 1000;
+              await this.plugin.saveSettings();
+            }
+            // Out-of-range or non-numeric: silently ignore. The text
+            // field shows what the user typed; the next valid input
+            // overwrites. Avoids a noisy error toast on every keystroke
+            // while the user is mid-typing.
+          });
+      });
+
     this._renderSectionHeading(containerEl, { title: "Defaults" });
 
     // Per-provider Default model + Default effort. When an adapter is

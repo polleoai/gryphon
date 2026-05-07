@@ -236,13 +236,13 @@ test("issue #36 follow-on: same text outside 10s window stays as 2 entries", () 
 });
 
 test("issue #35 defense-in-depth: _renderMessage strips composite from user bubbles", () => {
-  // Athena vendor user reported the composite STILL appearing in their
-  // bubble after the load/save fix. Root cause turned out to be a
-  // pre-fix session whose in-memory this.messages already had composite
-  // entries (load-time migration didn't run because it was loaded
-  // before the fix shipped). The render-time strip closes that residual
-  // path so the bubble shows clean text regardless of what got into
-  // this.messages.
+  // A downstream consumer-vendor user reported the composite STILL
+  // appearing in their bubble after the load/save fix. Root cause
+  // turned out to be a pre-fix session whose in-memory this.messages
+  // already had composite entries (load-time migration didn't run
+  // because it was loaded before the fix shipped). The render-time
+  // strip closes that residual path so the bubble shows clean text
+  // regardless of what got into this.messages.
   const stub = {};
   stub._stripContextBlock =
     GryphonChatView.prototype._stripContextBlock.bind(stub);

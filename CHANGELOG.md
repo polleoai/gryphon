@@ -4,6 +4,27 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.4.0] — 2026-05-07
+
+### Added
+
+- **Configurable connection timeout** ([#38](https://github.com/polleoai/gryphon/issues/38)): the "wait for first token" budget is now model-adaptive — Haiku 30 s, Sonnet 60 s, Opus 120 s, Opus 1M 180 s; non-Anthropic providers stay at 60 s. Resolves false-abort cases on Opus 1M and other slow-cold-start configurations where the previous fixed 60 s deadline aborted before the model produced its first token.
+- **Connection timeout override setting**: new "Connection timeout (seconds)" field under Settings → Gryphon. Leave empty to use the model-adaptive default; set 5–600 to override for slow networks or unusually large prompts. Out-of-range values are silently ignored to avoid noisy mid-typing errors.
+
+### Changed
+
+- **Connection-timeout error bubble surfaces the actual elapsed time** and points users at the new setting in addition to suggesting a faster model. Previous wording blamed the model and offered no actionable recourse to users who specifically wanted a slower-cold-start model.
+
+### Internal (no user-visible impact)
+
+- Build pipeline simplified for downstream consumers. Gryphon now publishes through tagged releases only; consumer projects pull released tags via standard git submodule semantics rather than receiving silent overlays from the dev tree. Improves reproducibility for downstream builds and removes a class of cross-repo drift.
+
+### Compatibility
+
+- **Test count**: 1017 (v1.3.1) → 1029 (this release).
+- **Build size**: 1225.6 KB → 1227.0 KB (resolver code).
+- **No breaking changes**: existing settings carry forward; the new `connectionTimeoutMs` field defaults to `null` (use model-adaptive default).
+
 ## [1.3.1] — 2026-05-06
 
 ### Added

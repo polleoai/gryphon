@@ -65,11 +65,13 @@ const ALLOWLIST = new Set([
   "docs/v0.6.0-implementation-plan.md",
   "docs/v1.1.0-sdk-auto-compact-design.md",
   "docs/v1.1.0-sdk-auto-compact-plan.md",
-  // Dev-only Claude Code config + Git hook script. Documents the
-  // Gryphon → Athena vendor auto-sync workflow. Not in
-  // publish-release.sh's safelist, so never reaches the public repo.
+  // Dev-only agent-guidance files + dev-only release tooling.
+  // Documents the Gryphon → Athena consumption model. Not in
+  // publish-release.sh's safelist, so never reach the public repo.
   "CLAUDE.md",
-  ".githooks/pre-push",
+  "AGENTS.md",
+  "scripts/cut-public-release.sh",
+  "scripts/notify-athena-release.sh",
 ]);
 
 // Binary-like extensions are skipped (images, fonts, etc.). Text-ish

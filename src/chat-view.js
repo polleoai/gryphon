@@ -39,6 +39,7 @@ const {
   TOOL_STATUS_CORE, MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON,
   CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
+  resolveConnectionTimeoutMs,
 } = require("./constants");
 
 /**
@@ -3482,10 +3483,10 @@ class GryphonChatView extends ItemView {
       // entry from a session that ran before the migration shipped, OR a
       // consumer-side wrapper that pushed already-augmented text into
       // `this.messages` directly) renders clean here. The strip is idem-
-      // potent on already-clean text. See issue #35 \u2014 Athena vendor user
-      // reported the leak still appearing in their session even after
-      // the load/save fix; this render-layer strip closes the residual
-      // path independently of any caller's discipline.
+      // potent on already-clean text. See issue #35 \u2014 a downstream
+      // consumer-vendor user reported the leak still appearing in their
+      // session even after the load/save fix; this render-layer strip
+      // closes the residual path independently of any caller's discipline.
       const renderText = this._stripContextBlock(msg.text);
       bubble.createEl("span", { text: renderText, cls: "gryphon-text" });
       if (msg.sideNote) {
@@ -4870,21 +4871,34 @@ class GryphonChatView extends ItemView {
       }
     }, 10000);
 
-    // Connection timeout — if no response in 60s, abort the stuck process
-    // and tear down streaming state through the same shared helper that
-    // stopStreaming uses. This is how R3-1 is prevented from regressing:
-    // there's only one cleanup code path, no room for partial cleanup.
+    // Connection timeout — if no response within the model-adaptive
+    // budget (issue #38), abort the stuck process and tear down
+    // streaming state through the same shared helper that stopStreaming
+    // uses. This is how R3-1 is prevented from regressing: there's only
+    // one cleanup code path, no room for partial cleanup.
+    //
+    // Budget defaults to a per-model value (Haiku 30s, Sonnet 60s,
+    // Opus 120s, Opus 1M 180s; non-Anthropic providers fall back to 60s)
+    // so cold-start of large models has room to allocate KV-cache before
+    // we declare the call hung. The user can override via Settings →
+    // Gryphon → Connection timeout if their network is slow or their
+    // prompts trigger unusually long warm-ups.
+    const connBudgetMs = resolveConnectionTimeoutMs({
+      override: this.plugin.settings.connectionTimeoutMs,
+      model: this.plugin.settings.model,
+    });
     this._connTimeout = setTimeout(() => {
       if (this.isStreaming && this.streamingEl && !this.streamingText) {
+        const seconds = Math.round(connBudgetMs / 1000);
         const detail = stderrLog
           ? `**Debug:**\n\`\`\`\n${stderrLog.substring(0, 500)}\n\`\`\``
-          : "Try again or switch to a faster model.";
+          : "Try again, switch to a faster model, or raise the timeout in Settings → Gryphon → Connection timeout.";
         this._cleanupStreamingState({
-          bubbleText: `Connection timed out. The model may be slow to start.\n\n${detail}`,
+          bubbleText: `Connection timed out after ${seconds}s — no response from the model.\n\n${detail}`,
           doneStatus: "Timed out",
         });
       }
-    }, 60000);
+    }, connBudgetMs);
 
     try {
       // Auto-context: prepend active file path so "this note" references

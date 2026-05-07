@@ -1,7 +1,6 @@
 const esbuild = require("esbuild");
 const fs = require("fs");
 const path = require("path");
-const { execFileSync } = require("child_process");
 
 const watch = process.argv.includes("--watch");
 
@@ -45,11 +44,12 @@ const PLUGIN_SUBPATH = path.join(".obsidian", "plugins", "gryphon");
 
 // Default sync targets are AUTO-DISCOVERED rather than hardcoded — the
 // build script scans known parent directories at build time and finds
-// any vault whose `.obsidian/plugins/gryphon/` already exists, plus any
-// consumer project that vendors Gryphon at `vendor/gryphon/`. This
-// keeps consumer-project names out of tracked source while still giving
-// every build a frictionless one-shot sync to wherever the user is
-// testing.
+// any standalone vault whose `.obsidian/plugins/gryphon/` already
+// exists. Consumer projects (those that vendor Gryphon under
+// `vendor/gryphon/` and run their own build) are deliberately EXCLUDED
+// — they own their plugin-dir contents via their own bundle pipeline,
+// and silently overwriting their plugin dir from this build would
+// pin them to the dev tree instead of the gryphon release they pinned.
 //
 // Override or extend with GRYPHON_VAULT (comma- or colon-separated list)
 // — those entries get the same install treatment alongside the auto-
@@ -57,36 +57,38 @@ const PLUGIN_SUBPATH = path.join(".obsidian", "plugins", "gryphon");
 // entirely (useful in CI).
 const HOME = require("os").homedir();
 
-// Parent directories scanned for sibling vaults / consumer projects.
-// `~/Documents` catches the canonical "standalone Gryphon test vault";
-// `~/Projects` catches consumer projects that may vendor Gryphon.
+// Parent directories scanned for sibling vaults.
+// `~/Documents` catches the canonical "standalone Gryphon test vault".
+// `~/Projects` is also scanned for any non-consumer vault, but vaults
+// whose root contains a `vendor/gryphon/` are filtered out as consumers.
 const DEFAULT_SCAN_PARENTS = [
   path.join(HOME, "Documents"),
   path.join(HOME, "Projects"),
 ];
 
 /**
- * Discover sync targets at build time. Two patterns are recognized
- * inside each scan-parent directory:
+ * Discover vault sync targets at build time. Pattern recognized inside
+ * each scan-parent directory:
  *
- *   1. <parent>/<name>/.obsidian/plugins/gryphon/  → vault sync target
- *      (push artifacts into the active plugin folder so reload picks
- *      up new bytes)
+ *   <parent>/<name>/.obsidian/plugins/gryphon/  → vault sync target
+ *     (push artifacts into the active plugin folder so reload picks
+ *     up new bytes)
  *
- *   2. <parent>/<name>/vendor/gryphon/             → vendor mirror
- *      (push artifacts into a consumer project's vendored copy so the
- *      consumer's bundled-plugin build sees the latest code without
- *      waiting for a git push to fire the pre-push hook)
+ * EXCLUSION: any candidate whose root also contains `vendor/gryphon/`
+ * is treated as a consumer project and skipped. Consumer projects own
+ * their own bundled-plugin pipeline via a pinned submodule; gryphon's
+ * dev build must not write into their plugin dir, or it would override
+ * whatever release they've pinned with whatever uncommitted dev state
+ * we have right now.
  *
- * The scan is cheap (one readdir per parent + a stat per child) and
- * runs once per build invocation. Returns `{ vaults, vendors }`.
+ * The scan is cheap (one readdir per parent + two stats per child) and
+ * runs once per build invocation. Returns `{ vaults }`.
  *
  * The current Gryphon repo itself is excluded so we don't sync the
  * build artifacts back over our own source tree.
  */
 function discoverSyncTargets() {
   const vaults = [];
-  const vendors = [];
   const repoRoot = __dirname; // build.js lives at the gryphon repo root
   for (const parent of DEFAULT_SCAN_PARENTS) {
     let entries;
@@ -99,16 +101,16 @@ function discoverSyncTargets() {
       // would create a fight between the build output and the git tree.
       if (path.resolve(child) === path.resolve(repoRoot)) continue;
       const vaultPlugin = path.join(child, PLUGIN_SUBPATH);
+      if (!fs.existsSync(vaultPlugin)) continue;
+      // Consumer-project filter: a vault that ALSO has vendor/gryphon
+      // is a consumer project. Its plugin dir is owned by its own
+      // build pipeline, not ours.
       const vendorDir = path.join(child, "vendor", "gryphon");
-      try {
-        if (fs.existsSync(vaultPlugin)) vaults.push(child);
-      } catch { /* ignore */ }
-      try {
-        if (fs.existsSync(vendorDir)) vendors.push(vendorDir);
-      } catch { /* ignore */ }
+      if (fs.existsSync(vendorDir)) continue;
+      vaults.push(child);
     }
   }
-  return { vaults, vendors };
+  return { vaults };
 }
 
 /**
@@ -184,41 +186,6 @@ function copyToVault(vaultPaths, { warnOnMissing = true } = {}) {
 }
 
 /**
- * Mirror the artifact set into a vendor target (a consumer project's
- * `vendor/gryphon/` directory) so consumers of the vendored tree see
- * the new build immediately, without waiting for the next git push to
- * fire the consumer's vendor-sync hook. We do NOT mirror src/, tests/,
- * or other source-tree directories here — that remains the pre-push
- * hook's job (see CLAUDE.md). The artifact mirror is enough for in-
- * session smoke testing inside the consumer's vault.
- *
- * Skipped silently when the target directory doesn't exist.
- */
-function copyToVendor(vendorPaths) {
-  if (vendorPaths.length === 0) return;
-  for (const vendorPath of vendorPaths) {
-    if (!fs.existsSync(vendorPath)) continue;
-    let copied = 0;
-    for (const file of ARTIFACT_FILES) {
-      try {
-        const destFile = path.join(vendorPath, file);
-        const destFileDir = path.dirname(destFile);
-        if (destFileDir !== vendorPath && !fs.existsSync(destFileDir)) {
-          fs.mkdirSync(destFileDir, { recursive: true });
-        }
-        fs.copyFileSync(file, destFile);
-        copied += 1;
-      } catch (e) {
-        console.warn(`[vendor] Failed to copy ${file} → ${vendorPath}: ${e.message}`);
-      }
-    }
-    if (copied === ARTIFACT_FILES.length) {
-      console.log(`[vendor] → ${vendorPath}`);
-    }
-  }
-}
-
-/**
  * Resolve the final ordered list of vault sync targets:
  *   auto-discovered vaults ∪ GRYPHON_VAULT entries
  * GRYPHON_NO_DEFAULT_SYNC=1 disables auto-discovery — useful in CI or
@@ -227,7 +194,7 @@ function copyToVendor(vendorPaths) {
 function resolveSyncTargets() {
   const userVaults = parseVaultList(process.env.GRYPHON_VAULT);
   const skipDefaults = process.env.GRYPHON_NO_DEFAULT_SYNC === "1";
-  const discovered = skipDefaults ? { vaults: [], vendors: [] } : discoverSyncTargets();
+  const discovered = skipDefaults ? { vaults: [] } : discoverSyncTargets();
   // Order: auto-discovered first, then user-supplied; de-dupe in insertion order.
   const seen = new Set();
   const result = [];
@@ -237,104 +204,6 @@ function resolveSyncTargets() {
     result.push(v);
   }
   return result;
-}
-
-function resolveVendorTargets() {
-  if (process.env.GRYPHON_NO_DEFAULT_SYNC === "1") return [];
-  return discoverSyncTargets().vendors;
-}
-
-/**
- * After mirroring artifacts into each vendor target, ALSO trigger that
- * consumer's `build:all` (or `build`) script so the consumer's bundled
- * plugin picks up the latest vendored source. Without this step, consumer
- * bundles only refresh on `git push` (via the gryphon repo's pre-push
- * hook), which leaves local-iteration sessions consuming a stale snapshot
- * and surfaces user-confusing "fix doesn't take effect" symptoms.
- *
- * Detection: a vendor path of `<consumer>/vendor/gryphon` implies the
- * consumer root is its grandparent. If the root has a `package.json`
- * with a `build:all` (preferred — typically rsyncs full src/ + bundles)
- * or `build` (fallback) script, run it.
- *
- * The consumer's `build:all` typically includes its OWN `rsync` from
- * `${GRYPHON_SRC:-../gryphon}/` to vendor/gryphon — we set GRYPHON_SRC
- * to point at this build's repo root so the consumer rsyncs the right
- * source tree even when launched from an unusual CWD.
- *
- * Failures are warnings, not fatal: a broken consumer build should not
- * halt Gryphon's own development cycle. Opt out by setting
- * `GRYPHON_NO_VENDOR_REBUILD=1` (CI / workflows that don't want
- * cascading rebuilds, or when the consumer is being edited concurrently).
- *
- * Uses `execFileSync` (no shell) — `script` is sourced from package.json
- * but only used as an argument to `npm run`, never spliced into a shell
- * string, so no injection surface.
- */
-function rebuildConsumers(vendorPaths) {
-  if (vendorPaths.length === 0) return;
-  if (process.env.GRYPHON_NO_VENDOR_REBUILD === "1") {
-    console.log("[consumer-rebuild] skipped — GRYPHON_NO_VENDOR_REBUILD=1");
-    return;
-  }
-  // Recursion guard. A consumer's `build:all` typically does:
-  //   npm run sync:gryphon && cd vendor/gryphon && npm run build && ...
-  // The inner `npm run build` runs OUR build.js again from inside the
-  // synced source tree. Without this guard, the inner invocation would
-  // discover the same consumer's vendor/gryphon, fire build:all again,
-  // and fork-bomb the system. Setting GRYPHON_INSIDE_CASCADE in the
-  // child env lets us short-circuit on that re-entry.
-  if (process.env.GRYPHON_INSIDE_CASCADE === "1") {
-    console.log("[consumer-rebuild] skipped — already running inside a cascade (GRYPHON_INSIDE_CASCADE=1)");
-    return;
-  }
-  for (const vendorPath of vendorPaths) {
-    // vendorPath = <consumer>/vendor/gryphon → consumer root is two levels up.
-    const consumerRoot = path.resolve(vendorPath, "..", "..");
-    const pkgPath = path.join(consumerRoot, "package.json");
-    if (!fs.existsSync(pkgPath)) continue;
-    let pkg;
-    try {
-      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-    } catch (e) {
-      console.warn(`[consumer-rebuild] ${consumerRoot}: package.json parse failed (${e.message}); skipped.`);
-      continue;
-    }
-    const scripts = (pkg && pkg.scripts) || {};
-    // Prefer build:all (full pipeline) over plain build.
-    const script = scripts["build:all"]
-      ? "build:all"
-      : (scripts.build ? "build" : null);
-    if (!script) {
-      console.log(`[consumer-rebuild] ${consumerRoot}: no build / build:all script; skipped.`);
-      continue;
-    }
-    const consumerName = path.basename(consumerRoot);
-    console.log(`[consumer-rebuild] ${consumerName}: npm run ${script} (cwd: ${consumerRoot})`);
-    try {
-      execFileSync("npm", ["run", script], {
-        cwd: consumerRoot,
-        stdio: "inherit",
-        // Most consumers' build:all rsyncs from ${GRYPHON_SRC:-../gryphon}.
-        // Setting GRYPHON_SRC to this repo's root keeps that resolution
-        // honest regardless of the consumer's relative-path assumption.
-        // GRYPHON_INSIDE_CASCADE prevents the inner Gryphon build (which
-        // runs from the consumer's vendor/gryphon) from recursing back
-        // into another consumer rebuild — see the guard at the top of
-        // this function.
-        env: {
-          ...process.env,
-          GRYPHON_SRC: __dirname,
-          GRYPHON_INSIDE_CASCADE: "1",
-        },
-      });
-      console.log(`[consumer-rebuild] ${consumerName}: ${script} ✓`);
-    } catch (e) {
-      console.warn(
-        `[consumer-rebuild] ${consumerName}: ${script} failed (${e.message}). Gryphon build continues; consumer bundle may be stale.`,
-      );
-    }
-  }
 }
 
 // esbuild plugin that syncs artifacts to GRYPHON_VAULT after every successful
@@ -357,14 +226,6 @@ const installToVaultPlugin = {
         console.warn(`[hooks] sync failed: ${e.message}`);
       }
       copyToVault(resolveSyncTargets());
-      const vendorTargets = resolveVendorTargets();
-      copyToVendor(vendorTargets);
-      // Cascade-build each consumer (e.g. Athena) so its bundle picks
-      // up the latest vendored source on every Gryphon build, not only
-      // on git push. Closes the staleness window the user hit when
-      // testing in Athena: vendor/gryphon had the fix but Athena's
-      // main.js bundle still had the pre-fix code.
-      rebuildConsumers(vendorTargets);
     });
   },
 };
@@ -402,10 +263,6 @@ async function run() {
     const vaults = resolveSyncTargets();
     if (vaults.length > 0) {
       console.log(`Installing to: ${vaults.map((v) => path.join(v, PLUGIN_SUBPATH)).join(", ")}`);
-      const vendors = resolveVendorTargets();
-      if (vendors.length > 0) {
-        console.log(`Mirroring to vendor: ${vendors.join(", ")}`);
-      }
       console.log("Reload Obsidian (Cmd+R / Ctrl+R) after each change to pick up fresh bytes.");
     } else {
       console.log("No sync targets — set GRYPHON_VAULT or unset GRYPHON_NO_DEFAULT_SYNC to enable.");
