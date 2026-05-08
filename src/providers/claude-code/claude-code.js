@@ -443,7 +443,12 @@ class ClaudeCodeProvider {
       const { filterExtraArgs } = require("../shared/extra-args-filter");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "claude-code");
       if (dropped.length > 0) {
-        console.warn(
+        // Round 4 review (SFH-1): use console.error not warn — DevTools
+        // hides "warn" by default but shows "error", and consumers
+        // routinely never open DevTools at all. error is louder; if a
+        // consumer's allowedTools restriction is being silently no-op'd,
+        // they should see it as soon as they open the panel.
+        console.error(
           `[gryphon/claude-code] Dropped ${dropped.length} cross-provider flag(s) ` +
           `from extraArgs: ${dropped.join(", ")}. Use options.extraProcessArgsByProvider ` +
           `for clean per-provider targeting.`,

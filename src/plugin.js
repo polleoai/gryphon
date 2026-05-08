@@ -10,7 +10,7 @@
 const { Plugin, PluginSettingTab, Setting, Notice, Modal, setTooltip } = require("obsidian");
 const path = require("path");
 const { GryphonChatView } = require("./chat-view");
-const { DEFAULT_SETTINGS, MODELS, EFFORTS, PERMS, PROVIDER_PREFS, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
+const { DEFAULT_SETTINGS, MODELS, EFFORTS, PERMS, PROVIDER_PREFS, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, resolveConnectionTimeoutMs } = require("./constants");
 const { SkillRegistry } = require("./skills");
 const { testApiKey: testAnthropicApiKey } = require("./providers/anthropic-api/anthropic-api");
 const { testApiKey: testOpenAIApiKey } = require("./providers/openai-api/openai-api");
@@ -570,6 +570,41 @@ class GryphonSettingTab extends PluginSettingTab {
     // Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s, others 60s.
     // Bounds chosen so users can't disable the timer or set it so
     // long that a hung process is indistinguishable from a slow one.
+    //
+    // Round 4 review (SFH-4): a status line below the field shows the
+    // EFFECTIVE timeout (override or model default) so the user
+    // doesn't have to guess what was accepted. A typed "5000" (rejected
+    // — out of range, user probably meant ms) shows the validation
+    // error AND the effective fallback, so the input never silently
+    // disappears into the void.
+    let timeoutStatusEl = null;
+    const updateTimeoutStatus = (rawInput) => {
+      if (!timeoutStatusEl) return;
+      const trimmed = (rawInput || "").trim();
+      const effectiveMs = resolveConnectionTimeoutMs({
+        override: this.plugin.settings.connectionTimeoutMs,
+        model: this.plugin.settings.model,
+      });
+      const effectiveSec = Math.round(effectiveMs / 1000);
+      // Validation feedback for the current input value:
+      let prefix;
+      let color = "";
+      if (!trimmed) {
+        prefix = `Using model-adaptive default: ${effectiveSec}s`;
+      } else {
+        const sec = Number(trimmed);
+        if (Number.isFinite(sec) && sec >= 5 && sec <= 600) {
+          prefix = `✓ Override active: ${effectiveSec}s`;
+          color = "var(--color-green)";
+        } else {
+          prefix = `✗ Invalid: must be 5–600 seconds. Currently using: ${effectiveSec}s`;
+          color = "var(--color-red)";
+        }
+      }
+      timeoutStatusEl.setText(prefix);
+      timeoutStatusEl.style.color = color;
+    };
+
     this._descToTooltip(
       new Setting(containerEl).setName("Connection timeout (seconds)"),
       "How long to wait for the model's first token before treating " +
@@ -591,6 +626,7 @@ class GryphonSettingTab extends PluginSettingTab {
             if (!trimmed) {
               this.plugin.settings.connectionTimeoutMs = null;
               await this.plugin.saveSettings();
+              updateTimeoutStatus(value);
               return;
             }
             const sec = Number(trimmed);
@@ -598,11 +634,24 @@ class GryphonSettingTab extends PluginSettingTab {
               this.plugin.settings.connectionTimeoutMs = Math.round(sec) * 1000;
               await this.plugin.saveSettings();
             }
-            // Out-of-range or non-numeric: silently ignore. The text
-            // field shows what the user typed; the next valid input
-            // overwrites. Avoids a noisy error toast on every keystroke
-            // while the user is mid-typing.
+            // Out-of-range or non-numeric: don't persist. The status
+            // line below the field shows the validation error AND the
+            // effective fallback so the user knows their input was
+            // rejected and what's currently active.
+            updateTimeoutStatus(value);
           });
+      })
+      .then((setting) => {
+        timeoutStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
+        timeoutStatusEl.style.marginTop = "4px";
+        timeoutStatusEl.style.fontStyle = "italic";
+        // Initial render — show the current effective timeout from the
+        // stored setting so the user sees their last-saved state.
+        const stored = this.plugin.settings.connectionTimeoutMs;
+        const initialDisplay = (typeof stored === "number" && Number.isFinite(stored) && stored > 0)
+          ? String(Math.round(stored / 1000))
+          : "";
+        updateTimeoutStatus(initialDisplay);
       });
 
     this._renderSectionHeading(containerEl, { title: "Defaults" });
@@ -2408,8 +2457,32 @@ class GryphonPlugin extends Plugin {
     // refresh toolbar badges + invalidate any settings-derived cached
     // state. Without this, badges stay frozen at the values present
     // when the view was first opened.
-    if (this.app && this.app.workspace && typeof this.app.workspace.trigger === "function") {
-      this.app.workspace.trigger("gryphon:settings-changed", this.settings);
+    //
+    // Round 4 review (SFH-3 / CR-F4-1): wrap in try/catch so a buggy
+    // consumer-plugin listener can't reject saveSettings (the persisted
+    // data is already on disk; we don't want a listener exception to
+    // surface as "settings save failed"). Also surface unexpected
+    // missing-API as console.error rather than a silent no-op — an
+    // Obsidian update that renames `workspace.trigger` should be
+    // visible, not invisible.
+    const w = this.app && this.app.workspace;
+    if (w && typeof w.trigger === "function") {
+      try {
+        w.trigger("gryphon:settings-changed", this.settings);
+      } catch (e) {
+        console.error(
+          `[gryphon] gryphon:settings-changed listener threw — settings DID persist. ` +
+          `Listener error: ${(e && e.message) || e}`,
+        );
+      }
+    } else if (this.app) {
+      // app exists but workspace.trigger doesn't — unexpected in real Obsidian.
+      // Headless tests deliberately omit `app` entirely (the first branch above
+      // matches via the `&&`), so this only fires when the API surface drifts.
+      console.error(
+        "[gryphon] this.app.workspace.trigger missing — toolbar badges will " +
+        "not refresh until next view open. Possible Obsidian API drift.",
+      );
     }
   }
 }

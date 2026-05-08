@@ -39,7 +39,7 @@ test("Claude-only flag passes through to claude-code provider unchanged", () => 
 });
 
 test("Claude-only flag is dropped when target is codex-cli (the issue #39 case)", () => {
-  // The exact failure mode reported in the issue: Athena passes
+  // The exact failure mode reported in the issue: a downstream consumer plugin passes
   // --disable-slash-commands which is Claude-only; codex-cli spawn
   // fails with "unexpected argument."
   const args = ["--disable-slash-commands"];
@@ -73,13 +73,13 @@ test("flag-with-value: claude-only flag passes through with value to claude", ()
   assert.deepEqual(dropped, []);
 });
 
-test("Athena's actual flag set: full reproduction case from issue #39", () => {
+test("Downstream consumer's flag set: full reproduction case from issue #39", () => {
   // Concrete failure shape from the issue body:
   //   --disable-slash-commands --allowedTools <list> --append-system-prompt <text>
   const args = [
     "--disable-slash-commands",
     "--allowedTools", "Bash,Read,Edit,Write",
-    "--append-system-prompt", "You are Athena, a knowledge management assistant.",
+    "--append-system-prompt", "You are a downstream-consumer assistant.",
   ];
 
   // Sent to claude-code: all kept
@@ -171,6 +171,57 @@ test("all PROVIDER_FLAGS sets contribute to ALL_PROVIDER_FLAGS", () => {
   }
 });
 
+test("inline form: --flag=value treated identically to --flag value", () => {
+  // Self-review catch: a consumer using the `=` syntax was previously
+  // not recognized — my filter saw `--allowedTools=Bash,Read` as one
+  // unknown token and let it pass through to codex-cli, defeating
+  // the cross-provider drop. Now both forms classify identically.
+
+  // Inline form sent to non-owner: dropped.
+  const inline = ["--allowedTools=Bash,Read,Edit"];
+  const codexInline = filterExtraArgs(inline, "codex-cli");
+  assert.deepEqual(codexInline.filtered, []);
+  assert.deepEqual(codexInline.dropped, ["--allowedTools"]);
+
+  // Inline form sent to owner: kept (whole token, value-and-all).
+  const claudeInline = filterExtraArgs(inline, "claude-code");
+  assert.deepEqual(claudeInline.filtered, ["--allowedTools=Bash,Read,Edit"]);
+  assert.deepEqual(claudeInline.dropped, []);
+
+  // Separate form sent to non-owner: dropped (with value).
+  const separate = ["--allowedTools", "Bash,Read,Edit"];
+  const codexSeparate = filterExtraArgs(separate, "codex-cli");
+  assert.deepEqual(codexSeparate.filtered, []);
+  assert.deepEqual(codexSeparate.dropped, ["--allowedTools"]);
+});
+
+test("inline form: mixed inline + separate-token flags interleaved", () => {
+  // Real-world consumer might mix forms. Each flag must be classified
+  // independently regardless of form.
+  const args = [
+    "--disable-slash-commands",                  // claude, no value
+    "--allowedTools=Bash",                       // claude, inline
+    "--my-codex-flag", "myvalue",                // unknown, separate
+    "--append-system-prompt=You are an assistant.", // claude, inline (with `=` and spaces in value)
+  ];
+  const { filtered, dropped } = filterExtraArgs(args, "codex-cli");
+  // Only --my-codex-flag + its value should survive
+  assert.deepEqual(filtered, ["--my-codex-flag", "myvalue"]);
+  assert.equal(dropped.length, 3);
+  assert.deepEqual(
+    dropped.sort(),
+    ["--allowedTools", "--append-system-prompt", "--disable-slash-commands"].sort(),
+  );
+});
+
+test("inline form: unknown flag with `=` passes through (consumer responsibility)", () => {
+  // A flag we don't recognize at all in `--flag=value` form. We pass
+  // it through, same as the separate-token form's unknown-flag path.
+  const args = ["--my-future-flag=somevalue"];
+  const claude = filterExtraArgs(args, "claude-code");
+  assert.deepEqual(claude.filtered, ["--my-future-flag=somevalue"]);
+  assert.deepEqual(claude.dropped, []);
+});
 test("each provider's own flags pass through to it", () => {
   // For each provider, sample one of its flags and verify it survives
   // when filtered against itself. This guards against a misconfiguration

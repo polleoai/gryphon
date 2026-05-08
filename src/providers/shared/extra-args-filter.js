@@ -3,7 +3,7 @@
  *
  * Background: GryphonChatView's `extraProcessArgs` option lets consumers
  * append flags to every CLI provider's spawn args. Today, every provider
- * blindly forwards them — so when a consumer (e.g. Athena) wires up
+ * blindly forwards them — so when a downstream consumer plugin wires up
  * Claude-Code-only flags like `--disable-slash-commands`, the codex-cli
  * and gemini-cli spawns fail with "unknown argument."
  *
@@ -65,17 +65,33 @@ function isFlagToken(s) {
 }
 
 /**
+ * Extract the flag name from a token, handling both `--flag` and
+ * `--flag=value` forms. Returns the bare flag name (e.g. "--allowedTools"
+ * for either `--allowedTools` or `--allowedTools=Bash,Read`).
+ */
+function flagName(token) {
+  const eqIdx = token.indexOf("=");
+  return eqIdx >= 0 ? token.slice(0, eqIdx) : token;
+}
+
+/**
  * Filter `extraArgs` for the active provider, dropping cross-provider
  * flags. Each flag is classified as:
  *   - "owned by my provider" → keep (and its value if any)
  *   - "owned by another provider" → drop (and its value if any)
  *   - "unknown / generic" → keep (consumer's call)
  *
- * Value detection: a token immediately after a flag is treated as the
- * flag's value if it doesn't itself start with `--`. This handles the
- * common `--flag <value>` form. Edge case: `--flag` (no value) followed
- * by `--anotherflag` is correctly classified — the next-token-is-flag
- * check matches, so no value is consumed.
+ * Two flag forms are recognized:
+ *   - Separate tokens: `--allowedTools Bash,Read` (two argv entries)
+ *   - Inline value:    `--allowedTools=Bash,Read` (one argv entry)
+ * Both forms classify identically — the classifier reads only the flag
+ * name (everything before the first `=`).
+ *
+ * For the separate-tokens form, value detection: a token immediately
+ * after a flag is treated as the flag's value if it doesn't itself start
+ * with `--`. Edge case: `--flag` (no value) followed by `--anotherflag`
+ * is correctly classified — the next-token-is-flag check matches, so
+ * no value is consumed.
  *
  * @param {string[]} extraArgs       — the flat array of CLI tokens
  * @param {string}   providerKind    — active provider id ("claude-code", "codex-cli", "gemini-cli")
@@ -102,13 +118,20 @@ function filterExtraArgs(extraArgs, providerKind) {
       continue;
     }
 
-    const isMine = myFlags.has(arg);
-    const isOthers = !isMine && ALL_PROVIDER_FLAGS.has(arg);
+    // Classify by the flag NAME, not the whole token, so the
+    // `--flag=value` inline form is recognized identically to
+    // `--flag value` separate-token form.
+    const name = flagName(arg);
+    const isMine = myFlags.has(name);
+    const isOthers = !isMine && ALL_PROVIDER_FLAGS.has(name);
+    const isInline = name !== arg;  // true when arg contains `=`
 
     if (isOthers) {
-      // Cross-provider flag — drop it AND its value (if it has one).
-      dropped.push(arg);
-      if (i + 1 < extraArgs.length && !isFlagToken(extraArgs[i + 1])) {
+      // Cross-provider flag — drop it AND its separate-token value
+      // (if any). The inline form needs no separate consumption since
+      // value rides along inside the same token.
+      dropped.push(name);
+      if (!isInline && i + 1 < extraArgs.length && !isFlagToken(extraArgs[i + 1])) {
         i += 2;
       } else {
         i++;
@@ -116,9 +139,9 @@ function filterExtraArgs(extraArgs, providerKind) {
       continue;
     }
 
-    // Mine OR unknown. Keep flag + value-if-any.
+    // Mine OR unknown. Keep flag + separate-token value-if-any.
     filtered.push(arg);
-    if (i + 1 < extraArgs.length && !isFlagToken(extraArgs[i + 1])) {
+    if (!isInline && i + 1 < extraArgs.length && !isFlagToken(extraArgs[i + 1])) {
       filtered.push(extraArgs[i + 1]);
       i += 2;
     } else {

@@ -196,3 +196,75 @@ test("refreshToolbarLabels is safe when toolbar buttons haven't been created yet
   // No buttons assigned at all
   assert.doesNotThrow(() => stubView.refreshToolbarLabels());
 });
+
+test("Round 4 SFH-3: saveSettings survives a listener that throws", async () => {
+  // A buggy consumer plugin's listener should NOT propagate exceptions
+  // up through saveSettings — the persisted data is already on disk;
+  // a listener bug must not surface as "settings save failed."
+  const GryphonPlugin = require("../src/plugin");
+
+  const stubPlugin = Object.create(GryphonPlugin.prototype);
+  stubPlugin.settings = { model: "sonnet" };
+  stubPlugin.saveData = async () => { /* persist no-op */ };
+  let triggered = false;
+  stubPlugin.app = {
+    workspace: {
+      trigger: () => {
+        triggered = true;
+        throw new Error("listener exploded");
+      },
+    },
+  };
+
+  // saveSettings must not reject even though the trigger threw.
+  await assert.doesNotReject(stubPlugin.saveSettings());
+  assert.equal(triggered, true, "trigger handler should still have been invoked");
+});
+
+test("Round 4 SFH-2: chat-view warns on unknown extraProcessArgsByProvider keys", () => {
+  // A typoed key (e.g. "claude_code" with underscore) silently no-op'd
+  // the consumer's flags before — every spawn missed the consumer's
+  // intended args with no diagnostic. Now the construction-time check
+  // logs a console.error so the typo surfaces during integration test.
+  const { GryphonChatView } = require("../src/chat-view");
+
+  // Capture console.error invocations.
+  const origError = console.error;
+  const errors = [];
+  console.error = (...args) => { errors.push(args.join(" ")); };
+
+  try {
+    // Construct a stub view via the actual constructor path. ItemView
+    // base class is a noop stub from _stubs/obsidian.js; what we care
+    // about is the validation side-effect on options.
+    const stubLeaf = { /* unused by validation */ };
+    const stubPlugin = {
+      manifest: { version: "1.4.x-test" },
+      settings: { model: "sonnet" },
+    };
+    new GryphonChatView(stubLeaf, stubPlugin, {
+      extraProcessArgsByProvider: {
+        "claude_code": ["--allowedTools", "Bash"],   // typoed (underscore)
+        "claudeCode":  ["--allowedTools", "Read"],   // typoed (camel)
+        "claude-code": ["--allowedTools", "Edit"],   // correct — should NOT warn
+      },
+    });
+
+    assert.equal(errors.length, 2, "should warn once per unknown key");
+    assert.ok(
+      errors.some((e) => e.includes("claude_code")),
+      "warning should name the typoed key",
+    );
+    assert.ok(
+      errors.some((e) => e.includes("claudeCode")),
+      "warning should name the second typoed key",
+    );
+    // Correct key must NOT trigger a warning.
+    assert.ok(
+      !errors.some((e) => e.includes('"claude-code"')),
+      "valid key should not produce a warning",
+    );
+  } finally {
+    console.error = origError;
+  }
+});

@@ -718,6 +718,24 @@ class GryphonChatView extends ItemView {
     // receives only its own bucket merged with the legacy extraProcessArgs
     // (which is filtered for cross-provider compatibility).
     this.extraProcessArgsByProvider = options.extraProcessArgsByProvider || {};
+    // Round 4 review (SFH-2): validate the keys at construction so a
+    // typo like "claude_code" or "claudeCode" surfaces during the
+    // consumer's integration test instead of silently no-op'ing every
+    // spawn forever. One-shot O(n) check — n is at most 6.
+    const KNOWN_PROVIDER_KINDS = [
+      "claude-code", "anthropic-api", "openai-api", "google-api",
+      "codex-cli", "gemini-cli",
+    ];
+    const knownSet = new Set(KNOWN_PROVIDER_KINDS);
+    for (const key of Object.keys(this.extraProcessArgsByProvider)) {
+      if (!knownSet.has(key)) {
+        console.error(
+          `[gryphon] extraProcessArgsByProvider has unknown provider key ` +
+          `"${key}". Args under this key will be ignored. Valid keys: ` +
+          `${KNOWN_PROVIDER_KINDS.join(", ")}.`,
+        );
+      }
+    }
     this.onBeforeSend = options.onBeforeSend || null;
     this.viewType = options.viewType || "gryphon-view";
     this.viewDisplayText = options.displayText || "Gryphon";

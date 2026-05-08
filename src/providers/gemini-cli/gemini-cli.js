@@ -284,7 +284,10 @@ class GeminiCliProvider {
       const { filterExtraArgs } = require("../shared/extra-args-filter");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "gemini-cli");
       if (dropped.length > 0) {
-        console.warn(
+        // Round 4 review (SFH-1): use console.error not warn — see
+        // claude-code.js for the rationale. Louder is better when the
+        // user-visible effect is "your flag was silently ignored."
+        console.error(
           `[gryphon/gemini-cli] Dropped ${dropped.length} cross-provider flag(s) ` +
           `from extraArgs: ${dropped.join(", ")}. Use options.extraProcessArgsByProvider ` +
           `for clean per-provider targeting.`,

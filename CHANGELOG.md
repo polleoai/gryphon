@@ -4,6 +4,27 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.4.2] — 2026-05-08
+
+### Fixed
+
+- **Cross-provider flag drops are now visible in DevTools.** When `extraProcessArgs` flags belonging to a different provider get filtered out, the resulting log line uses `console.error` instead of `console.warn`. DevTools hides `warn`-level messages by default but shows `error`, so a consumer plugin's silently-no-op'd `--allowedTools` is no longer silent.
+- **`extraProcessArgsByProvider` typoed keys now warn loudly.** A consumer plugin that wrote `claude_code` (underscore) or `claudeCode` (camel) instead of the correct `claude-code` used to silently no-op for every spawn. The chat view now validates keys at construction and logs a `console.error` for any unknown provider key.
+- **Settings → Connection timeout: out-of-range input no longer silent.** Typing a number outside the 5–600 range used to be ignored without feedback. A status line below the field now shows the validation result (`✓ Override active: 90s` / `✗ Invalid: must be 5–600 seconds. Currently using: 60s`) and the effective timeout in real time.
+- **`saveSettings` resilient to a listener that throws.** A buggy listener subscribed to `gryphon:settings-changed` could previously reject `saveSettings`, surfacing a "settings save failed" toast even though the persisted data was already on disk. The trigger is now wrapped in `try/catch`; the listener exception is logged but does not propagate.
+- **Settings reactive surface logs API drift.** If a future Obsidian release renames `app.workspace.trigger`, the silent guard used to absorb the change and quietly stop refreshing badges. The guard now logs a `console.error` for the "API surface drifted" case while staying silent in headless test environments.
+
+### Internal (no user-visible impact)
+
+- **`extra-args-filter` now recognizes the `--flag=value` inline form.** A self-review pass caught that `--allowedTools=Bash,Read` was previously treated as one unknown token and slipped through to non-Claude providers. The filter now splits on `=` to extract the flag name before classification.
+- **Misleading comment in `factory.js`** about the per-provider `extraArgs` filter clarified — the filter is a safety net that applies to BOTH the legacy bucket and `extraProcessArgsByProvider`, not just the legacy one.
+
+### Compatibility
+
+- **Test count**: 1047 (v1.4.1) → 1052 (this release).
+- **Build size**: 1229.6 KB → 1231.0 KB.
+- **No breaking changes**: all changes are observability + resilience improvements.
+
 ## [1.4.1] — 2026-05-08
 
 ### Fixed

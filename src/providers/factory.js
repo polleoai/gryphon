@@ -77,10 +77,12 @@ function createProvider(plugin, cwd, options = {}) {
 
   // Issue #39: per-provider extraArgs targeting. `enrich(kind)` returns
   // options with extraArgs = legacy bucket + extraArgsByProvider[kind].
-  // Each CLI provider runs its own cross-provider filter against the
-  // merged set (the per-kind additions slip through cleanly since
-  // they're already addressed to the right provider). SDK providers
-  // silently ignore extraArgs — the merge is harmless for them.
+  // The merged array is run through the provider's cross-provider
+  // filter (in claude-code.js / codex-cli.js / gemini-cli.js); both
+  // buckets are equally subject to it, so a misaddressed flag like
+  // extraArgsByProvider['codex-cli'] = ['--allowedTools'] still gets
+  // dropped. The filter is a safety net regardless of which bucket the
+  // flag came from. SDK providers ignore extraArgs entirely.
   const enrich = (kind) => {
     const legacy = Array.isArray(options.extraArgs) ? options.extraArgs : [];
     const perKind =
