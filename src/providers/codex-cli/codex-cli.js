@@ -332,8 +332,21 @@ class CodexProvider {
       args.push("-m", this.options.model);
     }
 
+    // Issue #39: filter out flags that belong to other providers
+    // (Claude Code's --disable-slash-commands, --allowedTools, etc.)
+    // so a multi-provider consumer can pass a shared extraArgs without
+    // failing the codex spawn with "unexpected argument."
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      args.push(...this.options.extraArgs);
+      const { filterExtraArgs } = require("../shared/extra-args-filter");
+      const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "codex-cli");
+      if (dropped.length > 0) {
+        console.warn(
+          `[gryphon/codex-cli] Dropped ${dropped.length} cross-provider flag(s) ` +
+          `from extraArgs: ${dropped.join(", ")}. Use options.extraProcessArgsByProvider ` +
+          `for clean per-provider targeting.`,
+        );
+      }
+      args.push(...filtered);
     }
 
     // Prompt as the trailing positional. Use `--` separator to prevent

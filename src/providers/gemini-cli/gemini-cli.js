@@ -277,8 +277,20 @@ class GeminiCliProvider {
       args.push("--resume", _unwrapSession(this.sessionId));
     }
 
+    // Issue #39: filter out flags that belong to other providers so a
+    // multi-provider consumer can pass a shared extraArgs without
+    // failing the gemini spawn on Claude- or Codex-only flags.
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      args.push(...this.options.extraArgs);
+      const { filterExtraArgs } = require("../shared/extra-args-filter");
+      const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "gemini-cli");
+      if (dropped.length > 0) {
+        console.warn(
+          `[gryphon/gemini-cli] Dropped ${dropped.length} cross-provider flag(s) ` +
+          `from extraArgs: ${dropped.join(", ")}. Use options.extraProcessArgsByProvider ` +
+          `for clean per-provider targeting.`,
+        );
+      }
+      args.push(...filtered);
     }
 
     return args;

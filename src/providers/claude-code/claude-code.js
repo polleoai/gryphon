@@ -436,8 +436,20 @@ class ClaudeCodeProvider {
     args.push("--append-system-prompt", appendParts.join(" · "));
 
     // Plugin-specific args appended last — callers supply whatever they need.
-    if (this.options.extraArgs) {
-      args.push(...this.options.extraArgs);
+    // Issue #39: drop flags that belong to other providers (codex/gemini)
+    // so a multi-provider consumer can pass a shared extraArgs without
+    // breaking spawns on the other CLIs.
+    if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
+      const { filterExtraArgs } = require("../shared/extra-args-filter");
+      const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "claude-code");
+      if (dropped.length > 0) {
+        console.warn(
+          `[gryphon/claude-code] Dropped ${dropped.length} cross-provider flag(s) ` +
+          `from extraArgs: ${dropped.join(", ")}. Use options.extraProcessArgsByProvider ` +
+          `for clean per-provider targeting.`,
+        );
+      }
+      args.push(...filtered);
     }
 
     // Emit the full CC arg vector, hook-settings file path + contents,

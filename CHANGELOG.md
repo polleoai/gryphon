@@ -4,6 +4,24 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.4.1] — 2026-05-08
+
+### Fixed
+
+- **Cross-provider flag leakage no longer breaks non-Claude spawns** ([#39](https://github.com/polleoai/gryphon/issues/39)): when a consuming plugin passed Claude-Code-only flags (e.g. `--disable-slash-commands`, `--allowedTools`, `--append-system-prompt`) via `extraProcessArgs`, switching the active provider to Codex CLI or Gemini CLI used to fail the spawn with "unexpected argument." Each provider now filters out flags that belong to other providers before spawning, with a one-line warning so consumers see what was dropped. The Claude Code provider keeps Claude-only flags; Codex / Gemini drop them.
+- **Toolbar badges now refresh when settings change** ([#40](https://github.com/polleoai/gryphon/issues/40)): the model / effort / permission badges used to keep showing the value that was active when the chat panel was first opened. Switching provider or model in Settings — whether from Gryphon's own Settings tab or from a consumer plugin's settings tab — now updates all three badges immediately. No more "reload Obsidian to see the right model" workaround.
+
+### Added
+
+- **`extraProcessArgsByProvider` option for clean per-provider arg routing**: alongside the legacy `extraProcessArgs` (which now filters cross-provider flags), consuming plugins can pass `extraProcessArgsByProvider: { 'claude-code': [...], 'codex-cli': [...], 'gemini-cli': [...] }`. Each provider receives only its own bucket — no filtering needed because each entry is already addressed to the right provider. Recommended path for new consumer integrations.
+- **`gryphon:settings-changed` workspace event**: every `plugin.saveSettings()` now fires this event after persisting. Consumer plugins that maintain their own settings-derived state can subscribe to invalidate their caches automatically instead of detaching/reopening views.
+
+### Compatibility
+
+- **Test count**: 1029 (v1.4.0) → 1047 (this release).
+- **Build size**: 1227.0 KB → 1229.6 KB.
+- **No breaking changes**: `extraProcessArgs` continues to work for existing consumers (with the new cross-provider filter making it safer in mixed-provider setups). The `gryphon:settings-changed` event is additive.
+
 ## [1.4.0] — 2026-05-07
 
 ### Added

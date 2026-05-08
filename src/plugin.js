@@ -2403,6 +2403,14 @@ class GryphonPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+    // Issue #40: notify any open GryphonChatView instances (and
+    // consumer plugins listening) that settings changed, so they can
+    // refresh toolbar badges + invalidate any settings-derived cached
+    // state. Without this, badges stay frozen at the values present
+    // when the view was first opened.
+    if (this.app && this.app.workspace && typeof this.app.workspace.trigger === "function") {
+      this.app.workspace.trigger("gryphon:settings-changed", this.settings);
+    }
   }
 }
 

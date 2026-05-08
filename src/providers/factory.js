@@ -75,33 +75,50 @@ function createProvider(plugin, cwd, options = {}) {
   const codexPath = settings.codexPath || _detectCodexBinary();
   const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
 
+  // Issue #39: per-provider extraArgs targeting. `enrich(kind)` returns
+  // options with extraArgs = legacy bucket + extraArgsByProvider[kind].
+  // Each CLI provider runs its own cross-provider filter against the
+  // merged set (the per-kind additions slip through cleanly since
+  // they're already addressed to the right provider). SDK providers
+  // silently ignore extraArgs — the merge is harmless for them.
+  const enrich = (kind) => {
+    const legacy = Array.isArray(options.extraArgs) ? options.extraArgs : [];
+    const perKind =
+      (options.extraArgsByProvider && options.extraArgsByProvider[kind]) || [];
+    return {
+      ...options,
+      extraArgs: [...legacy, ...perKind],
+      plugin,
+    };
+  };
+
   // claude-code provider receives `plugin` too, so it can read the
   // active protected-path / protected-command settings and translate
   // them to Claude Code's `--disallowedTools` flags on spawn.
   if (preference === "claude-code") {
     if (!claudePath) return null;
     const { ClaudeCodeProvider } = require("./claude-code/claude-code");
-    return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
+    return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
   }
 
   if (preference === "anthropic-api") {
     if (!apiKey) return null;
     const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
-    return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
+    return new AnthropicAPIProvider(apiKey, cwd, enrich("anthropic-api"));
   }
 
   // openai-api: Stage 2 (#17) shipped — real OpenAIProvider when key present.
   if (preference === "openai-api") {
     if (!openaiKey) return null;
     const { OpenAIProvider } = require("./openai-api/openai-api");
-    return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
+    return new OpenAIProvider(openaiKey, cwd, enrich("openai-api"));
   }
 
   // google-api: Stage 3 (#18) shipped — real GoogleProvider when key present.
   if (preference === "google-api") {
     if (!googleKey) return null;
     const { GoogleProvider } = require("./google-api/google-api");
-    return new GoogleProvider(googleKey, cwd, { ...options, plugin });
+    return new GoogleProvider(googleKey, cwd, enrich("google-api"));
   }
 
   // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled
@@ -110,7 +127,7 @@ function createProvider(plugin, cwd, options = {}) {
   if (preference === "codex-cli") {
     if (!codexPath) return null;
     const { CodexProvider } = require("./codex-cli/codex-cli");
-    return new CodexProvider(codexPath, cwd, { ...options, plugin });
+    return new CodexProvider(codexPath, cwd, enrich("codex-cli"));
   }
 
   // gemini-cli (v1.3): the Google Gemini CLI subprocess. Auth via
@@ -119,7 +136,7 @@ function createProvider(plugin, cwd, options = {}) {
   if (preference === "gemini-cli") {
     if (!geminiPath) return null;
     const { GeminiCliProvider } = require("./gemini-cli/gemini-cli");
-    return new GeminiCliProvider(geminiPath, cwd, { ...options, plugin });
+    return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli"));
   }
 
   // auto: claude-code wins if available (subscription path is no extra
@@ -130,19 +147,19 @@ function createProvider(plugin, cwd, options = {}) {
   // explicitly opt in. Selecting them must be intentional.
   if (claudePath) {
     const { ClaudeCodeProvider } = require("./claude-code/claude-code");
-    return new ClaudeCodeProvider(claudePath, cwd, { ...options, plugin });
+    return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
   }
   if (apiKey) {
     const { AnthropicAPIProvider } = require("./anthropic-api/anthropic-api");
-    return new AnthropicAPIProvider(apiKey, cwd, { ...options, plugin });
+    return new AnthropicAPIProvider(apiKey, cwd, enrich("anthropic-api"));
   }
   if (openaiKey) {
     const { OpenAIProvider } = require("./openai-api/openai-api");
-    return new OpenAIProvider(openaiKey, cwd, { ...options, plugin });
+    return new OpenAIProvider(openaiKey, cwd, enrich("openai-api"));
   }
   if (googleKey) {
     const { GoogleProvider } = require("./google-api/google-api");
-    return new GoogleProvider(googleKey, cwd, { ...options, plugin });
+    return new GoogleProvider(googleKey, cwd, enrich("google-api"));
   }
   return null;
 }

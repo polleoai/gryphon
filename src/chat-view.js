@@ -13,7 +13,18 @@
  * Extension points (passed via constructor `options`):
  *   - extraToolStatus      — entries merged into the tool→status map for
  *                            custom MCP tools
- *   - extraProcessArgs     — CLI args appended to every CLI provider spawn
+ *   - extraProcessArgs     — CLI args appended to every CLI provider spawn.
+ *                            Cross-provider flags are filtered (issue #39):
+ *                            a Claude-only flag like --disable-slash-commands
+ *                            is silently dropped before the codex-cli or
+ *                            gemini-cli spawn so the spawn doesn't fail with
+ *                            "unknown argument."
+ *   - extraProcessArgsByProvider — { 'claude-code': [...], 'codex-cli': [...],
+ *                            'gemini-cli': [...], ... } — per-provider
+ *                            extra CLI args. Skips the cross-provider
+ *                            filter (entries are already targeted). Use
+ *                            this for clean per-provider routing instead
+ *                            of relying on the filter.
  *   - onBeforeSend         — callback(text) => boolean. Return true to
  *                            "consume" a message (intercept domain-specific
  *                            commands before they reach the provider).
@@ -703,6 +714,10 @@ class GryphonChatView extends ItemView {
     // full contract.
     this.toolStatusMap = { ...TOOL_STATUS_CORE, ...(options.extraToolStatus || {}) };
     this.extraProcessArgs = options.extraProcessArgs || [];
+    // Issue #39: per-provider extra CLI args. Each provider's adapter
+    // receives only its own bucket merged with the legacy extraProcessArgs
+    // (which is filtered for cross-provider compatibility).
+    this.extraProcessArgsByProvider = options.extraProcessArgsByProvider || {};
     this.onBeforeSend = options.onBeforeSend || null;
     this.viewType = options.viewType || "gryphon-view";
     this.viewDisplayText = options.displayText || "Gryphon";
@@ -1008,6 +1023,20 @@ class GryphonChatView extends ItemView {
 
     this.sendBtn = inputArea.createEl("button", { text: "Send", cls: "gryphon-btn-send" });
     this.sendBtn.addEventListener("click", () => this.sendMessage());
+
+    // Issue #40: refresh toolbar badges when settings change. Fires
+    // when the user (or a consumer plugin's settings tab) changes any
+    // setting and calls plugin.saveSettings() — which now triggers
+    // `gryphon:settings-changed` on the Obsidian workspace bus.
+    // Without this, the model / effort / permission badges stay stale
+    // until the plugin is reloaded.
+    if (this.app && this.app.workspace && typeof this.app.workspace.on === "function") {
+      this.registerEvent(
+        this.app.workspace.on("gryphon:settings-changed", () => {
+          this.refreshToolbarLabels();
+        }),
+      );
+    }
   }
 
   /**
@@ -1189,17 +1218,32 @@ class GryphonChatView extends ItemView {
   }
 
   /**
-   * Re-compute toolbar button labels in place. Called by the plugin's
-   * _resetActiveSessions() whenever a setting changes that affects what
-   * the toolbar should display \u2014 most notably providerPreference, since
-   * switching to openai-api / google-api in Settings should immediately
-   * change the model button from "Sonnet" to the Stage-N-pending label
-   * (Bug #21).
+   * Re-compute toolbar button labels in place. Called by:
+   *   1. The plugin's _resetActiveSessions() \u2014 direct invocation when
+   *      settings change that affect what the toolbar should display
+   *      (most notably providerPreference \u2014 Bug #21).
+   *   2. The `gryphon:settings-changed` workspace event (issue #40) \u2014
+   *      fires from plugin.saveSettings() so consumer-plugin settings
+   *      tabs that mutate plugin.settings + saveSettings() also trigger
+   *      a badge refresh, not just Gryphon's own settings tab.
+   *
+   * Refreshes ALL toolbar buttons that are derived from plugin.settings
+   * (model, effort, permission). The context-meter badge is updated
+   * separately by the streaming layer.
    */
   refreshToolbarLabels() {
     if (this.modelBtn) {
       this.modelBtn.setText(modelButtonText(this.plugin) + " \u25be");
       this.modelBtn.setAttribute("title", modelButtonTitle(this.plugin));
+    }
+    if (this.effortBtn) {
+      this.effortBtn.setText(labelFor(EFFORTS, this.plugin.settings.effort) + " \u25be");
+    }
+    if (this.permBtn) {
+      this.permBtn.setText(labelFor(PERMS, this.plugin.settings.permissionMode) + " \u25be");
+      // YOLO highlight class \u2014 toggled to match the active mode each refresh.
+      const isYolo = this.plugin.settings.permissionMode === "bypassPermissions";
+      this.permBtn.classList.toggle("gryphon-perm-yolo", isYolo);
     }
   }
 
@@ -4752,6 +4796,7 @@ class GryphonChatView extends ItemView {
         resumeSessionId: this.plugin.settings.lastSessionId || undefined,
         compactionSummary: compactionPreamble,
         extraArgs,
+        extraArgsByProvider: this.extraProcessArgsByProvider,
         initialHistory: sdkInitialHistory,
       });
       if (!this.claudeProcess) {
