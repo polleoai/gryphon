@@ -1,0 +1,25 @@
+{
+  "name": "@gryphon/plugin",
+  "version": "1.5.0",
+  "description": "Bring AI to your vault — with guardrails at runtime.",
+  "private": true,
+  "license": "MIT",
+  "author": "POLLEO.AI",
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js --watch",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.90.0",
+    "@google/genai": "^1.51.0",
+    "@gryphon/protect": "*",
+    "@gryphon/provider-config": "*",
+    "@gryphon/provider-runtime": "*",
+    "openai": "^6.35.0",
+    "undici": "^8.1.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

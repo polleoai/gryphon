@@ -1,7 +1,7 @@
 {
   "name": "obsidian-gryphon",
-  "version": "1.4.2",
-  "description": "Bring AI to your vault — with guardrails at runtime.",
+  "version": "1.5.0",
+  "description": "Bring AI to your vault — with guardrails at runtime. (npm workspace root)",
   "main": "main.js",
   "private": true,
   "license": "MIT",
@@ -19,19 +19,13 @@
     "ai",
     "chat"
   ],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "node build.js",
-    "dev": "node build.js --watch",
-    "test": "node --test tests/*.test.js",
-    "build:install": "node build.js && echo 'Built. Copy main.js + manifest.json + styles.css into your vault .obsidian/plugins/gryphon/ to install.'"
-  },
-  "dependencies": {
-    "@anthropic-ai/sdk": "^0.90.0",
-    "@google/genai": "^1.51.0",
-    "openai": "^6.35.0",
-    "undici": "^8.1.0"
-  },
-  "devDependencies": {
-    "esbuild": "^0.25.0"
+    "build": "npm run build -w @gryphon/plugin",
+    "dev": "npm run dev -w @gryphon/plugin",
+    "test": "npm test --workspaces --if-present",
+    "build:install": "npm run build && echo 'Built. Copy main.js + manifest.json + styles.css into your vault .obsidian/plugins/gryphon/ to install.'"
   }
 }

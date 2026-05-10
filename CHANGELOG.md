@@ -4,6 +4,22 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.5.0] — 2026-05-09
+
+### Internal (no user-visible behavior change)
+
+- **Architectural reorganization** into separately-versioned packages: provider configuration, the LLM runtime, the runtime-protection layer, and the Obsidian plugin shell now live in independently-evolvable code units. This is foundation work for upcoming protection-content updates and standalone library distribution. See `docs/adr/0006-three-axis-workspace-split.md` for the full rationale and consequences.
+- **`createProtectionContext({ plugin, settings })` factory** added as the unified consumer entry into the protection layer. Wraps spawn-preparation, classify, and availability checks behind a single object. Enables non-Obsidian consumers (CLI hosts, web apps, custom plugins) to inject Gryphon's protection without reaching for individual modules.
+- **`require("obsidian")` made lazy** in the permission gate. Modules that transitively reach into the protection layer no longer trigger an Obsidian-runtime resolve at module load — useful for non-UI code paths and Node test runners that haven't registered an `obsidian` stub.
+- **Public package surfaces** for each layer: `@gryphon/protect`, `@gryphon/provider-runtime`, `@gryphon/provider-config`. All four packages (including `@gryphon/plugin`) ship together as the single Obsidian plugin distribution; the splits are internal.
+
+### Compatibility
+
+- **No behavior change for end users.** Every v1.4.x feature works identically. Settings persist normally; no migration needed. Hooks fire identically. Permission modes work identically.
+- **No change for downstream consumers** that vendor this repo via git submodule. The shipping artifacts (`main.js`, `manifest.json`, `styles.css`, `hooks/`) are at the same paths as before.
+- **Test count**: 1052 (v1.4.2) → 1052 (this release; same coverage, redistributed across four workspaces — 156 plugin / 502 protect / 51 provider-config / 343 provider-runtime).
+- **Build size**: 1231.0 KB → 1297.6 KB (the small increase reflects the public-API surface added to each package's index.js; future minified-distribution builds will recover most of it).
+
 ## [1.4.2] — 2026-05-08
 
 ### Fixed
