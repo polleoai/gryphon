@@ -4,6 +4,19 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.5.1] — 2026-05-10
+
+### Fixed
+
+- **Restored back-compat import paths for downstream consumers.** v1.5.0 moved every source file into per-axis workspace packages (`packages/{plugin,protect,provider-runtime,provider-config}/src/...`), which broke any project that vendored Gryphon as a git submodule and imported from the legacy `vendor/gryphon/src/...` paths to subclass `GryphonChatView` or wrap pricing tables. v1.5.1 ships a thin re-export layer at the pre-v1.5 paths so submodule consumers can advance their pin without code changes. See `src/README.md` for the contract surface and the drop-the-shims criteria.
+- **Regression test pins the contract.** A new `back-compat-shims.test.js` enforces that every legacy path resolves and re-exports the symbols downstream code destructures, so future internal refactors fail in CI before they can ship a broken release.
+
+### Compatibility
+
+- **No behavior change for end users.** All v1.5.0 functionality is preserved unchanged.
+- **No new public API.** The shim layer is purely additive — it does not expose anything that wasn't already public via the v1.4.x layout.
+- **Test count**: 1053 (v1.5.0) → 1056 (this release; +3 tests in `back-compat-shims.test.js`).
+
 ## [1.5.0] — 2026-05-09
 
 ### Internal (no user-visible behavior change)
