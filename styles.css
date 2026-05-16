@@ -1,8 +1,11 @@
 /* Gryphon — Terminal-style interface */
 
-/* Remove Obsidian's default view padding so scrollbar reaches window edge */
-.view-content:has(.gryphon-container) {
-  padding: 0 !important;
+/* Remove Obsidian's default view padding so scrollbar reaches window edge.
+ * Targeting via the leaf's data-type (rather than :has() on .view-content)
+ * keeps specificity high enough to beat Obsidian's default .view-content
+ * padding without needing !important. */
+.workspace-leaf-content[data-type="gryphon-view"] > .view-content {
+  padding: 0;
 }
 
 .gryphon-container {
@@ -43,6 +46,8 @@
   flex-direction: column;
   gap: 2px;
   line-height: 1.5;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 /* Keep text from touching the scrollbar */
@@ -324,12 +329,6 @@
   border: 1px solid var(--background-modifier-border);
 }
 
-/* Ensure text is selectable in messages */
-.gryphon-messages {
-  user-select: text;
-  -webkit-user-select: text;
-}
-
 /* Streaming cursor — block style like a terminal */
 .gryphon-streaming::after {
   content: "\2588";
@@ -482,19 +481,20 @@
   padding: 1px 4px;
 }
 
-/* Permission mode highlights */
-.gryphon-perm-yolo {
-  color: var(--color-red) !important;
+/* Permission mode + context-meter highlights — scoped under
+ * .gryphon-container so specificity (0,2,0) beats Obsidian's default
+ * button color rules (0,1,0) without resorting to !important. */
+.gryphon-container .gryphon-perm-yolo {
+  color: var(--color-red);
   font-weight: 600;
 }
 
-/* Context meter states */
-.gryphon-context-warn {
-  color: var(--color-yellow) !important;
+.gryphon-container .gryphon-context-warn {
+  color: var(--color-yellow);
 }
 
-.gryphon-context-danger {
-  color: var(--color-red) !important;
+.gryphon-container .gryphon-context-danger {
+  color: var(--color-red);
   font-weight: 600;
 }
 

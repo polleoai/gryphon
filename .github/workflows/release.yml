@@ -1,0 +1,118 @@
+name: Release
+
+# Builds the plugin in CI, signs each release asset with a sigstore build
+# provenance attestation, and attaches the assets to the GitHub Release for
+# the pushed tag. Triggered when a release tag is pushed to the public repo
+# (polleoai/gryphon).
+#
+# Why this exists: Obsidian's Community Plugins scorecard flags release assets
+# that are missing GitHub artifact attestations. Locally-uploaded assets can't
+# be meaningfully attested (the trust model wants "this binary was produced
+# by this workflow from this commit"), so the build is owned by CI.
+#
+# Tag format follows Obsidian's rule: bare semver, no leading "v" (1.5.2,
+# not v1.5.2). cut-public-release.sh pushes the tag; this workflow takes
+# over from there.
+#
+# Security notes: every run: block uses $GITHUB_REF_NAME (env-var form) and
+# values from controlled files (CHANGELOG, manifest), never user-controlled
+# event payload. All ${{ github.ref_name }} interpolations occur only in
+# action `with:` blocks where the value is consumed as an action input, not
+# spliced into a shell.
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'  # pre-release tags (rc1, rc2, …)
+
+permissions:
+  contents: write       # create/update the GitHub Release
+  id-token: write       # OIDC token used for sigstore signing
+  attestations: write   # publish the attestation to GitHub
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # so CHANGELOG-extraction can see history
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies (clean, deterministic)
+        run: npm ci
+
+      - name: Build plugin bundle
+        run: npm run build
+
+      - name: Verify build outputs are present
+        run: |
+          test -f main.js       || { echo "main.js missing after build"; exit 1; }
+          test -f manifest.json || { echo "manifest.json missing"; exit 1; }
+          test -f styles.css    || { echo "styles.css missing"; exit 1; }
+          test -d hooks         || { echo "hooks/ directory missing"; exit 1; }
+          ls -la main.js manifest.json styles.css
+          ls -la hooks/
+
+      - name: Verify tag matches manifest.version
+        run: |
+          MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
+          if [ "$GITHUB_REF_NAME" != "$MANIFEST_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest.version $MANIFEST_VERSION"
+            exit 1
+          fi
+          echo "Tag and manifest agree on version: $GITHUB_REF_NAME"
+
+      - name: Build install zip
+        run: |
+          mkdir -p dist
+          zip -r "dist/gryphon-${GITHUB_REF_NAME}.zip" \
+            main.js manifest.json styles.css hooks/
+
+      - name: Attest build provenance for release assets
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            main.js
+            manifest.json
+            styles.css
+            dist/gryphon-${{ github.ref_name }}.zip
+
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          # Grab everything from `## [<version>]` down to (but not including)
+          # the next `## [` heading. CHANGELOG is newest-first so the slice
+          # is contiguous. $GITHUB_REF_NAME is a tag name like "1.5.2" — Git
+          # constrains it to a safe character set so it is safe to splice
+          # into the awk pattern after a literal-anchor regex.
+          awk -v ver="$GITHUB_REF_NAME" '
+            $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "Could not extract notes for $GITHUB_REF_NAME from CHANGELOG.md"
+            exit 1
+          fi
+          echo "notes-file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update the GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "Gryphon ${{ github.ref_name }}"
+          body_path: ${{ steps.notes.outputs.notes-file }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            main.js
+            manifest.json
+            styles.css
+            dist/gryphon-${{ github.ref_name }}.zip

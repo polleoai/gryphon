@@ -4,6 +4,27 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.5.2] — 2026-05-16
+
+### Fixed
+
+- **Plugin can now be built from a clean checkout with `pnpm install`.** Obsidian's Community Plugins scorecard runs build verification in a pnpm-based sandbox; pnpm refuses the `workspaces` field in `package.json` and requires its own `pnpm-workspace.yaml`, so the v1.5.1 build crashed before installing `esbuild`. The pnpm-workspace file is now present and the workspace packages link locally via `.npmrc`. Both `npm install` and `pnpm install` produce identical bundles.
+- **Stylesheet rewritten to drop `!important`, `:has()`, and a duplicate selector.** Specificity is now provided via parent-class scoping (`.gryphon-container ...`) and a `[data-type="gryphon-view"]` attribute selector rather than `!important`. No visual regression in the standalone test vault.
+- **README placeholder hunt.** Template-flavoured variable syntax (`<drive>`, `{vault}`, `<escaped-cwd>`, `<vault>`) is gone — replaced with concrete examples or natural-language paths. Install instructions, contributing notes, and the privacy table updated to match the post-launch state.
+
+### Added
+
+- **GitHub Actions release workflow.** `.github/workflows/release.yml` builds the plugin in CI on each tag push, attaches sigstore build-provenance attestations to every release asset (`main.js`, `manifest.json`, `styles.css`, install zip), and creates the GitHub Release using the matching CHANGELOG section as the body. Replaces the manual `gh release create` + asset upload step that ran on the maintainer's local machine. The local `cut-public-release.sh` still drives the dev-side commit, tag, and push; everything from there happens in CI.
+- **Smoke test exercises the pnpm path.** `scripts/release-smoke-test.sh` now runs `pnpm install + pnpm run build` (if pnpm is installed locally) in addition to the existing npm-path check. The Obsidian-sandbox failure mode is now load-bearing in the release gate.
+- **Explicit network endpoint and system-identity disclosures** in `README.md` enumerate the full surface that bundled SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`) could contact, called out per provider mode. Identity reads (`os.hostname`, `os.userInfo`, env-var lookups for CLI auto-detection) are documented for transparency. None of this changes runtime behavior.
+
+### Compatibility
+
+- **No behavior change for end users.** Same APIs, same UI, same chat surface, same vault tools.
+- **No new code dependencies.** `@gryphon/*` workspace packages still resolve via `"*"` and an `.npmrc` so the npm install path Athena uses is unchanged.
+- **Athena auto-bump path verified.** `release-smoke-test.sh` runs the npm-install + require-each-legacy-path sequence Athena depends on; v1.5.2 ships only after that gate passes.
+- **Test count**: 1056 → 1056 (the v1.5.1 back-compat-shims regression test continues to pass; no new tests added in this release).
+
 ## [1.5.1] — 2026-05-10
 
 ### Fixed

@@ -1,7 +1,7 @@
 {
   "id": "gryphon",
   "name": "Gryphon",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "minAppVersion": "1.0.0",
   "description": "Bring AI to your vault — with guardrails at runtime.",
   "author": "POLLEO.AI",

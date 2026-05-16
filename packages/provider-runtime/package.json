@@ -1,6 +1,6 @@
 {
   "name": "@gryphon/provider-runtime",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "LLM provider runtime for Gryphon: provider abstraction, factory, six provider implementations (Claude/Codex/Gemini CLIs + Anthropic/OpenAI/Google APIs), tool loops, streaming + abort + retry.",
   "private": true,
   "license": "MIT",

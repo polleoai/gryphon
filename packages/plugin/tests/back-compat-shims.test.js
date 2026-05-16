@@ -1,14 +1,15 @@
 // back-compat-shims.test.js — pin the v1.5.1 consumer-contract surface.
 //
 // The shims at gryphon/src/* re-export from the v1.5+ workspace packages.
-// Athena (and any future consumer) imports from gryphon/src/* by submodule
-// path, e.g. `require("../../vendor/gryphon/src/chat-view")`. If a refactor
-// moves the underlying file without updating the shim, this test fails BEFORE
-// the broken release ships. (See src/README.md.)
+// Downstream consumers that vendor Gryphon as a git submodule import from
+// gryphon/src/* by relative path, e.g. `require("../../vendor/gryphon/src/chat-view")`.
+// If a refactor moves the underlying file without updating the shim, this
+// test fails BEFORE the broken release ships. (See src/README.md.)
 //
 // The cause we're guarding against: v1.5.0 moved src/chat-view.js into
-// packages/plugin/src/ and shipped without a shim layer. Athena's first
-// auto-bump after the release exploded with 7 unresolved imports.
+// packages/plugin/src/ and shipped without a shim layer. The first
+// auto-bump build by a vendor-submodule consumer after the release
+// exploded with 7 unresolved imports.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -29,9 +30,10 @@ const REPO_ROOT = path.join(__dirname, "..", "..", "..");
 
 // Each entry pairs (a) the legacy import path the consumer uses with
 // (b) the destructured-symbol set the consumer expects to find on it.
-// The symbol lists below match the actual destructures in Athena's
-// src/athena/plugin.js — adding to a symbol list here is a deliberate
-// contract extension; removing one is a deliberate contract break.
+// The symbol lists below match the actual destructures used by the
+// downstream vendor-submodule consumer — adding to a symbol list here
+// is a deliberate contract extension; removing one is a deliberate
+// contract break.
 const CONTRACT = [
   {
     legacy: "src/chat-view",
@@ -81,13 +83,13 @@ test("every legacy shim file exists at the path consumers import from", () => {
   }
 });
 
-test("every legacy shim re-exports the symbols Athena destructures", () => {
+test("every legacy shim re-exports the symbols downstream consumers destructure", () => {
   for (const { legacy, symbols } of CONTRACT) {
     const mod = require(path.join(REPO_ROOT, legacy));
     for (const symbol of symbols) {
       assert.ok(
         symbol in mod,
-        `Shim ${legacy}.js no longer exposes "${symbol}" — Athena destructures this. ` +
+        `Shim ${legacy}.js no longer exposes "${symbol}" — vendor-submodule consumers destructure this. ` +
         `Either restore the export at the real package path or coordinate a contract break.`,
       );
       assert.ok(

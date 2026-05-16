@@ -1,6 +1,6 @@
 {
   "name": "@gryphon/plugin",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Bring AI to your vault — with guardrails at runtime.",
   "private": true,
   "license": "MIT",

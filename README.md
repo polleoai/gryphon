@@ -21,7 +21,7 @@ Gryphon is a lightweight, reactive chat surface that connects your Obsidian vaul
 
 ## Features
 
-- **Built-in security layer** — a curated list of dangerous file paths (`.obsidian/`, `.git/`, `.claude/`, `.env`, ...) and commands (`rm -rf`, `Remove-Item -Recurse`, `curl | bash`, `format <drive>:`, `sudo`, registry mutation, ...) always surface an approval modal **even in YOLO mode**. Other Claude-for-Obsidian plugins defer entirely to Claude Code's permission modes — Gryphon adds a dedicated guardrail so a one-word "yes" in YOLO can't wipe your vault. See **Built-in security** below for the full model.
+- **Built-in security layer** — a curated list of dangerous file paths (`.obsidian/`, `.git/`, `.claude/`, `.env`, ...) and commands (`rm -rf`, `Remove-Item -Recurse`, `curl | bash`, `format C:`, `sudo`, registry mutation, ...) always surface an approval modal **even in YOLO mode**. Other Claude-for-Obsidian plugins defer entirely to Claude Code's permission modes — Gryphon adds a dedicated guardrail so a one-word "yes" in YOLO can't wipe your vault. See **Built-in security** below for the full model.
 - **Streaming chat panel** in a sidebar or main tab
 - **Vault-native tooling** — Claude reads, writes, edits, searches, and runs shell commands with the vault as its working directory
 - **Anthropic API by default** — connects to the Anthropic API directly. A Claude Code (local-CLI) mode is available as an advanced opt-in.
@@ -37,9 +37,9 @@ Gryphon is a lightweight, reactive chat surface that connects your Obsidian vaul
 
 ## Installation
 
-**Via Obsidian's Community Plugins directory** — coming soon. Submission is queued for review; expect a 2–6 week window before Gryphon appears in the in-app directory search.
+**Via Obsidian's Community Plugins directory** — search for "Gryphon" in Obsidian → Settings → Community plugins → Browse, or open `obsidian://show-plugin?id=gryphon` directly. This is the recommended path for most users.
 
-**Via BRAT** *(recommended while directory review is pending)* — the [Beta Reviewers Auto-update Tool](https://github.com/TfTHacker/obsidian42-brat) is a community plugin that installs plugins directly from GitHub releases and keeps them up to date.
+**Via BRAT** *(for early access to release candidates)* — the [Beta Reviewers Auto-update Tool](https://github.com/TfTHacker/obsidian42-brat) is a community plugin that installs plugins directly from GitHub releases and keeps them up to date.
 
 1. Install BRAT from Obsidian's Community Plugins directory (search for "BRAT").
 2. Open **Settings → BRAT → Add Beta Plugin**.
@@ -48,7 +48,7 @@ Gryphon is a lightweight, reactive chat surface that connects your Obsidian vaul
 5. Future releases auto-update through BRAT.
 
 **From source** *(for contributors)*:
-1. Clone the repo into `{vault}/.obsidian/plugins/gryphon/`
+1. Clone the repo into `.obsidian/plugins/gryphon/` (relative to your vault root)
 2. Run `npm install` and `npm run build`
 3. In Obsidian → Settings → Community plugins → enable Gryphon
 
@@ -87,7 +87,7 @@ All file operations are **vault-scoped**: paths like `../etc/passwd` are rejecte
 
 ## Built-in security (what makes Gryphon different)
 
-Most Claude-for-Obsidian integrations rely entirely on the user's vigilance at each approval prompt plus Claude Code's own permission modes. Gryphon adds a curated layer on top: a pre-populated list of known-dangerous **file-path patterns** (writes into `.obsidian/`, `.git/`, `.claude/`, `.env`) and **command patterns** (`rm -rf`, `Remove-Item -Recurse`, `curl | bash`, `iwr | iex`, `sudo`, `format <drive>:`, registry mutation, recursive chmod, etc.) that **always** surface an approval modal before running — including in YOLO mode.
+Most Claude-for-Obsidian integrations rely entirely on the user's vigilance at each approval prompt plus Claude Code's own permission modes. Gryphon adds a curated layer on top: a pre-populated list of known-dangerous **file-path patterns** (writes into `.obsidian/`, `.git/`, `.claude/`, `.env`) and **command patterns** (`rm -rf`, `Remove-Item -Recurse`, `curl | bash`, `iwr | iex`, `sudo`, `format C:`, registry mutation, recursive chmod, etc.) that **always** surface an approval modal before running — including in YOLO mode.
 
 The design choice: convenience modes (Safe, YOLO) silence prompts for _routine_ operations so Claude can iterate quickly; a separate rule set guards the _dangerous_ ones so you can't accidentally YOLO away your vault, your git history, or your shell. The two axes are independent.
 
@@ -103,9 +103,9 @@ Every default pattern is listed with a user-readable "why this matters" tooltip 
 
 Gryphon is local-first. The short version:
 
-- **Your API key** lives in `{vault}/.obsidian/plugins/gryphon/data.json` alongside other Obsidian plugin data. It is sent only as an `x-api-key` header to `api.anthropic.com` when Anthropic API mode is active. Never logged, never exported, never sent anywhere else.
+- **Your API key** lives in `.obsidian/plugins/gryphon/data.json` (inside your vault) alongside other Obsidian plugin data. It is sent only as an `x-api-key` header to `api.anthropic.com` when Anthropic API mode is active. Never logged, never exported, never sent anywhere else.
 - **Vault content** is sent to the Anthropic API (Anthropic API mode) or to the locally-installed `claude` subprocess (Claude Code mode) only when Claude invokes a Read/Grep/Glob/Write/Edit/Bash tool on your behalf during an active conversation. Outside an active turn, nothing leaves your machine.
-- **Chat history** persists to `chat-history.json` in the plugin directory. In Claude Code mode, LLM turns also live in Claude Code's own `~/.claude/projects/<escaped-cwd>/<session-id>.jsonl` (owned by Claude Code, not Gryphon — delete that file to rotate the Claude Code session).
+- **Chat history** persists to `chat-history.json` in the plugin directory. In Claude Code mode, LLM turns also live in Claude Code's own session files under `~/.claude/projects/` (owned by Claude Code, not Gryphon — delete the relevant session file to rotate the Claude Code session).
 - **No telemetry.** Gryphon does not include analytics, crash reporting, or any opt-out-required data collection. There is no "phone home" path.
 - **Diagnostics are opt-in.** **Settings → Gryphon → Diagnostics → CLI debug logging** turns on console-side debug output and hook-invocation tracing. Everything it produces is console or local-file only; nothing is sent off-device. Default off.
 
@@ -113,23 +113,54 @@ What leaves your machine:
 
 | Action | Destination | When |
 |---|---|---|
-| Chat message | `api.anthropic.com` (SDK) or local `claude` subprocess (CLI) | Per turn |
+| Chat message (Anthropic API mode) | `api.anthropic.com` | Per turn |
+| Chat message (OpenAI API mode) | `api.openai.com` | Per turn |
+| Chat message (Google API mode) | `generativelanguage.googleapis.com` (Gemini API) or `aiplatform.googleapis.com` (Vertex AI) | Per turn |
+| Chat message (CLI mode) | Local `claude` / `codex` / `gemini` subprocess on your machine | Per turn |
 | Vault file read by Claude | Same as above, embedded in the turn | Only when Claude invokes a Read tool |
 | WebFetch URL | The URL's origin (direct HTTP fetch) | Only when Claude invokes WebFetch |
-| WebSearch query | `api.search.brave.com` (SDK with key) or Anthropic's built-in search (CLI) | Only when Claude invokes WebSearch |
+| WebSearch query | `api.search.brave.com` (SDK with key) or the provider's built-in search (CLI) | Only when Claude invokes WebSearch |
 | Everything else | Nowhere | Ever |
+
+The provider mode you select determines which endpoint the plugin reaches. Unused providers contact nothing. No analytics, crash reporting, or telemetry endpoint exists in Gryphon — there is no "phone home" path.
+
+### Bundled SDKs and their full endpoint surface
+
+Gryphon bundles the official SDKs from the providers it supports (`@anthropic-ai/sdk`, `openai`, `@google/genai`, `undici`). The Obsidian Community Plugins scorecard reports all endpoint strings present in the bundle, including endpoints that are only reached in specific auth flows — for example, Google's `@google/genai` SDK probes Google Cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`, `iamcredentials.googleapis.com`, `cloudresourcemanager.googleapis.com`, `oauth2.googleapis.com`, `accounts.google.com`) when running inside a Google Cloud VM with Application Default Credentials. None of those are reached during normal Obsidian use on a desktop machine; they remain in the bundle because the SDK ships them.
+
+The complete list of domains that *could* be contacted, by mode:
+
+- **Anthropic API mode**: `api.anthropic.com`
+- **OpenAI API mode**: `api.openai.com`, `auth.openai.com` (only during OAuth flows if used)
+- **Google API mode**: `generativelanguage.googleapis.com`, `aiplatform.googleapis.com`, and (only inside Google Cloud) the metadata + auth endpoints listed above
+- **WebSearch (any API mode)**: `api.search.brave.com`
+- **WebFetch (any mode)**: whatever URL Claude is told to fetch — by definition arbitrary
+- **CLI modes**: nothing direct (the CLI subprocess makes its own outbound requests on your machine)
+
+### System identity reads
+
+Gryphon's CLI-detection logic reads a small amount of system information:
+
+- `os.hostname()` and `os.userInfo()` — used in cross-platform path normalization for hook scripts
+- Environment variables — `PATH`, `HOME`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GRYPHON_VAULT`, `npm_config_*`, plus platform-standard locations Claude Code / Codex / Gemini CLIs are typically installed under
+
+None of this is transmitted off the device.
+
+### Vault access surface
+
+Gryphon uses Obsidian's standard vault API: `vault.read`, `vault.cachedRead`, `vault.modify`, `vault.create`, `vault.delete`, `vault.rename`. All operations are vault-scoped — paths like `../etc/passwd` are rejected before the tool runs, regardless of permission mode.
 
 For vulnerability reports and the full data-handling breakdown, see [SECURITY.md](./SECURITY.md).
 
 ## Skills
 
-A skill is a `.md` file in `{vault}/Gryphon/Skills/` with YAML frontmatter:
+A skill is a `.md` file in the `Gryphon/Skills/` folder of your vault, with YAML frontmatter:
 
 ```markdown
 ---
 name: tag-suggest
 description: Propose tags for the active note
-argument-hint: "[optional: extra context]"
+argument-hint: optional extra context
 ---
 Read the active note and propose 3-5 tags that capture its core topics.
 Tags should be lowercase-with-hyphens, avoid over-general terms, and
@@ -214,7 +245,7 @@ npm run dev              # watch mode (rebuilds on every save)
 
 ### Live install into a test vault
 
-Set `GRYPHON_VAULT` to your vault root (comma-separate multiple vaults) and every build pushes `main.js`, `manifest.json`, `styles.css` into `<vault>/.obsidian/plugins/gryphon/` automatically:
+Set `GRYPHON_VAULT` to your vault root (comma-separate multiple vaults) and every build pushes `main.js`, `manifest.json`, `styles.css` into the vault's `.obsidian/plugins/gryphon/` folder automatically:
 
 ```bash
 GRYPHON_VAULT=/path/to/my-vault npm run dev
@@ -228,7 +259,7 @@ If you run **two Obsidian windows pointing at the same vault** (a rare but possi
 
 | Shared across instances | Isolated per instance |
 |---|---|
-| `provenance.json`, `chat-history.json`, `data.json` in the plugin dir | IPC socket (`gryphon-<pid>-<hex>.sock`), session flags, CC subprocess |
+| `provenance.json`, `chat-history.json`, `data.json` in the plugin dir | IPC socket — per-instance sock file named `gryphon-PID-HEX.sock` where PID is the running process id and HEX is random — plus session flags and the Claude Code subprocess itself |
 
 **What works correctly:**
 - Each instance talks to its own local-CLI subprocess via its own socket. No cross-talk between CLI sessions.
@@ -251,4 +282,4 @@ MIT © POLLEO.AI.
 
 ## Contributing
 
-Contributions welcome once the repository is public. For now, open issues or discussion threads in the parent repository.
+Contributions welcome. Open an issue or pull request at [polleoai/gryphon](https://github.com/polleoai/gryphon).
