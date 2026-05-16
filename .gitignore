@@ -2,6 +2,13 @@
 node_modules/
 packages/*/node_modules/
 
+# pnpm lockfile — pnpm regenerates this from pnpm-workspace.yaml on every
+# `pnpm install`. We treat npm's package-lock.json as the source of truth
+# (it's what Athena's auto-bump and the GH Actions release workflow use)
+# so the pnpm lockfile is not committed. Obsidian's scorecard scanner
+# regenerates it during its own install step.
+pnpm-lock.yaml
+
 # Build output
 main.js
 /hooks/

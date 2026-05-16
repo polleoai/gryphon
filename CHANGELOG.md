@@ -4,6 +4,44 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.6.0] — 2026-05-16
+
+This release closes out Gryphon's Obsidian Community Plugins compliance work. v1.5.2 fixed the directory's automated scorecard (workspace build, CSS hygiene, README disclosures); v1.6.0 finishes the loop by making the release pipeline itself first-class — every future release is built in CI with sigstore build-provenance attestations on every asset — and cleans the build-log noise that v1.5.2's pnpm-compat `.npmrc` introduced.
+
+End-users see no behavior change. The bundle is identical, the features are identical, the UI is identical. What changed is how Gryphon ships and how it presents itself to Obsidian's automated checks.
+
+### Added — CI release pipeline (the v1.5.2 follow-through)
+
+- **`workflow_dispatch` trigger on the release workflow.** `.github/workflows/release.yml` now supports manual re-fires against an existing tag in addition to the automatic `push: tags:` trigger. The same code path serves both — a job-level `TAG_NAME` env resolves to `inputs.tag || github.ref_name`. Use case: when a tag-push event races the registration of a newly-introduced workflow file (GitHub's first-run timing — exactly what v1.5.2 hit), the maintainer can manually re-fire after the workflow registers. Sigstore attestation is preserved on the re-fire — no need to fall back to attestation-less local uploads.
+
+- **`Validate TAG_NAME shape` pre-step.** Runs before checkout. Rejects any value that doesn't match `^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[A-Za-z0-9.]+)?$` — strict semver, no leading zeros (per semver.org §2 and Obsidian's tag-naming rule). Defends against (a) typos in `workflow_dispatch` inputs, (b) any regex-metachar splice into the downstream `awk` CHANGELOG extractor. Verified against 21 input cases.
+
+- **"Release ownership" documentation block in the workflow header.** Spells out that the workflow OWNS the release body and named asset files for every tag it processes. Maintainers should not hand-edit release bodies — the next run reverts them.
+
+### Fixed — build-log hygiene + bash quoting
+
+- **`npm run build` is quiet again.** v1.5.2 shipped an `.npmrc` with `link-workspace-packages=true` and `prefer-workspace-packages=true` so pnpm 9.x (used by Obsidian's build-verification sandbox) could link workspace siblings locally. npm 11 doesn't recognize those keys and emitted six "Unknown project config" warnings on every install + build. v1.6.0 replaces the mechanism with `"file:../<sibling>"` entries directly in each workspace's `package.json` — both npm and pnpm honor those natively without any per-tool config. The `.npmrc` is removed.
+
+- **`scripts/notify-athena-release.sh` no longer crashes silently.** Line 55's `"$VERSION…"` (with a literal UTF-8 ellipsis) tripped bash variable-name parsing under `set -euo pipefail`, exiting with "unbound variable: VERSION…" before the consumer-dispatch fired. Now `"${VERSION}…"` with explicit brace delimiters. End-effect: post-release Athena notifications fire correctly again.
+
+### Changed — release-pipeline ergonomics
+
+- **`scripts/cut-public-release.sh`** post-push instructions now recommend `gh workflow run release.yml -f tag=<version>` as the primary fallback when the auto-fire doesn't run (preserves CI build + sigstore attestation). The previously-recommended `gh release create` is reframed as a last-resort "CI itself is broken" fallback, with a note that locally-uploaded assets cannot be sigstore-attested.
+
+### Internal
+
+- **`pnpm-lock.yaml` is gitignored.** npm's `package-lock.json` remains the source of truth for reproducible installs (it's what Athena's auto-bump and the CI release workflow use); pnpm regenerates its own lockfile from `pnpm-workspace.yaml` on every install. The trade-off — pnpm's transitive resolution isn't pinned — is bounded because npm pins everything anyway, and is documented inline in `.gitignore`.
+
+- **`scripts/release-smoke-test.sh`** header comment updated to reflect the post-`.npmrc` mechanism — `pnpm-workspace.yaml` + per-package `file:` deps as the load-bearing pair.
+
+### Compatibility
+
+- **No behavior change for end users.** Identical bundle, identical features, identical UI.
+- **No new code dependencies.** Same SDKs, same versions, same `node_modules` shape.
+- **First release built in CI.** v1.5.2 was uploaded manually because its workflow file was introduced in the same commit as the tag — GitHub's first-run timing prevented the tag-push from firing it. v1.6.0's tag-push fires the now-registered workflow end-to-end, producing sigstore build-provenance attestations for `main.js`, `manifest.json`, `styles.css`, and the install zip. The "2 release assets missing GitHub artifact attestation" scorecard warning that lingered on v1.5.2 clears once Obsidian's scanner moves to v1.6.0.
+- **Test count**: 1055 (v1.5.2) → 1055 (this release; no test code touched).
+- **Workspace dep declarations**: `"@gryphon/<sibling>": "*"` → `"@gryphon/<sibling>": "file:../<sibling>"` in `packages/plugin/package.json` and `packages/provider-runtime/package.json`. Downstream consumers vendoring this repo as a submodule (Athena) install via npm; npm honors `file:` paths the same way it honored the previous `*` matching, so the consumer path is unchanged.
+
 ## [1.5.2] — 2026-05-16
 
 ### Fixed

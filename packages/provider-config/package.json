@@ -1,6 +1,6 @@
 {
   "name": "@gryphon/provider-config",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "description": "Provider configuration for Gryphon: model catalogs, pricing tables, dropdown options, per-provider extra-args filter. Pure data + selection layer (cc-switch lesson). No spawning, no streaming, no UI.",
   "private": true,
   "license": "MIT",

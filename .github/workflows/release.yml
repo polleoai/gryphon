@@ -2,42 +2,97 @@ name: Release
 
 # Builds the plugin in CI, signs each release asset with a sigstore build
 # provenance attestation, and attaches the assets to the GitHub Release for
-# the pushed tag. Triggered when a release tag is pushed to the public repo
-# (polleoai/gryphon).
+# a tag. Two triggers:
 #
-# Why this exists: Obsidian's Community Plugins scorecard flags release assets
-# that are missing GitHub artifact attestations. Locally-uploaded assets can't
-# be meaningfully attested (the trust model wants "this binary was produced
-# by this workflow from this commit"), so the build is owned by CI.
+#   1. push:        when a release tag is pushed to polleoai/gryphon, the
+#                   workflow fires automatically and uses the pushed tag.
+#                   This is the normal path for new releases.
+#
+#   2. workflow_dispatch: a maintainer can manually fire the workflow
+#                   against an existing tag (e.g., to retroactively attest
+#                   a release whose initial tag push didn't fire the
+#                   workflow because the workflow file was introduced in
+#                   the same commit — GitHub's first-run chicken-and-egg).
+#                   Provide the tag as the "tag" input.
+#
+# Why this exists: Obsidian's Community Plugins scorecard flags release
+# assets that are missing GitHub artifact attestations. Locally-uploaded
+# assets can't be meaningfully attested (the trust model wants "this binary
+# was produced by this workflow from this commit"), so the build is owned
+# by CI.
 #
 # Tag format follows Obsidian's rule: bare semver, no leading "v" (1.5.2,
 # not v1.5.2). cut-public-release.sh pushes the tag; this workflow takes
 # over from there.
 #
-# Security notes: every run: block uses $GITHUB_REF_NAME (env-var form) and
-# values from controlled files (CHANGELOG, manifest), never user-controlled
-# event payload. All ${{ github.ref_name }} interpolations occur only in
-# action `with:` blocks where the value is consumed as an action input, not
-# spliced into a shell.
+# Release ownership: this workflow OWNS the release body and asset files
+# for any tag it processes. On workflow_dispatch re-runs against an
+# existing release, the body is replaced by the matching CHANGELOG slice
+# and the named assets (main.js, manifest.json, styles.css, install zip)
+# are re-uploaded with sigstore attestations. Any handcrafted edits to a
+# release body or those asset files will be reverted by the next run —
+# do not maintain release content manually.
+#
+# Security notes: every run: block uses $TAG_NAME (env-var form, derived
+# from controlled sources — either a pushed Git tag, which Git constrains
+# to a safe character set, or the workflow_dispatch input, which only a
+# repo maintainer can supply). The Validate-TAG_NAME-shape step rejects
+# any tag value that doesn't match the bare-semver-plus-optional-rcN
+# shape, defending against typos in workflow_dispatch inputs and against
+# any regex-metachar splice into the awk pattern that extracts CHANGELOG
+# release notes. Values from controlled files (CHANGELOG, manifest) are
+# also used. No user-controlled event payload is spliced into a shell.
 
 on:
   push:
     tags:
       - '[0-9]+.[0-9]+.[0-9]+'
       - '[0-9]+.[0-9]+.[0-9]+-*'  # pre-release tags (rc1, rc2, …)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re-)build and attest, e.g. 1.5.2'
+        required: true
+        type: string
 
 permissions:
   contents: write       # create/update the GitHub Release
   id-token: write       # OIDC token used for sigstore signing
   attestations: write   # publish the attestation to GitHub
 
+env:
+  # Resolves to the input tag on manual dispatch, or the pushed tag on
+  # the push trigger. Used by every downstream step instead of github.ref_name
+  # so the two triggers share the same code path.
+  TAG_NAME: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Validate TAG_NAME shape
+        # Reject any tag that doesn't match bare semver (X.Y.Z) or a
+        # pre-release variant (X.Y.Z-suffix where suffix is alphanumeric
+        # plus dots). Each numeric component must NOT have leading zeros
+        # — semver.org §2 forbids them, and Obsidian Community Plugins
+        # rejects `01.5.2`-shaped tags too.
+        #
+        # Defends against (a) typos in workflow_dispatch inputs, (b) any
+        # regex-metachar splice into the awk CHANGELOG extractor
+        # downstream. The push:tags filter is intentionally looser
+        # (glob-only, no numeric-shape enforcement) — this validator is
+        # the actual gate for both triggers.
+        run: |
+          if ! echo "$TAG_NAME" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[A-Za-z0-9.]+)?$'; then
+            echo "TAG_NAME '$TAG_NAME' does not match expected semver shape (X.Y.Z or X.Y.Z-suffix; no leading zeros)"
+            exit 1
+          fi
+          echo "TAG_NAME validated: $TAG_NAME"
+
+      - name: Checkout the tagged commit
         uses: actions/checkout@v4
         with:
+          ref: ${{ env.TAG_NAME }}
           fetch-depth: 0   # so CHANGELOG-extraction can see history
 
       - name: Set up Node
@@ -64,16 +119,16 @@ jobs:
       - name: Verify tag matches manifest.version
         run: |
           MANIFEST_VERSION=$(node -p "require('./manifest.json').version")
-          if [ "$GITHUB_REF_NAME" != "$MANIFEST_VERSION" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match manifest.version $MANIFEST_VERSION"
+          if [ "$TAG_NAME" != "$MANIFEST_VERSION" ]; then
+            echo "Tag $TAG_NAME does not match manifest.version $MANIFEST_VERSION"
             exit 1
           fi
-          echo "Tag and manifest agree on version: $GITHUB_REF_NAME"
+          echo "Tag and manifest agree on version: $TAG_NAME"
 
       - name: Build install zip
         run: |
           mkdir -p dist
-          zip -r "dist/gryphon-${GITHUB_REF_NAME}.zip" \
+          zip -r "dist/gryphon-${TAG_NAME}.zip" \
             main.js manifest.json styles.css hooks/
 
       - name: Attest build provenance for release assets
@@ -83,23 +138,24 @@ jobs:
             main.js
             manifest.json
             styles.css
-            dist/gryphon-${{ github.ref_name }}.zip
+            dist/gryphon-${{ env.TAG_NAME }}.zip
 
       - name: Extract release notes from CHANGELOG
         id: notes
         run: |
           # Grab everything from `## [<version>]` down to (but not including)
           # the next `## [` heading. CHANGELOG is newest-first so the slice
-          # is contiguous. $GITHUB_REF_NAME is a tag name like "1.5.2" — Git
-          # constrains it to a safe character set so it is safe to splice
-          # into the awk pattern after a literal-anchor regex.
-          awk -v ver="$GITHUB_REF_NAME" '
+          # is contiguous. $TAG_NAME is either a Git tag (constrained to a
+          # safe character set) or a workflow_dispatch input from a repo
+          # maintainer — either way safe to splice into the awk pattern
+          # after a literal-anchor regex.
+          awk -v ver="$TAG_NAME" '
             $0 ~ "^## \\[" ver "\\]" { capture = 1; next }
             capture && /^## \[/ { exit }
             capture { print }
           ' CHANGELOG.md > /tmp/release-notes.md
           if [ ! -s /tmp/release-notes.md ]; then
-            echo "Could not extract notes for $GITHUB_REF_NAME from CHANGELOG.md"
+            echo "Could not extract notes for $TAG_NAME from CHANGELOG.md"
             exit 1
           fi
           echo "notes-file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
@@ -107,12 +163,12 @@ jobs:
       - name: Create or update the GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "Gryphon ${{ github.ref_name }}"
+          tag_name: ${{ env.TAG_NAME }}
+          name: "Gryphon ${{ env.TAG_NAME }}"
           body_path: ${{ steps.notes.outputs.notes-file }}
-          prerelease: ${{ contains(github.ref_name, '-') }}
+          prerelease: ${{ contains(env.TAG_NAME, '-') }}
           files: |
             main.js
             manifest.json
             styles.css
-            dist/gryphon-${{ github.ref_name }}.zip
+            dist/gryphon-${{ env.TAG_NAME }}.zip

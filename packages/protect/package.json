@@ -1,6 +1,6 @@
 {
   "name": "@gryphon/protect",
-  "version": "1.5.2",
+  "version": "1.6.0",
   "description": "Runtime protection layer for Gryphon: HookDispatcher, IPC server, permission gate, injection-pattern catalog. Spawned-process safety for AI CLIs.",
   "private": true,
   "license": "MIT",
