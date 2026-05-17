@@ -4,6 +4,22 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.6.1] — 2026-05-16
+
+### Changed — documentation
+
+- **README rewritten to reflect multi-provider support.** Six provider modes ship today (Anthropic API, OpenAI API, Google API, Claude Code CLI, Codex CLI, Gemini CLI) plus an Auto-detect mode, but the README's tagline + intro + Requirements + Provider Modes + Settings Reference sections all still framed Gryphon as Claude-only. Now they describe what actually ships:
+  - **Tagline**: "AI chat for Obsidian. Talk to Claude, GPT, or Gemini..."
+  - **Requirements**: lists all three API key options + the CLI option; user picks whichever they already have credentials for
+  - **Provider modes table**: expanded from 3 entries to 7 (all six providers + Auto)
+  - **Settings reference table**: expanded with OpenAI / Google / Codex / Gemini settings rows that have shipped since v1.2.0 but were never added to the README
+  - **Affiliation disclaimer**: now covers Anthropic, OpenAI, and Google rather than only Anthropic
+- **No code, binary, or behaviour change.** Same plugin, same features, same security guardrails. This release is purely a docs correction so the Obsidian Community Plugins directory page (which renders README.md from `polleoai/gryphon` HEAD) shows the correct multi-provider positioning to anyone discovering Gryphon in the directory.
+
+### Compatibility
+
+- Identical bundle, identical features, identical UI to v1.6.0. Test count: 1055 (unchanged).
+
 ## [1.6.0] — 2026-05-16
 
 This release closes out Gryphon's Obsidian Community Plugins compliance work. v1.5.2 fixed the directory's automated scorecard (workspace build, CSS hygiene, README disclosures); v1.6.0 finishes the loop by making the release pipeline itself first-class — every future release is built in CI with sigstore build-provenance attestations on every asset — and cleans the build-log noise that v1.5.2's pnpm-compat `.npmrc` introduced.

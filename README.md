@@ -2,11 +2,11 @@
 
 > **Were you using Hermes?** This plugin was briefly published as **Hermes** at v1.0.0 and renamed to **Gryphon** to avoid confusion with the gaining-mindshare Hermes agentic system. Same project, same security model, same code lineage. Migration: install Gryphon via BRAT (`polleoai/gryphon`), then copy `.obsidian/plugins/hermes/data.json` → `.obsidian/plugins/gryphon/data.json` to keep your API key and settings. The plugin auto-renames the `Hermes/` vault folder to `Gryphon/` on first launch. The historical Hermes repo is archived at [polleoai/hermes](https://github.com/polleoai/hermes).
 
-Claude chat for Obsidian. Talk to Claude, read and edit vault files, run tools — all inside Obsidian.
+AI chat for Obsidian. Talk to Claude, GPT, or Gemini from inside your vault — read and edit files, run tools, all without leaving Obsidian.
 
-Gryphon is a lightweight, reactive chat surface that connects your Obsidian vault to Claude via the Anthropic API. It runs on your local machine and reads/writes your vault files through a standard tool-use loop. Advanced users can optionally route chat through a locally-installed `claude` CLI as a subprocess instead of the API — enable that path only after confirming your intended usage complies with the CLI vendor's terms.
+Gryphon is a lightweight, reactive chat surface that connects your Obsidian vault to one of six LLM providers: Anthropic's Claude API, OpenAI's API, or Google's Gemini API directly, or any of their locally-installed CLI subprocesses (`claude`, `codex`, `gemini`). It runs on your local machine and reads/writes your vault files through a standard tool-use loop. Pick whichever provider you already have credentials for — there's no preference baked in.
 
-> Gryphon is not affiliated with Anthropic. References to the Anthropic API in this README describe what the plugin talks to; they do not imply endorsement.
+> Gryphon is not affiliated with Anthropic, OpenAI, or Google. References to the Anthropic API, OpenAI API, Google API, or any of their CLIs describe what the plugin can talk to; they do not imply endorsement. When using a CLI-subprocess mode, confirm your intended usage complies with that product's terms.
 
 ## Screenshots
 
@@ -54,21 +54,32 @@ Gryphon is a lightweight, reactive chat surface that connects your Obsidian vaul
 
 ## Requirements
 
-- **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com) — pay-per-token
+You need **at least one** of the following — Gryphon picks up whichever provider you have credentials for:
 
-Paste the key into **Settings → Gryphon → Anthropic API key**. That's the default and only required setup.
+- **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com) (Claude models, pay-per-token)
+- **OpenAI API key** from [platform.openai.com](https://platform.openai.com) (GPT models, pay-per-token)
+- **Google API key** from [aistudio.google.com](https://aistudio.google.com) (Gemini models, free tier available)
+- **A locally-installed AI CLI** — `claude`, `codex`, or `gemini`. Gryphon detects whichever is on your `PATH`.
 
-Advanced users may optionally install a local `claude` CLI and switch **Settings → Gryphon → Provider** to "Claude Code (advanced)" to spawn it as a subprocess instead of calling the API directly. Before using Claude Code mode, confirm your intended usage complies with that product's Commercial Terms and Acceptable Use Policy. Gryphon is not affiliated with Anthropic and does not endorse any particular routing pattern.
+Paste the API key for your chosen provider into **Settings → Gryphon → <Provider> API key**, or set the corresponding env var (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`). The plugin reads from settings first, env var as fallback.
+
+Each provider mode is independent — you can switch between them per-conversation via `/model` or globally in Settings. Before using any CLI-subprocess mode, confirm your intended usage complies with that product's terms.
 
 ## Provider modes
 
+Six providers shipping today, plus an Auto-detect mode:
+
 | Mode | How it works |
 |---|---|
-| **Anthropic API** (default, recommended) | Direct HTTP calls to `api.anthropic.com` via `@anthropic-ai/sdk`. Pay-per-token; straightforward billing relationship with Anthropic. |
-| **Claude Code** (advanced) | Spawns a locally-installed `claude` binary as a subprocess and streams JSON over stdin/stdout. Requires confirming your usage complies with that product's terms. |
-| **Auto** | Prefers Claude Code if the binary is detected, else falls back to Anthropic API. Opt-in; not the default. |
+| **Anthropic API** | Direct HTTP calls to `api.anthropic.com` via `@anthropic-ai/sdk`. Pay-per-token. |
+| **OpenAI API** | Direct HTTP calls to `api.openai.com` via the official `openai` SDK. Pay-per-token. |
+| **Google API** | Direct HTTP calls to `generativelanguage.googleapis.com` via `@google/genai` (Gemini Developer API; Vertex AI also supported when credentials present). Free tier available. |
+| **Claude Code** | Spawns a locally-installed `claude` binary as a subprocess and streams JSON over stdin/stdout. Requires Anthropic's CLI installed locally. |
+| **Codex CLI** | Same pattern for OpenAI's `codex` CLI. |
+| **Gemini CLI** | Same pattern for Google's `gemini` CLI. |
+| **Auto** | Prefers any detected CLI (claude > codex > gemini priority), else falls back to whichever API key is configured. Opt-in; not the default. |
 
-Anthropic API mode requires credits in your Anthropic workspace (Plans & Billing).
+For CLI modes, confirm your intended usage complies with that product's Commercial Terms and Acceptable Use Policy. API modes require credits in the corresponding vendor's workspace.
 
 ## Permission modes
 
@@ -177,12 +188,16 @@ Pre-populated skills include `/tag-suggest`, `/backlinks`, `/forward-links`, `/s
 
 | Setting | Purpose |
 |---|---|
-| **Provider** | Auto / Claude Code / Anthropic API (see Provider modes above) |
-| **Claude Code path** | Path to `claude` binary. Leave blank for auto-detect. Used in Claude Code mode only. |
+| **Provider** | Auto / Anthropic API / OpenAI API / Google API / Claude Code / Codex CLI / Gemini CLI (see Provider modes above) |
 | **Anthropic API key** | For Anthropic API mode. Stored in `data.json`. Blank = check `ANTHROPIC_API_KEY` env var. |
-| **Brave Search API key** | Enables WebSearch in Anthropic API mode. Free tier at [brave.com/search/api](https://brave.com/search/api/). Claude Code mode uses Anthropic's built-in search and ignores this. |
-| **Default model** | Haiku / Sonnet / Opus / Opus 1M |
-| **Default effort** | Low / Medium / High |
+| **OpenAI API key** | For OpenAI API mode. Stored in `data.json`. Blank = check `OPENAI_API_KEY` env var. |
+| **Google API key** | For Google API mode. Stored in `data.json`. Blank = check `GOOGLE_API_KEY` env var. |
+| **Claude Code path** | Path to `claude` binary. Leave blank for auto-detect. Used in Claude Code mode only. |
+| **Codex CLI path** | Path to `codex` binary. Leave blank for auto-detect. Used in Codex CLI mode only. |
+| **Gemini CLI path** | Path to `gemini` binary. Leave blank for auto-detect. Used in Gemini CLI mode only. |
+| **Brave Search API key** | Enables WebSearch in any API mode. Free tier at [brave.com/search/api](https://brave.com/search/api/). CLI modes use the provider's built-in search and ignore this. |
+| **Default model** | Provider-dependent dropdown (e.g., Claude Haiku/Sonnet/Opus, GPT-4o/o1, Gemini Flash/Pro). |
+| **Default effort** | Low / Medium / High (where the provider's API exposes a reasoning-effort parameter). |
 | **Permissions** | Prompt / Safe / YOLO / Plan (see Permission modes above) |
 | **Open in main tab** | Opens chat in main editor area instead of sidebar |
 
