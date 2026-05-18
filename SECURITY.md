@@ -6,7 +6,7 @@ Gryphon runs in Obsidian's renderer process with access to your vault files and,
 
 **Please report security issues privately, not via public GitHub issues.**
 
-Email: **gryphon@polleo.ai** (monitored by the maintainers).
+Email: **support@polleo.ai** (monitored by the maintainers).
 
 If email isn't an option, open a GitHub **private security advisory** via the repository's Security tab (`https://github.com/polleoai/gryphon/security/advisories/new`). We'll respond from there.
 

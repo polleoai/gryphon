@@ -298,3 +298,9 @@ MIT © POLLEO.AI.
 ## Contributing
 
 Contributions welcome. Open an issue or pull request at [polleoai/gryphon](https://github.com/polleoai/gryphon).
+
+## Contact
+
+For questions, feedback, or support: **support@polleo.ai**.
+
+For security vulnerability reports, see [SECURITY.md](./SECURITY.md) — the same address is monitored for private disclosures.

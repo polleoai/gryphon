@@ -1,11 +1,11 @@
 {
   "name": "obsidian-gryphon",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Bring AI to your vault — with guardrails at runtime. (npm workspace root)",
   "main": "main.js",
   "private": true,
   "license": "MIT",
-  "author": "POLLEO.AI",
+  "author": "POLLEO.AI <support@polleo.ai>",
   "repository": {
     "type": "git",
     "url": "https://github.com/polleoai/gryphon"

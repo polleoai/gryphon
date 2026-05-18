@@ -4,6 +4,22 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [1.6.2] — 2026-05-18
+
+### Changed — release pipeline + contact channel
+
+- **Install zip is no longer attached to releases.** Obsidian's Community Plugins installer only consumes `main.js`, `manifest.json`, and `styles.css` — the optional install zip was flagged as an ignored asset by the v1.6.1 scorecard scan (Recommendation, 2026-05-17). The `.github/workflows/release.yml` workflow now builds, attests, and uploads only those three files; the `Build install zip` step and its sigstore attestation entry are removed. Internal docs (`scripts/publish-release.sh` fallback instructions, `docs/maintainer-workflows.md` Playbook GH-3, gotcha bullet) updated to match.
+- **User-facing contact email is now `support@polleo.ai`.** `SECURITY.md` vulnerability reporting address, the README's new Contact section, the `package.json` author field, and the internal Playbook GH-2 / Playbook GH-5 redirect instructions all point at `support@polleo.ai`. The previous `gryphon@polleo.ai` alias still resolves but is no longer the canonical channel — `support@` is brand-stable across any future product rename.
+
+### Unchanged
+
+- **No code, behavior, or UI change.** Same plugin bundle semantics, same features, same 1056-test surface. The release pipeline change affects only how artifacts ship; the contact email change affects only where users find the inbox.
+- **Git commit author identity** in the public release pipeline remains `POLLEO.AI <gryphon@polleo.ai>` — that's the project's git authorship channel, not a user-contact channel, and rewriting it would invalidate the existing public commit history. Different concern, different scope.
+
+### Compatibility
+
+- Identical bundle, identical features, identical UI to v1.6.1. Test count: 1056 (unchanged).
+
 ## [1.6.1] — 2026-05-16
 
 ### Changed — documentation

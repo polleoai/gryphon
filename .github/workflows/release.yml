@@ -28,10 +28,16 @@ name: Release
 # Release ownership: this workflow OWNS the release body and asset files
 # for any tag it processes. On workflow_dispatch re-runs against an
 # existing release, the body is replaced by the matching CHANGELOG slice
-# and the named assets (main.js, manifest.json, styles.css, install zip)
-# are re-uploaded with sigstore attestations. Any handcrafted edits to a
+# and the named assets (main.js, manifest.json, styles.css) are
+# re-uploaded with sigstore attestations. Any handcrafted edits to a
 # release body or those asset files will be reverted by the next run —
 # do not maintain release content manually.
+#
+# Asset scope: Obsidian's Community Plugins installer only consumes
+# main.js, manifest.json, and styles.css. We deliberately do NOT attach
+# an install zip — the v1.6.1 scorecard scan flagged it as an ignored
+# asset (Recommendation, 2026-05-17). The hooks/ tree ships inside
+# main.js's bundling step, so a separate archive is unnecessary.
 #
 # Security notes: every run: block uses $TAG_NAME (env-var form, derived
 # from controlled sources — either a pushed Git tag, which Git constrains
@@ -125,12 +131,6 @@ jobs:
           fi
           echo "Tag and manifest agree on version: $TAG_NAME"
 
-      - name: Build install zip
-        run: |
-          mkdir -p dist
-          zip -r "dist/gryphon-${TAG_NAME}.zip" \
-            main.js manifest.json styles.css hooks/
-
       - name: Attest build provenance for release assets
         uses: actions/attest-build-provenance@v2
         with:
@@ -138,7 +138,6 @@ jobs:
             main.js
             manifest.json
             styles.css
-            dist/gryphon-${{ env.TAG_NAME }}.zip
 
       - name: Extract release notes from CHANGELOG
         id: notes
@@ -171,4 +170,3 @@ jobs:
             main.js
             manifest.json
             styles.css
-            dist/gryphon-${{ env.TAG_NAME }}.zip
