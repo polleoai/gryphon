@@ -10,8 +10,13 @@
 const { Plugin, PluginSettingTab, Setting, Notice, Modal, setTooltip } = require("obsidian");
 const path = require("path");
 const { GryphonChatView } = require("./chat-view");
-const { DEFAULT_SETTINGS, MODELS, EFFORTS, PERMS, PROVIDER_PREFS, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, resolveConnectionTimeoutMs } = require("./constants");
+const { DEFAULT_SETTINGS, MODELS, MODEL_ALIAS_MIGRATION, EFFORTS, PERMS, PROVIDER_PREFS, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, resolveConnectionTimeoutMs } = require("./constants");
 const { SkillRegistry } = require("./skills");
+const {
+  isObsidianRestApiUrl,
+  buildRestApiDenyReason,
+  RestApiTurnCounter,
+} = require("./rest-api-policy");
 const { testApiKey: testAnthropicApiKey } = require("@gryphon/provider-runtime/src/providers/anthropic-api/anthropic-api");
 const { testApiKey: testOpenAIApiKey } = require("@gryphon/provider-runtime/src/providers/openai-api/openai-api");
 const { testApiKey: testGoogleApiKey } = require("@gryphon/provider-runtime/src/providers/google-api/test-key");
@@ -81,7 +86,7 @@ function _resetModelForProvider(plugin) {
     return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
   }
   // claude-code / anthropic-api / null → Anthropic MODELS list.
-  return MODELS.some((m) => m.value === current) ? current : "sonnet";
+  return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-4-6";
 }
 
 function _formatTaggedAt(iso) {
@@ -570,6 +575,76 @@ class GryphonSettingTab extends PluginSettingTab {
         toggle.setValue(this.plugin.settings.autoRetryOnRateLimit === true).onChange(async (value) => {
           this.plugin.settings.autoRetryOnRateLimit = value;
           await this.plugin.saveSettings();
+        })
+      );
+
+    // v1.7.0 F1 — opt-out for SDK-mode authoritative token counting.
+    // Anthropic's `messages.countTokens` endpoint is free (no charge,
+    // no generation) and gives an exact pre-send token count. Default
+    // on. Users who prefer zero "background" network activity can
+    // disable; the heuristic estimator handles both CLI mode and the
+    // SDK-disabled path.
+    this._descToTooltip(
+      new Setting(containerEl).setName("Use exact token counts (SDK mode)"),
+      "When using the Anthropic API provider, Gryphon calls the free " +
+      "messages.countTokens endpoint on debounced typing pauses to show " +
+      "an exact projected context size before send. Anthropic does not " +
+      "charge for this endpoint. Disable to keep all pre-send context " +
+      "computation strictly local (the heuristic estimator is used as " +
+      "the fallback). CLI providers (claude-code / codex-cli / gemini-cli) " +
+      "are unaffected — they always use the local heuristic.",
+    )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.useExactTokenCounting !== false).onChange(async (value) => {
+          this.plugin.settings.useExactTokenCounting = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // v1.7.0 F1 — confirm modal when projected context is ≥95% of the
+    // model's window. Default on. Users who push the limit on purpose
+    // (one-shot long-context prompts where they know what they're doing)
+    // can disable so the modal doesn't get in the way.
+    this._descToTooltip(
+      new Setting(containerEl).setName("Confirm before overflow sends"),
+      "When the projected context for the next send is at or above " +
+      "95% of the model's window, Gryphon shows a confirmation modal " +
+      "with recovery suggestions (switch model / /compact / /clear). " +
+      "Disable to send without confirmation even when overflow is likely.",
+    )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.confirmOnContextOverflow !== false).onChange(async (value) => {
+          this.plugin.settings.confirmOnContextOverflow = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    // v1.7.0 F4 — Obsidian REST API access policy. Blocks claude-code's
+    // built-in WebFetch from reaching the obsidian-local-rest-api
+    // plugin on loopback (127.0.0.1:27124). Default blocked because
+    // unrestricted access has been seen producing 500+ enumeration GETs
+    // per question when vault-native search would close it in one call.
+    // Users who actually want REST integration can flip this on per
+    // session via the chat toolbar chip; the setting here defines the
+    // start-of-session default.
+    this._descToTooltip(
+      new Setting(containerEl).setName("Block Obsidian REST API access"),
+      "When on (default), Gryphon denies WebFetch calls to the Obsidian " +
+      "REST API plugin on loopback. This prevents the language model " +
+      "from enumerating the vault via REST when a single grep would " +
+      "answer the same question. Turn off to let the model reach " +
+      "127.0.0.1:27124 freely; a warning toast still fires when GETs " +
+      "exceed the threshold below in one turn.",
+    )
+      .addToggle((toggle) =>
+        toggle.setValue((this.plugin.settings.obsidianRestApiPolicy || "blocked") === "blocked").onChange(async (value) => {
+          this.plugin.settings.obsidianRestApiPolicy = value ? "blocked" : "allowed";
+          await this.plugin.saveSettings();
+          try {
+            if (this.plugin.app && this.plugin.app.workspace) {
+              this.plugin.app.workspace.trigger("gryphon:settings-changed");
+            }
+          } catch { /* best-effort */ }
         })
       );
 
@@ -1509,6 +1584,19 @@ class GryphonPlugin extends Plugin {
     // entry — consumed at the start of the next spawn for that kind.
     this._forceFreshSpawnByProvider = new Set();
 
+    // F4 (v1.7.0): per-turn GET counter for the Obsidian REST API. When
+    // `obsidianRestApiPolicy === "allowed"`, every WebFetch the LLM
+    // issues against 127.0.0.1:27124 increments this; the first turn
+    // that crosses `restApiWarnThreshold` surfaces a one-time toast.
+    // `_resetRestApiCounter()` runs on every user send (wired from
+    // chat-view) and on /new / /clear.
+    this._restApiCounter = new RestApiTurnCounter({
+      threshold: typeof this.settings.restApiWarnThreshold === "number"
+        ? this.settings.restApiWarnThreshold
+        : 50,
+      onWarn: (count) => this._onRestApiThresholdCrossed(count),
+    });
+
     // ONE sweeper, called once per plugin load. Cleans up every
     // temp/state file Gryphon can leave behind across crashes and
     // reloads. Pid-liveness protects concurrent Obsidian windows
@@ -2198,6 +2286,19 @@ class GryphonPlugin extends Plugin {
     const isMutating =
       canonicalTool === "Bash" || canonicalTool === "PowerShell" ||
       canonicalTool === "Write" || canonicalTool === "Edit";
+
+    // F4 (v1.7.0): Obsidian REST API access policy. Runs BEFORE the
+    // read-only allow path so the deny actually lands in claude-code
+    // mode (where CC's built-in WebFetch is otherwise unrestricted on
+    // loopback — unlike our SDK WebFetch which already refuses 127.0.0.1
+    // via SSRF defense). When the policy is "allowed", we still count
+    // every REST GET so the >threshold toast can fire if the LLM falls
+    // into enumeration patterns.
+    if (canonicalTool === "WebFetch") {
+      const policyResult = this._applyRestApiPolicy(input);
+      if (policyResult) return policyResult;
+    }
+
     if (!classification && !isMutating) {
       return { decision: "allow" };
     }
@@ -2316,6 +2417,74 @@ class GryphonPlugin extends Plugin {
       matchedPattern: classification ? classification.matchedPattern : undefined,
       category: classification ? classification.category : undefined,
     };
+  }
+
+  /**
+   * F4 (v1.7.0): apply the Obsidian REST API policy to a WebFetch
+   * classify call. Returns a final `{decision, reason}` to short-circuit
+   * the normal classify path when the URL targets the obsidian-local-
+   * rest-api plugin (so the deny lands without going through the rest
+   * of the gate logic), or returns null to let normal handling proceed
+   * for any WebFetch that isn't pointed at the REST plugin.
+   */
+  _applyRestApiPolicy(input) {
+    const url = input && typeof input.url === "string" ? input.url : "";
+    if (!isObsidianRestApiUrl(url)) return null;
+    const policy = this.settings && this.settings.obsidianRestApiPolicy;
+    if (policy === "allowed") {
+      try {
+        this._restApiCounter && this._restApiCounter.note();
+      } catch (e) {
+        // The counter is arithmetic + callback dispatch; the callback
+        // has its own catch. The only way we land here is a developer
+        // bug after a refactor — surface to console so it's not silent.
+        console.error("[gryphon] rest-api counter note failed:", e);
+      }
+      return { decision: "allow" };
+    }
+    // "blocked" (default) and any unrecognized value → deny. The reason
+    // string is the same text the model surfaces to the user; we keep
+    // it short and instructive so the model doesn't paraphrase away
+    // the "use vault-native search" recovery path.
+    return { decision: "deny", reason: buildRestApiDenyReason() };
+  }
+
+  /**
+   * F4 (v1.7.0): fires once per turn when REST API GET count crosses
+   * `restApiWarnThreshold`. Surfaces an Obsidian Notice and emits a
+   * workspace event so chat-view can pin a visible warning to the
+   * current turn. Swallows errors — the warning is best-effort UX, not
+   * a security guarantee.
+   */
+  _onRestApiThresholdCrossed(count) {
+    try {
+      const { Notice } = require("obsidian");
+      new Notice(
+        `Gryphon: the model has issued ${count} Obsidian REST API GETs ` +
+        `this turn. This pattern usually means enumeration — consider ` +
+        `interrupting and asking it to use vault search instead.`,
+        12000,
+      );
+    } catch (e) {
+      // Headless tests don't have a real Notice constructor — silent
+      // OK there. In live Obsidian a failure here means a regression
+      // is silently hiding the warning the policy exists to deliver;
+      // log so the dev tools console shows the gap.
+      console.error("[gryphon] rest-api warning Notice failed:", e);
+    }
+    // The Notice above is the canonical signal. A workspace event was
+    // considered for pinning a per-turn banner inside chat-view, but no
+    // listener was wired in v2.0 — removed to keep the surface honest.
+    // If/when a chat-view banner lands, re-add a `workspace.trigger`
+    // here with the listener side checked in at the same time.
+  }
+
+  /**
+   * F4 (v1.7.0): reset the per-turn REST GET counter. Called by
+   * chat-view on every user send and on /new / /clear.
+   */
+  _resetRestApiCounter() {
+    if (this._restApiCounter) this._restApiCounter.reset();
   }
 
   /**
@@ -2466,6 +2635,77 @@ class GryphonPlugin extends Plugin {
     } else if (this.settings.providerPreference === "cli") {
       this.settings.providerPreference = "claude-code";
     }
+
+    // v1.7.0: drop alias model values in favor of concrete model IDs.
+    // The claude-code CLI used to map `sonnet` → "latest Sonnet" at spawn
+    // time, but on boxes whose installed CLI predates Sonnet 4.6 the
+    // alias still resolves to Sonnet 4.5 (200K context) — causing
+    // "Prompt is too long" errors in long-context vaults.
+    // Pinning to concrete IDs eliminates that drift.
+    //
+    // Carry intent forward:
+    //   haiku    → claude-haiku-4-5     (fast)
+    //   sonnet   → claude-sonnet-4-6    (balanced, now 1M)
+    //   opus     → claude-opus-4-7      (most capable, 1M)
+    //   opus[1m] → claude-opus-4-7      (same — Opus 4.7 is intrinsically 1M)
+    const aliased = this.settings.model;
+    if (typeof aliased === "string"
+        && Object.prototype.hasOwnProperty.call(MODEL_ALIAS_MIGRATION, aliased)) {
+      this.settings.model = MODEL_ALIAS_MIGRATION[aliased];
+    }
+  }
+
+  /**
+   * F1 Stage D (v1.7.0) — self-tuning context-projection calibration.
+   *
+   * After each turn, chat-view compares the pre-send projected total
+   * against the actual `contextTokens` CC reported back, and calls this
+   * with `actual - projected`. We keep a rolling buffer of the last 20
+   * deltas per vault and return their mean from
+   * `getProjectionCalibrationDelta()`. The projection summarizer adds
+   * the mean to its raw heuristic, so over time the chip converges to
+   * the right number for this user's actual memory + skill + tool mix
+   * without us having to predict it from constants.
+   *
+   * Persisted via `saveData` directly (NOT saveSettings) to avoid
+   * firing `gryphon:settings-changed` — that would re-trigger the
+   * projection recompute we just calibrated against, in a feedback
+   * loop.
+   */
+  recordProjectionCalibrationSample(deltaTokens) {
+    if (!Number.isFinite(deltaTokens)) return;
+    const MAX = 20;
+    const prior = Array.isArray(this.settings._projectionCalibrationDeltas)
+      ? this.settings._projectionCalibrationDeltas
+      : [];
+    const buf = prior.slice();
+    buf.push(deltaTokens);
+    while (buf.length > MAX) buf.shift();
+    this.settings._projectionCalibrationDeltas = buf;
+    // saveData returns a Promise; swallow both synchronous throws and
+    // async rejections so calibration is best-effort either way. Disk
+    // full / EROFS shouldn't surface during chat.
+    try {
+      const p = this.saveData(this.settings);
+      if (p && typeof p.then === "function") {
+        p.then(() => {}, () => {});
+      }
+    } catch { /* best-effort */ }
+  }
+
+  /**
+   * Mean of the recorded deltas, rounded to the nearest token. Returns
+   * 0 when no samples have been recorded yet (fresh vault).
+   */
+  getProjectionCalibrationDelta() {
+    const buf = this.settings._projectionCalibrationDeltas;
+    if (!Array.isArray(buf) || buf.length === 0) return 0;
+    let sum = 0;
+    let n = 0;
+    for (const v of buf) {
+      if (Number.isFinite(v)) { sum += v; n += 1; }
+    }
+    return n === 0 ? 0 : Math.round(sum / n);
   }
 
   async saveSettings() {

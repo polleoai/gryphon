@@ -247,4 +247,4 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
   return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
 }
 
-module.exports = { runToolLoop, MAX_ITERATIONS };
+module.exports = { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };

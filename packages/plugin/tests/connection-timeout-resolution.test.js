@@ -43,10 +43,10 @@ test("model-adaptive default applies when override is null", () => {
 test("each model in the table has a sensible budget", () => {
   // Lock in the issue's published numbers so a careless edit can't
   // silently halve the budget for a single model.
-  assert.equal(COLD_START_BUDGET_MS["haiku"], 30_000);
-  assert.equal(COLD_START_BUDGET_MS["sonnet"], 60_000);
-  assert.equal(COLD_START_BUDGET_MS["opus"], 120_000);
-  assert.equal(COLD_START_BUDGET_MS["opus[1m]"], 180_000);
+  assert.equal(COLD_START_BUDGET_MS["claude-haiku-4-5"], 30_000);
+  assert.equal(COLD_START_BUDGET_MS["claude-sonnet-4-6"], 90_000);
+  assert.equal(COLD_START_BUDGET_MS["claude-opus-4-6"], 180_000);
+  assert.equal(COLD_START_BUDGET_MS["claude-opus-4-7"], 180_000);
 });
 
 test("unknown model falls back to DEFAULT_COLD_START_BUDGET_MS", () => {
@@ -83,63 +83,63 @@ test("valid in-range override wins over model default", () => {
 
 test("override at the exact minimum boundary is accepted", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: MIN_COLD_START_BUDGET_MS, model: "sonnet" }),
+    resolveConnectionTimeoutMs({ override: MIN_COLD_START_BUDGET_MS, model: "claude-sonnet-4-6" }),
     MIN_COLD_START_BUDGET_MS,
   );
 });
 
 test("override at the exact maximum boundary is accepted", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: MAX_COLD_START_BUDGET_MS, model: "sonnet" }),
+    resolveConnectionTimeoutMs({ override: MAX_COLD_START_BUDGET_MS, model: "claude-sonnet-4-6" }),
     MAX_COLD_START_BUDGET_MS,
   );
 });
 
 test("override below minimum falls through to model default", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: MIN_COLD_START_BUDGET_MS - 1, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: MIN_COLD_START_BUDGET_MS - 1, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: 1, model: "haiku" }),
-    COLD_START_BUDGET_MS["haiku"],
+    resolveConnectionTimeoutMs({ override: 1, model: "claude-haiku-4-5" }),
+    COLD_START_BUDGET_MS["claude-haiku-4-5"],
   );
 });
 
 test("override above maximum falls through to model default", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: MAX_COLD_START_BUDGET_MS + 1, model: "opus" }),
-    COLD_START_BUDGET_MS["opus"],
+    resolveConnectionTimeoutMs({ override: MAX_COLD_START_BUDGET_MS + 1, model: "claude-opus-4-7"}),
+    COLD_START_BUDGET_MS["claude-opus-4-7"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: 99_999_999, model: "opus[1m]" }),
-    COLD_START_BUDGET_MS["opus[1m]"],
+    resolveConnectionTimeoutMs({ override: 99_999_999, model: "claude-opus-4-7" }),
+    COLD_START_BUDGET_MS["claude-opus-4-7"],
   );
 });
 
 test("zero and negative overrides fall through", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: 0, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: 0, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: -1000, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: -1000, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
 });
 
 test("non-finite override values fall through", () => {
   assert.equal(
-    resolveConnectionTimeoutMs({ override: NaN, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: NaN, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: Infinity, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: Infinity, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: -Infinity, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: -Infinity, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
 });
 
@@ -148,20 +148,20 @@ test("non-number override values fall through", () => {
   // user editing data.json by hand and entering a string, or a
   // future migration accidentally storing strings.
   assert.equal(
-    resolveConnectionTimeoutMs({ override: "60000", model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: "60000", model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: undefined, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: undefined, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: {}, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: {}, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
   assert.equal(
-    resolveConnectionTimeoutMs({ override: true, model: "sonnet" }),
-    COLD_START_BUDGET_MS["sonnet"],
+    resolveConnectionTimeoutMs({ override: true, model: "claude-sonnet-4-6" }),
+    COLD_START_BUDGET_MS["claude-sonnet-4-6"],
   );
 });
 

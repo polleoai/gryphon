@@ -4,6 +4,30 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.0.0] — 2026-05-19
+
+### Added — context budget UX (the 2.0 arc)
+
+This major version turns the context meter from a passive after-the-fact readout into a decision-support surface that tells you what your next prompt will cost *before* you send it, breaks down where the bytes are going when you want to know, and offers one-click recovery when the budget is tight. Driven by a real user incident where a short command hit "Prompt is too long" with the context meter sitting at 0%, leaving no actionable next step. Tested on macOS, Linux, and Windows.
+
+- **Concrete model IDs replace aliases.** The model dropdown now lists Haiku 4.5, Sonnet 4.6, Opus 4.6, and Opus 4.7 by name. Previously the dropdown carried generic `sonnet` / `opus` labels that resolved to whatever the CLI defaulted to on the user's machine — which differed by install vintage and silently changed under maintenance. A one-shot migration upgrades existing settings on first load.
+- **"Used" meter no longer reads 0% after overflow.** When the API rejects a send with "Prompt is too long", the meter now pegs to 100% and the error message names the active model, its window size, and whether the bloat is conversation history (recoverable via `/compact`) or system prompt (needs a larger-window model or memory cleanup).
+- **"Next" projection chip.** A second chip next to the existing "Used" meter shows what the next send is projected to cost — before you send it. Turns yellow at 80%, red at 95%, and at 95% shows a confirm modal with recovery suggestions (switch model, `/compact`, `/clear`). For Anthropic SDK mode the projection uses an exact token count from the model (free, no charge); for CLI mode and other providers it uses a heuristic estimator. Both adapt to the user's actual memory and skill load by learning the delta over the last 20 turns and applying it to future projections automatically.
+- **Click either chip for a per-source breakdown.** Opens a modal that breaks the projected total into built-in system prompt, tool schemas, each loaded CLAUDE.md / AGENTS.md, the MEMORY.md index, other memory files, conversation history, and your current input — with one-click access to `/compact`, `/clear`, and `/memory`.
+- **`/memory` slash command.** Audits the auto-memory directory for the active vault. Lists every file with size and age, highlights anything older than 90 days as an archive candidate (configurable via `memoryArchiveAgeDays`), and moves the selection to a sibling `memory-archive/` directory that the model doesn't scan. The MEMORY.md index gets matching entries commented out so the index stays consistent. A 5-second toast offers Undo.
+- **Obsidian REST API access policy (CLI mode).** Blocks WebFetch calls to the Obsidian REST API plugin on loopback by default — a guardrail against the model enumerating the vault one URL at a time when a single grep would answer the same question. A toolbar chip lets the user flip per session; when enabled, a warning toast fires the first turn a session crosses 50 REST GETs. Settings tab exposes both the default and the threshold.
+- **Opt-out toggles in Settings:**
+  - "Use exact token counts (SDK mode)" — disable to keep all pre-send context computation strictly local
+  - "Confirm before overflow sends" — disable to skip the 95% confirm modal
+  - "Block Obsidian REST API access" — flip the default the toolbar chip starts from each session
+
+### Compatibility
+
+- Settings migrate automatically on first load — no user action required. Old `sonnet` / `opus` aliases map to their current concrete equivalents (Sonnet 4.6 / Opus 4.7). The migration is logged once in the dev console.
+- New settings keys default to safer-by-default values; an existing user upgrading from 1.6.2 sees the same behaviour they had, plus the new chips and the `/memory` command. Behaviour changes that affect a sent prompt are gated behind the toggles above.
+- Test count: 1133 (up from 1056 in 1.6.2).
+- Cross-platform: smoke-tested on macOS, Linux, and Windows.
+
 ## [1.6.2] — 2026-05-18
 
 ### Changed — release pipeline + contact channel

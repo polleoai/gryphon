@@ -758,7 +758,7 @@ const DEFAULT_SETTINGS = {
   // (acceptEdits — auto-accepts file edits, still prompts on bash) or
   // "YOLO" (bypassPermissions — skips all prompts) in settings.
   permissionMode: "default",
-  model: "sonnet",
+  model: "claude-sonnet-4-6",
   effort: "high",
   openInMainTab: false,
   lastSessionId: null,
@@ -893,6 +893,41 @@ const DEFAULT_SETTINGS = {
   // who'd rather wait than re-press Send.
   autoRetryOnRateLimit: false,
 
+  // F1 (v1.7.0) — opt-out for SDK-mode authoritative token counting.
+  // When true (default), `anthropic-api` provider calls Anthropic's free
+  // `messages.countTokens` endpoint on debounced keyup to populate the
+  // projection chip with an exact number. Heuristic estimator is used
+  // as the fallback either way (on failure, on opt-out, or in CLI mode).
+  // Disable to keep all pre-send context computation strictly local.
+  useExactTokenCounting: true,
+  // F1 (v1.7.0) — confirm modal when projected context is ≥95% of the
+  // model's window. Default on. Users who frequently push the limit on
+  // purpose (e.g. long-context one-shot prompts) can disable.
+  confirmOnContextOverflow: true,
+
+  // F4 (v1.7.0) — Obsidian REST API access policy for claude-code mode.
+  //   "blocked" (default) → Gryphon denies any WebFetch to the
+  //                         obsidian-local-rest-api plugin's loopback
+  //                         endpoints, with a reason string that points
+  //                         the model at vault-native search instead.
+  //   "allowed"           → WebFetch passes through; a one-time toast
+  //                         fires the first turn that crosses
+  //                         `restApiWarnThreshold` GETs.
+  // SDK providers refuse loopback regardless via their own SSRF defense
+  // — this toggle has no effect outside claude-code mode.
+  obsidianRestApiPolicy: "blocked",
+  // F4 — GET-count threshold per turn before the "you're enumerating
+  // the vault via REST" toast fires. Only meaningful when policy is
+  // "allowed". Reset on every user send.
+  restApiWarnThreshold: 50,
+
+  // F3 (v1.7.0) — age threshold (days) used by the `/memory` audit
+  // modal to mark files as archive candidates. Lower this to trim
+  // memory more aggressively; raise it to keep older files in CC's
+  // load path. The modal still lets the user override per-archive
+  // by unchecking individual rows.
+  memoryArchiveAgeDays: 90,
+
   // Issue #38: override for the cold-start connection-timeout budget.
   // null = use the model-adaptive default from COLD_START_BUDGET_MS
   // (Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s; non-Anthropic
@@ -903,16 +938,39 @@ const DEFAULT_SETTINGS = {
   connectionTimeoutMs: null,
 };
 
-// Aliases — resolved to concrete versions by the local CLI at spawn.
-// The CLI maps these to the latest models for each family, so no version
-// numbers need to be hardcoded here. The resolved version is captured
-// from the `system.init` stream event and shown in the model tooltip.
+// Concrete model IDs (no aliases). Aliases like "sonnet"/"opus" were
+// dropped 2026-05-19 after a real user incident: the claude-code CLI
+// resolves `sonnet` to whatever its installed binary considers "latest",
+// which on some boxes still pins to Sonnet 4.5 (200K window) — causing
+// "Prompt is too long" errors in long-context vaults. Pinning to
+// concrete IDs guarantees the 1M-window Sonnet 4.6 / Opus 4.6+
+// regardless of the installed CLI version. The resolved version is
+// still captured from the `system.init` stream event and shown in the
+// model tooltip.
+//
+// Supported set (per Anthropic's current model directory):
+//   Haiku 4.5  — 200K context, fast + cheapest
+//   Sonnet 4.6 — 1M context, balanced default
+//   Opus 4.6   — 1M context, production tier
+//   Opus 4.7   — 1M context, most capable
 const MODELS = [
-  { value: "haiku",     label: "Haiku",    desc: "Fast, cheapest" },
-  { value: "sonnet",    label: "Sonnet",   desc: "Balanced" },
-  { value: "opus",      label: "Opus",     desc: "Most capable" },
-  { value: "opus[1m]",  label: "Opus 1M",  desc: "Most capable, 1M context" },
+  { value: "claude-haiku-4-5",  label: "Haiku 4.5",   desc: "Fast, cheapest (200K)" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6",  desc: "Balanced (1M)" },
+  { value: "claude-opus-4-6",   label: "Opus 4.6",    desc: "Production (1M)" },
+  { value: "claude-opus-4-7",   label: "Opus 4.7",    desc: "Most capable (1M)" },
 ];
+
+// Migration map for users whose persisted `settings.model` is still
+// one of the old aliases. Applied once at plugin load — see
+// `migrateModelAlias` in plugin.js. Maps each old alias to the concrete
+// ID that preserves the user's original tier intent (sonnet → balanced,
+// opus → most-capable, opus[1m] → also most-capable since 4.7 is 1M).
+const MODEL_ALIAS_MIGRATION = {
+  "haiku":     "claude-haiku-4-5",
+  "sonnet":    "claude-sonnet-4-6",
+  "opus":      "claude-opus-4-7",
+  "opus[1m]":  "claude-opus-4-7",
+};
 
 const EFFORTS = [
   { value: "low",    label: "Low",    desc: "Quick answers" },
@@ -928,8 +986,10 @@ const PERMS = [
 ];
 
 const MODEL_CONTEXT = {
-  haiku: 200000, sonnet: 200000, opus: 200000,
-  "opus[1m]": 1000000,
+  "claude-haiku-4-5":  200000,
+  "claude-sonnet-4-6": 1000000,
+  "claude-opus-4-6":   1000000,
+  "claude-opus-4-7":   1000000,
 };
 
 // Issue #38: cold-start latency varies materially by model. Haiku spawns
@@ -944,10 +1004,10 @@ const MODEL_CONTEXT = {
 // stateless HTTPS calls without a comparable cold-start cost, so they
 // fall through to DEFAULT_COLD_START_BUDGET_MS.
 const COLD_START_BUDGET_MS = {
-  haiku: 30_000,
-  sonnet: 60_000,
-  opus: 120_000,
-  "opus[1m]": 180_000,
+  "claude-haiku-4-5":  30_000,
+  "claude-sonnet-4-6": 90_000,   // 1M-window: KV alloc costs more than 200K Sonnet 4.5 did
+  "claude-opus-4-6":   180_000,
+  "claude-opus-4-7":   180_000,
 };
 // Used when settings.model isn't in COLD_START_BUDGET_MS (non-Anthropic
 // providers, future model identifiers we haven't tabulated yet).
@@ -1006,6 +1066,7 @@ const SLASH_COMMANDS = [
   { cmd: "/feedback",    desc: "Send feedback or report a bug (opens browser / Mail)", takesArgs: true },
   { cmd: "/help",        desc: "Show all commands and keyboard shortcuts" },
   { cmd: "/init",        desc: "Scaffold Gryphon/MANUAL.md template in the vault if missing" },
+  { cmd: "/memory",      desc: "Audit and archive auto-memory files older than 90 days" },
   { cmd: "/model",       desc: "Switch model (opens picker)", takesArgs: true },
   { cmd: "/perm",        desc: "Switch permission mode (opens picker)" },
   { cmd: "/permissions", desc: "Switch permission mode (opens picker — alias of /perm)" },
@@ -1087,7 +1148,7 @@ module.exports = {
   TOOL_STATUS_CORE, DEFAULT_SETTINGS, DEFAULT_PROVIDER_PREFERENCE,
   DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
   PROTECTED_CATEGORIES,
-  MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
+  MODELS, MODEL_ALIAS_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS,
   CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
   COLD_START_BUDGET_MS, DEFAULT_COLD_START_BUDGET_MS,

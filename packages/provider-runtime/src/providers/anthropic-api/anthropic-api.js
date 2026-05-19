@@ -17,7 +17,8 @@
  */
 
 const Anthropic = require("@anthropic-ai/sdk").default;
-const { runToolLoop } = require("./tool-loop");
+const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop");
+const { getToolSchemas } = require("./tools/tool-registry");
 
 // USD per million tokens. Update when Anthropic's pricing changes.
 // Cache write defaults to 1.25× input (5min ephemeral); cache read is
@@ -25,18 +26,23 @@ const { runToolLoop } = require("./tool-loop");
 const MODEL_PRICES = {
   "claude-haiku-4-5":  { input: 0.80,  output: 4.00 },
   "claude-sonnet-4-6": { input: 3.00,  output: 15.00 },
+  "claude-opus-4-6":   { input: 15.00, output: 75.00 },
   "claude-opus-4-7":   { input: 15.00, output: 75.00 },
   // Fallback for unknown model IDs — assume Sonnet pricing
   "_default":          { input: 3.00,  output: 15.00 },
 };
 
-// Map our internal model aliases to concrete API model IDs. The CLI does
-// this resolution server-side; in Anthropic API mode we do it explicitly.
+// Back-compat: callers from earlier Gryphon versions may still pass the
+// old aliases (`haiku`/`sonnet`/`opus`/`opus[1m]`) even though the
+// settings migration in plugin.js rewrites them to concrete IDs on load.
+// We keep alias resolution here so any in-flight call from a pre-migration
+// chat view still maps to a working model. New code should pass concrete
+// IDs directly.
 const MODEL_ALIAS = {
-  "haiku":      "claude-haiku-4-5",
-  "sonnet":     "claude-sonnet-4-6",
-  "opus":       "claude-opus-4-7",
-  "opus[1m]":   "claude-opus-4-7",  // 1M context flag handled separately if needed
+  "haiku":     "claude-haiku-4-5",
+  "sonnet":    "claude-sonnet-4-6",
+  "opus":      "claude-opus-4-7",
+  "opus[1m]":  "claude-opus-4-7",
 };
 
 function resolveModel(alias) {
@@ -116,6 +122,82 @@ class AnthropicAPIProvider {
   }
 
   isAlive() { return !this.destroyed; }
+
+  /**
+   * Build the request body for `messages.countTokens` — authoritative
+   * pre-send count of input tokens for the NEXT turn if it were sent
+   * with `prospectiveInput` as the user message.
+   *
+   * Split out from `countTokensForNext` so unit tests can verify the
+   * request shape (system prompt, tool list, message order) without
+   * needing an Anthropic client. The Stage A heuristic estimator is the
+   * fallback when this network call isn't available — the SDK number
+   * here is authoritative when present.
+   *
+   * The empty-prospective-input case is special-cased: the API rejects
+   * an empty user message, so we pass a single space (1-token cost) just
+   * to keep the request well-formed. The chat-view caller treats the
+   * difference as noise.
+   *
+   * @param {string} prospectiveInput  — text the user has typed but not sent
+   * @returns {object} — `{ model, system, tools, messages }`
+   */
+  _buildCountTokensRequest(prospectiveInput) {
+    const text = (typeof prospectiveInput === "string" && prospectiveInput.length > 0)
+      ? prospectiveInput
+      : " ";
+    const messages = [
+      ...this.history,
+      { role: "user", content: text },
+    ];
+    const tools = getToolSchemas({ allowWrite: true, allowWeb: true, allowBash: true });
+    const body = {
+      model: this.resolvedModel,
+      system: GRYPHON_SDK_SYSTEM_PROMPT,
+      messages,
+    };
+    if (tools.length > 0) body.tools = tools;
+    return body;
+  }
+
+  /**
+   * Authoritative pre-send token count for SDK mode (F1).
+   *
+   * Calls Anthropic's `messages.countTokens` endpoint with the same
+   * arguments `send()` would use, plus a prospective user message. Cheap
+   * — no generation, no streaming, one network roundtrip — but still
+   * worth caching against repeated typing on the same prefix.
+   *
+   * Returns `null` on any failure (network, auth, rate-limit, SDK
+   * version that doesn't support countTokens). The chat-view falls back
+   * to the heuristic estimator on null.
+   *
+   * @param {string} prospectiveInput
+   * @returns {Promise<number|null>}  input_tokens, or null on failure
+   */
+  async countTokensForNext(prospectiveInput) {
+    // Cache key — keyed on history length (cheap proxy for content
+    // identity) and the prospective input itself. Two consecutive calls
+    // with the same prefix while the user pauses typing return cached;
+    // changing the input even by a single char busts the cache.
+    const cacheKey = `${this.history.length}|${prospectiveInput || ""}`;
+    if (this._countTokensCache && this._countTokensCache.key === cacheKey) {
+      return this._countTokensCache.value;
+    }
+    try {
+      const body = this._buildCountTokensRequest(prospectiveInput);
+      const result = await this.client.messages.countTokens(body);
+      const tokens = (result && typeof result.input_tokens === "number")
+        ? result.input_tokens : null;
+      this._countTokensCache = { key: cacheKey, value: tokens };
+      return tokens;
+    } catch (_) {
+      // Caller's fallback path uses the heuristic estimator. Don't
+      // surface the error — countTokens failing shouldn't block typing.
+      this._countTokensCache = { key: cacheKey, value: null };
+      return null;
+    }
+  }
 
   // Anthropic API mode: cost is computed locally from token usage × MODEL_PRICES.
   // The price table in this file may drift from Anthropic's published

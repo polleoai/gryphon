@@ -498,6 +498,126 @@
   font-weight: 600;
 }
 
+/* F4 (v1.7.0) — REST API toggle chip. Muted when blocking (the safer
+   default), highlighted in yellow when allowed so the user sees that
+   they've opened a permissive path. */
+.gryphon-container .gryphon-rest-api-off {
+  color: var(--text-faint);
+}
+
+.gryphon-container .gryphon-rest-api-on {
+  color: var(--color-yellow);
+  font-weight: 600;
+}
+
+/* F2 (v1.7.0) — context-breakdown modal. The chip turns into a button
+   when clickable; the modal renders one row per token source with a
+   proportional bar so the user spots the worst offender at a glance. */
+.gryphon-container .gryphon-context-clickable {
+  cursor: pointer;
+}
+
+.gryphon-container .gryphon-context-clickable:hover {
+  text-decoration: underline;
+}
+
+.gryphon-breakdown-header {
+  margin-bottom: 0.8em;
+  font-weight: 600;
+}
+
+.gryphon-breakdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 1em;
+}
+
+.gryphon-breakdown-row {
+  display: grid;
+  grid-template-columns: 11em 1fr 6em;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9em;
+}
+
+.gryphon-breakdown-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.gryphon-breakdown-bar-wrap {
+  background: var(--background-modifier-border);
+  border-radius: 3px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.gryphon-breakdown-bar {
+  background: var(--interactive-accent);
+  height: 100%;
+}
+
+.gryphon-breakdown-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.gryphon-breakdown-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 0.4em;
+}
+
+/* F3 (v1.7.0) — memory audit modal. Compact rows with a checkbox per
+   file; the second list (recent) renders without checkboxes for
+   transparency on what was kept. */
+.gryphon-memory-header {
+  font-size: 0.9em;
+  color: var(--text-muted);
+  margin-bottom: 0.8em;
+  line-height: 1.5;
+}
+
+.gryphon-memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 0.8em;
+  max-height: 24em;
+  overflow-y: auto;
+}
+
+.gryphon-memory-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.9em;
+  font-variant-numeric: tabular-nums;
+}
+
+.gryphon-memory-recent {
+  color: var(--text-muted);
+  margin-top: 0.4em;
+}
+
+.gryphon-memory-more {
+  font-size: 0.85em;
+  font-style: italic;
+  color: var(--text-faint);
+  padding-top: 4px;
+}
+
+.gryphon-memory-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 0.4em;
+}
+
 /* ── Status bar: Gryphon: <status>  [Stop] ── */
 .gryphon-statusbar {
   display: flex;

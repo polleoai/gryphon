@@ -2,9 +2,9 @@
  * Issue #30 regression: MAX_SDK_SEED_TURNS scales linearly with the
  * active model's context window.
  *
- *   200K window (sonnet/opus/haiku)      → cap 100 (existing behavior)
- *   1M window (opus[1m])                  → cap 500 (5× more turns)
- *   Unknown model id (OpenAI/Gemini ids)  → cap 100 (safe fallback)
+ *   200K window (claude-haiku-4-5)               → cap 100 (existing behavior)
+ *   1M window (claude-sonnet-4-6 / opus-4-6/4-7) → cap 500 (5× more turns)
+ *   Unknown model id (OpenAI/Gemini ids)         → cap 100 (safe fallback)
  *
  * The cap can never DECREASE below 100 — the pre-fix baseline. Larger
  * windows can hold proportionally more conversation; smaller-than-200K
@@ -41,7 +41,7 @@ function makeStub({ model, turns }) {
 }
 
 test("issue #30: 200K window models cap at 100 turns (baseline preserved)", () => {
-  const stub = makeStub({ model: "sonnet", turns: 200 });
+  const stub = makeStub({ model: "claude-haiku-4-5", turns: 200 });
   const seed = stub._extractLlmTurnsFromFullHistory();
   // 200 user/assistant pairs = 400 entries; cap 100 keeps the LAST 100.
   assert.equal(seed.length, 100,
@@ -49,11 +49,11 @@ test("issue #30: 200K window models cap at 100 turns (baseline preserved)", () =
 });
 
 test("issue #30: 1M window models cap at 500 turns (linear scaling)", () => {
-  const stub = makeStub({ model: "opus[1m]", turns: 600 });
+  const stub = makeStub({ model: "claude-opus-4-7", turns: 600 });
   const seed = stub._extractLlmTurnsFromFullHistory();
   // 600 user/assistant pairs = 1200 entries; 1M window gives 5× cap.
   assert.equal(seed.length, 500,
-    "opus[1m] (1M window) must scale the cap to 500 turns");
+    "claude-opus-4-7 (1M window) must scale the cap to 500 turns");
 });
 
 test("issue #30: unknown model id falls back to 100 (safe default)", () => {
@@ -76,7 +76,7 @@ test("issue #30: cap never drops below 100 even if model has tiny window", () =>
 });
 
 test("issue #30: short conversations are unaffected (no truncation when below cap)", () => {
-  const stub = makeStub({ model: "opus[1m]", turns: 10 });
+  const stub = makeStub({ model: "claude-opus-4-7", turns: 10 });
   const seed = stub._extractLlmTurnsFromFullHistory();
   assert.equal(seed.length, 20,
     "10 turn-pairs = 20 entries, well below any cap — full seed forwards");

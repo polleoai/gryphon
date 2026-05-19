@@ -41,7 +41,7 @@
  * behavior via autocompleteSources, stopStreamingHooks, onBeforeSend.
  */
 
-const { ItemView, MarkdownRenderer, Menu, MarkdownView } = require("obsidian");
+const { ItemView, MarkdownRenderer, Menu, MarkdownView, setTooltip } = require("obsidian");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -52,6 +52,13 @@ const {
   CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
   resolveConnectionTimeoutMs,
 } = require("./constants");
+const { collectContextSources, summarizeContext } = require("./context-budget");
+
+// F1 (v1.7.0) — debounce window for re-projecting context on keyup.
+// 300ms is long enough that bursty typing (10+ chars/sec) doesn't fire
+// per-char while short enough that the chip feels responsive when the
+// user pauses to read.
+const PROJECTION_DEBOUNCE_MS = 300;
 
 /**
  * Decide which messages survive a chat-history save. Pure function —
@@ -657,13 +664,13 @@ function modelButtonText(settingsOrPlugin) {
   }
   // Anthropic / Claude Code: same fallback shape as the OpenAI branch — if
   // settings.model isn't in MODELS (e.g. user just switched FROM openai-api
-  // and persisted "gpt-5.4-mini" carries over), use "sonnet" as the default
-  // so the toolbar doesn't show a raw OpenAI id like "gpt-5.4-mini".
+  // and persisted "gpt-5.4-mini" carries over), use Sonnet 4.6 as the
+  // default so the toolbar doesn't show a raw OpenAI id like "gpt-5.4-mini".
   const requested = settings && settings.model;
   if (MODELS.some((m) => m.value === requested)) {
     return labelFor(MODELS, requested);
   }
-  return labelFor(MODELS, "sonnet");
+  return labelFor(MODELS, "claude-sonnet-4-6");
 }
 
 function modelButtonTitle(settingsOrPlugin) {
@@ -807,6 +814,24 @@ class GryphonChatView extends ItemView {
     // on every open that the user would immediately scroll past.
     this._restoreChatHistory();
 
+    // F1 (v1.7.0) — kick off the initial context projection. Async,
+    // but doesn't block opening the view — the chip shows "—" until
+    // the snapshot lands (~5ms typical). Failure is silent (the chip
+    // just stays "—") so a corrupt CLAUDE.md or unreadable memory dir
+    // never blocks the panel from opening.
+    this._projectionSources = null;
+    this._projectionWarningShown = false;
+    // F1 Stage D — pull the mean of the user's prior calibration samples
+    // into the initial projection so the chip is already tuned the
+    // moment the view opens. Without this, the first projection of a
+    // session uses the bare heuristic and only converges after the
+    // first turn settles.
+    this._calibrationDelta = typeof this.plugin.getProjectionCalibrationDelta === "function"
+      ? this.plugin.getProjectionCalibrationDelta()
+      : 0;
+    this._lastCalibratedTokens = 0;
+    this._refreshContextProjection().catch(() => {});
+
     // First-run / unconfigured-provider onboarding. Shows a guided setup
     // panel inside the message area when no provider is available;
     // returning users with a working provider see nothing extra.
@@ -894,9 +919,103 @@ class GryphonChatView extends ItemView {
     toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
 
     this.contextBtn = toolbar.createEl("span", {
-      text: "0%",
-      cls: "gryphon-toolbar-item gryphon-context-meter",
-      attr: { title: "Context window usage" },
+      text: "Used 0%",
+      cls: "gryphon-toolbar-item gryphon-context-meter gryphon-context-clickable",
+    });
+    // F2 (v1.7.0) — click the chip for the source-by-source breakdown.
+    this.contextBtn.addEventListener("click", () => {
+      this._showContextBreakdownModal().catch(() => {});
+    });
+    // Rich explanatory tooltip (replaces the simple `title` attribute).
+    // setTooltip supports multi-line text + Obsidian's positioning logic,
+    // both important for surfaces like this where the explanation is
+    // pedagogical rather than just numeric.
+    setTooltip(
+      this.contextBtn,
+      "How much of the model's context window your last prompt used.\n\n"
+      + "Every model has a fixed context window — the maximum amount of\n"
+      + "text it can take in at once. Two things fill it up: the system\n"
+      + "prompt, which combines the model's built-in instructions with\n"
+      + "your Gryphon configuration, any loaded skills, and any MCP\n"
+      + "tools; and the user prompt, which is your messages plus the\n"
+      + "conversation history. Bigger models have larger context windows\n"
+      + "— Sonnet 4.6 is about 5× larger than Haiku 4.5, so the same\n"
+      + "conversation takes a smaller %.\n\n"
+      + "This stays at 0% until you send your first message. If it\n"
+      + "climbs past 100%, the model rejects your next message with\n"
+      + "\"Prompt is too long.\"",
+      { placement: "bottom" },
+    );
+
+    // v1.7.0 F1 — projected-budget chip. Reads the estimator output and
+    // shows a "before-send" percent so the user knows their next prompt
+    // is going to overflow BEFORE the API rejects it. Sits next to the
+    // measured-context chip on purpose: the two together let the user
+    // compare actual-from-last-turn vs projected-for-next-turn at a
+    // glance. Initial text "—" because we don't have a snapshot yet;
+    // _refreshContextProjection() fills it on plugin load.
+    this.projectionBtn = toolbar.createEl("span", {
+      text: "—",
+      cls: "gryphon-toolbar-item gryphon-projection-meter gryphon-context-clickable",
+    });
+    // F2 (v1.7.0) — clicking the projection chip shows the same modal;
+    // projection is the live snapshot the breakdown wants to display.
+    this.projectionBtn.addEventListener("click", () => {
+      this._showContextBreakdownModal().catch(() => {});
+    });
+    setTooltip(
+      this.projectionBtn,
+      "Gryphon's estimate of how much of the model's context window\n"
+      + "your next prompt will use.\n\n"
+      + "The context window is the maximum amount of text the model can\n"
+      + "take in at once. Gryphon arrives at the estimate by summing the\n"
+      + "system prompt — the model's built-in instructions plus your\n"
+      + "Gryphon configuration, any loaded skills, and any MCP tools —\n"
+      + "with the user prompt, which is the conversation so far plus\n"
+      + "what's in your input box right now.\n\n"
+      + "A \"~\" prefix means it's an estimate; no \"~\" means we asked\n"
+      + "the model for an exact count (free, no charge). The chip turns\n"
+      + "yellow at 80% and red at 95% — at 95% we'll ask you to confirm\n"
+      + "before sending, because the model is likely to reject the\n"
+      + "message at that point. It updates a moment after you stop\n"
+      + "typing, and whenever you switch models.",
+      { placement: "bottom" },
+    );
+
+    toolbar.createEl("span", { text: "·", cls: "gryphon-toolbar-sep" });
+
+    // F4 (v1.7.0) — REST API access chip. Mirrors the setting at the
+    // toolbar so users can flip per-session without opening settings.
+    // Both chip + setting write `obsidianRestApiPolicy`; the chip
+    // listens for `gryphon:settings-changed` to stay in sync if the
+    // setting is changed elsewhere.
+    this.restApiBtn = toolbar.createEl("span", {
+      text: "REST: off",
+      cls: "gryphon-toolbar-btn gryphon-rest-api-toggle",
+    });
+    this._updateRestApiChip();
+    this.restApiBtn.addEventListener("click", async () => {
+      const previous = this.plugin.settings.obsidianRestApiPolicy || "blocked";
+      this.plugin.settings.obsidianRestApiPolicy = previous === "blocked" ? "allowed" : "blocked";
+      try {
+        await this.plugin.saveSettings();
+      } catch (e) {
+        // Roll back the in-memory mutation so the chip doesn't lie about
+        // what got persisted. Without this, the user sees REST: on but
+        // next session reloads "blocked" and the change silently reverts
+        // — exactly the kind of "where did my setting go?" trap a
+        // security-adjacent toggle must not have.
+        this.plugin.settings.obsidianRestApiPolicy = previous;
+        try {
+          const { Notice } = require("obsidian");
+          new Notice(
+            `Gryphon: couldn't persist REST API toggle — ${(e && e.message) || e}. Setting unchanged.`,
+            8000,
+          );
+        } catch { /* obsidian unavailable (tests / headless) */ }
+        console.error("[gryphon] obsidianRestApiPolicy save failed:", e);
+      }
+      this._updateRestApiChip();
     });
 
     toolbar.createEl("span", { cls: "gryphon-toolbar-spacer" });
@@ -1036,6 +1155,11 @@ class GryphonChatView extends ItemView {
       this._promptHistoryIdx = null;
       this._updateAutocomplete();
       this._scrollCaretIntoView();
+      // v1.7.0 F1 — re-project on every keystroke, debounced. Cheap when
+      // the heuristic estimator is used (pure math + cached FS snapshot);
+      // calls the SDK countTokens endpoint at most once per debounce
+      // window in anthropic-api mode.
+      this._refreshContextProjectionDebounced();
     });
 
     // Caret-into-view on navigation keys. Past the 150px max-height cap
@@ -1060,6 +1184,21 @@ class GryphonChatView extends ItemView {
       this.registerEvent(
         this.app.workspace.on("gryphon:settings-changed", () => {
           this.refreshToolbarLabels();
+          this._updateRestApiChip();
+          // F1 (v1.7.0) — model change flips the window denominator
+          // (200K Haiku vs 1M Sonnet); re-snapshot CLAUDE.md hierarchy
+          // in case the user also switched providers (claude-code → SDK
+          // means no auto-memory tally). Cheap.
+          this._projectionSources = null;
+          // v1.7.0 — also recompute the "Used" chip against the new
+          // model's window. Without this, switching from Haiku (200K)
+          // to Sonnet (1M) leaves the chip showing the stale
+          // pre-switch percentage even though the denominator changed.
+          // _lastMeasuredTokens persists across the provider tear-down
+          // that model-switching triggers, so we have a real number
+          // to recompute against (0 only when truly no turn has run).
+          this._refreshMeasuredAgainstCurrentModel();
+          this._refreshContextProjection().catch(() => {});
         }),
       );
     }
@@ -1188,6 +1327,15 @@ class GryphonChatView extends ItemView {
   async onClose() {
     if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
     if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+    // F1 (v2.0) — projection debounce can outlive the view by up to
+    // 300ms after the last keystroke. If we don't clear it here, the
+    // pending refresh fires against a detached DOM (inputEl /
+    // projectionBtn already removed by Obsidian) and the inner
+    // try/catch logs a benign-but-noisy console error per closed view.
+    if (this._projectionDebounceTimer) {
+      clearTimeout(this._projectionDebounceTimer);
+      this._projectionDebounceTimer = null;
+    }
     // Issue #34 deferred: cancel any pending rate-limit auto-retry so a
     // closed view doesn't fire a phantom resubmit after the user moved
     // on (or closed Obsidian).
@@ -1361,17 +1509,120 @@ class GryphonChatView extends ItemView {
     this.modelBtn.setAttribute("title", resolved ? `Model: ${resolved}` : "Model");
   }
 
+  /**
+   * F1 Stage D (v2.0) — return the calibration delta to plug into the
+   * estimator. Read fresh from the plugin on every projection so split
+   * panes (multiple GryphonChatView instances) don't drift: when
+   * instance A's turn completes and updates the plugin-level buffer,
+   * instance B picks up the new delta on its next refresh instead of
+   * staying on a stale view-cached value.
+   *
+   * The typeof guard tolerates a vendored Gryphon older than this
+   * chat-view; see CLAUDE.md's standing model on submodule consumers.
+   */
+  _currentCalibrationDelta() {
+    if (typeof this.plugin.getProjectionCalibrationDelta === "function") {
+      return this.plugin.getProjectionCalibrationDelta();
+    }
+    if (!this._calibrationMissingWarned) {
+      this._calibrationMissingWarned = true;
+      console.warn(
+        "[gryphon] calibration sample API missing on plugin instance — " +
+        "projections will not self-tune. Likely a vendored Gryphon < v2.0."
+      );
+    }
+    return 0;
+  }
+
+  /**
+   * F4 (v1.7.0) — sync the REST API toolbar chip with the current
+   * `obsidianRestApiPolicy` setting. Called on create, after the user
+   * clicks the chip, and from the `gryphon:settings-changed` listener
+   * so a settings-tab change keeps the chip honest without a reload.
+   */
+  _updateRestApiChip() {
+    if (!this.restApiBtn) return;
+    const blocked = (this.plugin.settings.obsidianRestApiPolicy || "blocked") === "blocked";
+    this.restApiBtn.textContent = blocked ? "REST: off" : "REST: on";
+    this.restApiBtn.removeClass("gryphon-rest-api-on");
+    this.restApiBtn.removeClass("gryphon-rest-api-off");
+    this.restApiBtn.addClass(blocked ? "gryphon-rest-api-off" : "gryphon-rest-api-on");
+    setTooltip(
+      this.restApiBtn,
+      blocked
+        ? "REST API: off.\n\n"
+          + "Gryphon is blocking WebFetch calls to the Obsidian REST API "
+          + "plugin (loopback 127.0.0.1:27124). Click to allow this "
+          + "session — only do so if the task really needs the REST API. "
+          + "Without it, the model will use vault-native search instead, "
+          + "which is faster and far cheaper on context."
+        : "REST API: on.\n\n"
+          + "The model can reach the Obsidian REST API plugin on loopback. "
+          + "Useful for tasks that genuinely need it; risky for \"find page X\" "
+          + "questions where the model may enumerate hundreds of URLs. A "
+          + "warning toast fires if it does. Click to block.",
+      { placement: "bottom" },
+    );
+  }
+
   updateContextMeter(contextTokens) {
-    const model = this.plugin.settings.model || "sonnet";
+    const model = this.plugin.settings.model || "claude-sonnet-4-6";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     const pct = Math.min(Math.round(contextTokens / windowSize * 100), 100);
-    this.contextBtn.textContent = `${pct}%`;
+    // v1.7.0 — persist the absolute token count so a model switch
+    // (which destroys the provider instance and resets its
+    // contextTokens to 0) doesn't make the meter forget how big the
+    // conversation is. The new model's window changes; the underlying
+    // tokens don't. _refreshMeasuredAgainstCurrentModel() reuses this
+    // value when settings change, and the projection chip reads it as
+    // measuredHistoryTokens so the next-send estimate stays accurate
+    // across provider/model swaps.
+    if (contextTokens > 0) this._lastMeasuredTokens = contextTokens;
+
+    // F1 Stage D (v1.7.0) — self-tuning calibration. The first time CC
+    // reports a positive contextTokens value for a turn that we'd
+    // previously projected, record (actual - projected) so future
+    // projections converge against this user's actual memory + skill +
+    // tool-schema mix. Guarded so we only record once per transition
+    // (so we don't poison the buffer with the same delta on re-renders)
+    // and only when our prior projection actually exists. A sanity bound
+    // discards samples >50% of the window — those usually indicate a
+    // /compact, /clear, or mid-turn model swap, not estimator drift.
+    if (contextTokens > 0
+        && contextTokens !== this._lastCalibratedTokens
+        && this._projectionLastResult
+        && this._projectionLastResult.totalTokens > 0) {
+      const delta = contextTokens - this._projectionLastResult.totalTokens;
+      if (Math.abs(delta) < windowSize / 2 && typeof this.plugin.recordProjectionCalibrationSample === "function") {
+        this.plugin.recordProjectionCalibrationSample(delta);
+        this._calibrationDelta = this.plugin.getProjectionCalibrationDelta();
+      }
+      this._lastCalibratedTokens = contextTokens;
+    }
+
+    // Clear "Used N%" prefix is added by setting textContent below.
+    this.contextBtn.textContent = `Used ${pct}%`;
     // Dual-side tooltip (issue #11) — used and remaining at a glance,
     // so users see both framings without needing to type /context.
+    // Layered structure: live numbers up top, pedagogical explanation
+    // below. Users who already know the chip glance at the numbers;
+    // first-timers read the explanation.
     const usedK = Math.round(contextTokens / 1000);
     const remK = Math.max(0, Math.round((windowSize - contextTokens) / 1000));
-    this.contextBtn.setAttribute("title",
-      `Context: ${usedK}K used · ${remK}K remaining (${pct}% of ${Math.round(windowSize / 1000)}K)`);
+    const winK = Math.round(windowSize / 1000);
+    setTooltip(
+      this.contextBtn,
+      `Your last prompt used ${usedK}K — ${pct}% of the ${winK}K context window (${remK}K still free).\n\n`
+      + "The total combines the system prompt — the model's built-in\n"
+      + "instructions plus your Gryphon configuration, any loaded\n"
+      + "skills, and any MCP tools — with the user prompt, which is\n"
+      + "your messages and the conversation history.\n\n"
+      + "Bigger models have larger context windows — Sonnet 4.6 is about\n"
+      + "5× larger than Haiku 4.5, so the same conversation takes a\n"
+      + "smaller %. Past 100%, the model rejects with \"Prompt is too\n"
+      + "long.\"",
+      { placement: "bottom" },
+    );
 
     this.contextBtn.removeClass("gryphon-context-warn");
     this.contextBtn.removeClass("gryphon-context-danger");
@@ -1392,6 +1643,243 @@ class GryphonChatView extends ItemView {
     } else if (pct < CONTEXT_WARN_RESET_PCT && this._contextWarningShown) {
       this._contextWarningShown = false;
     }
+  }
+
+  /**
+   * v1.7.0 \u2014 re-render the "Used N%" chip against the CURRENT model's
+   * window, using the persisted `_lastMeasuredTokens` (not the live
+   * `claudeProcess.contextTokens` which gets reset to 0 when a model
+   * switch tears down the provider instance).
+   *
+   * Without this, switching Haiku (200K) \u2192 Sonnet (1M) after a turn
+   * left the chip frozen at the pre-switch percentage. The user sees
+   * "Used 29%" on Sonnet even though 58K / 1M is actually 6%, and the
+   * number contradicts both the new denominator and the projection
+   * chip's reading.
+   *
+   * Called from the settings-changed event handler.
+   */
+  _refreshMeasuredAgainstCurrentModel() {
+    const liveTokens =
+      this.claudeProcess && typeof this.claudeProcess.contextTokens === "number"
+      && this.claudeProcess.contextTokens > 0
+        ? this.claudeProcess.contextTokens
+        : (this._lastMeasuredTokens || 0);
+    this.updateContextMeter(liveTokens);
+  }
+
+  // \u2500\u2500 F1 (v1.7.0) \u2014 pre-send context projection chip \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  //
+  // The existing context meter (contextBtn) shows usage MEASURED by the
+  // last LLM turn. The projection meter (projectionBtn) shows the
+  // ESTIMATE for the next turn before send. Both stay visible \u2014 the
+  // user compares "what last cost me" against "what I'm about to send".
+  //
+  // Three signals drive a refresh:
+  //   (a) keystroke in the input box (debounced 300ms)
+  //   (b) model dropdown change (window denominator flips)
+  //   (c) session boundary (/new, /clear, plugin load)
+  //
+  // (a) only re-summarizes \u2014 the FS snapshot (CLAUDE.md hierarchy +
+  // memory dir) is cached on the view; (b) and (c) re-snapshot.
+
+  /**
+   * Schedule a projection refresh PROJECTION_DEBOUNCE_MS in the future,
+   * collapsing back-to-back calls. Called on every keystroke.
+   */
+  _refreshContextProjectionDebounced() {
+    if (this._projectionDebounceTimer) {
+      clearTimeout(this._projectionDebounceTimer);
+    }
+    this._projectionDebounceTimer = setTimeout(() => {
+      this._projectionDebounceTimer = null;
+      this._refreshContextProjection();
+    }, PROJECTION_DEBOUNCE_MS);
+  }
+
+  /**
+   * Compute the projection and render the chip. Async because SDK mode
+   * may call Anthropic's free `countTokens` endpoint for an authoritative
+   * count (when the user hasn't disabled `useExactTokenCounting`).
+   *
+   * On any error path the chip falls back to "\u2014" and the heuristic
+   * estimator; the user never sees an exception.
+   */
+  async _refreshContextProjection() {
+    try {
+      const userInput = (this.inputEl && this.inputEl.value) || "";
+      const settings = (this.plugin && this.plugin.settings) || {};
+      const modelId = settings.model || "claude-sonnet-4-6";
+      const windowSize = MODEL_CONTEXT[modelId] || 200000;
+
+      // Lazy-load the filesystem snapshot. Repopulated on session boundary
+      // via _reloadContextSources(); kept across keystrokes for cheapness.
+      if (!this._projectionSources) {
+        await this._reloadContextSources();
+      }
+
+      // SDK mode + opt-in \u2192 authoritative count via countTokens. Falls
+      // through to heuristic on any failure (null return), so the chip
+      // is always populated.
+      const useExact = settings.useExactTokenCounting !== false;
+      let exactInputTokens = null;
+      if (useExact && this._isSdkMode()
+          && this.claudeProcess
+          && typeof this.claudeProcess.countTokensForNext === "function") {
+        exactInputTokens = await this.claudeProcess.countTokensForNext(userInput);
+      }
+
+      let result;
+      if (exactInputTokens !== null && typeof exactInputTokens === "number") {
+        // countTokens returns the FULL input_tokens for the next call \u2014
+        // it bundles system prompt, tools, history, and the prospective
+        // input into one number. We override the heuristic summarizer
+        // to use it directly. The bySource breakdown is still populated
+        // from the snapshot so F2's popover renders coherent labels;
+        // they just won't sum exactly to totalTokens (that's expected).
+        result = summarizeContext({
+          sources: this._projectionSources,
+          messages: this.messages || [],
+          userInput,
+          windowSize,
+          calibrationDelta: this._currentCalibrationDelta(),
+        });
+        result.totalTokens = exactInputTokens;
+        result.rawPct = Math.round((exactInputTokens / windowSize) * 100);
+        result.pct = Math.max(0, Math.min(100, result.rawPct));
+        result.likelyOverflow = exactInputTokens > windowSize * 0.95;
+        result.mode = "exact";
+      } else {
+        // Prefer the live provider's contextTokens when present, but
+        // fall back to our persisted _lastMeasuredTokens so a model
+        // switch (which tears down claudeProcess) doesn't erase our
+        // history visibility. Token counts are model-independent —
+        // 50K tokens is 50K tokens regardless of which model's window
+        // we're measuring against.
+        const liveTokens =
+          this.claudeProcess && typeof this.claudeProcess.contextTokens === "number"
+          && this.claudeProcess.contextTokens > 0
+            ? this.claudeProcess.contextTokens
+            : (this._lastMeasuredTokens || 0);
+        result = summarizeContext({
+          sources: this._projectionSources,
+          messages: this.messages || [],
+          userInput,
+          windowSize,
+          measuredHistoryTokens: liveTokens > 0 ? liveTokens : undefined,
+          calibrationDelta: this._currentCalibrationDelta(),
+        });
+        result.mode = "projected";
+      }
+
+      this._projectionLastResult = result;
+      this._updateProjectionChip(result);
+      this._maybeFlashProjectionWarning(result);
+    } catch (err) {
+      console.error("[gryphon] projection refresh failed:", err);
+      // Reset chip to "loading" rather than leaving a stale value that
+      // contradicts the meter \u2014 the user shouldn't see "82% projected"
+      // when our snapshot is broken.
+      if (this.projectionBtn) {
+        this.projectionBtn.textContent = "\u2014";
+        this.projectionBtn.setAttribute("title", "Projection unavailable");
+      }
+    }
+  }
+
+  /**
+   * Re-stat the filesystem inputs (CLAUDE.md hierarchy + memory dir).
+   * Cheap (<5ms typically), but we don't run it per keystroke \u2014 only on
+   * session boundaries (/new, /clear, model change, plugin load).
+   */
+  async _reloadContextSources() {
+    const settings = (this.plugin && this.plugin.settings) || {};
+    const kind = (this.claudeProcess && this.claudeProcess.kind)
+      || settings.providerPreference
+      || "claude-code";
+    const vaultPath = (typeof this.plugin._vaultRoot === "function")
+      ? this.plugin._vaultRoot() : null;
+    this._projectionSources = await collectContextSources({
+      kind, vaultPath, settings,
+    });
+  }
+
+  /**
+   * Pure DOM update for the projection chip. Visual states match the
+   * existing context meter so the two read consistently:
+   *   <80%        \u2014 normal
+   *   80-94%      \u2014 gryphon-context-warn (yellow)
+   *   \u226595%        \u2014 gryphon-context-danger (red)
+   * Plus a mode indicator: "~" prefix on projected; clean number on
+   * exact (SDK countTokens path).
+   */
+  _updateProjectionChip(result) {
+    if (!this.projectionBtn) return;
+    const pct = result.pct || 0;
+    const totalK = Math.round(result.totalTokens / 1000);
+    const windowK = Math.round(result.windowSize / 1000);
+    const prefix = result.mode === "exact" ? "" : "~";
+    // Label "Next" makes the meaning self-evident next to "Used" on the
+    // measured chip. Without it, two unlabeled percentages confused
+    // users (witnessed 2026-05-19): they couldn't tell which was
+    // measured vs projected, and the numbers diverging across model
+    // switches felt arbitrary instead of meaningful.
+    this.projectionBtn.textContent = `Next ${prefix}${pct}%`;
+    // Layered tooltip — live numbers on top, explanation below. Mode
+    // ("exact" via countTokens vs "projected" via heuristic) is the
+    // key trust signal: users on the SDK see an authoritative number;
+    // users on CLI providers see a "~" estimate that's calibrated by
+    // each successful turn (Stage D — coming next).
+    const modeLine = result.mode === "exact"
+      ? "Exact count from the model (free, no charge)."
+      : "This estimate sharpens as you keep using Gryphon.";
+    setTooltip(
+      this.projectionBtn,
+      `Gryphon estimates your next prompt at ${prefix}${totalK}K — ${prefix}${result.rawPct}% of the ${windowK}K context window. ${modeLine}\n\n`
+      + "The estimate sums the system prompt — the model's built-in\n"
+      + "instructions plus your Gryphon configuration, any loaded\n"
+      + "skills, and any MCP tools — with the user prompt, which is the\n"
+      + "conversation so far plus what's in your input box. The chip\n"
+      + "turns yellow at 80% and red at 95%, where we'll ask you to\n"
+      + "confirm before sending.",
+      { placement: "bottom" },
+    );
+    this.projectionBtn.removeClass("gryphon-context-warn");
+    this.projectionBtn.removeClass("gryphon-context-danger");
+    if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+      this.projectionBtn.addClass("gryphon-context-danger");
+    } else if (pct >= CONTEXT_WARN_PCT) {
+      this.projectionBtn.addClass("gryphon-context-warn");
+    }
+    // Mirror the danger state onto the send button so the visual cue
+    // is reachable from where the user's hand actually is.
+    if (this.sendBtn) {
+      this.sendBtn.removeClass("gryphon-send-warn");
+      this.sendBtn.removeClass("gryphon-send-danger");
+      if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+        this.sendBtn.addClass("gryphon-send-danger");
+      } else if (pct >= CONTEXT_WARN_PCT) {
+        this.sendBtn.addClass("gryphon-send-warn");
+      }
+    }
+  }
+
+  /**
+   * One-shot status flash the first time projection crosses
+   * CONTEXT_WARN_PCT in this view's lifetime. Reset on session boundary
+   * so the warning re-fires for a fresh /clear'd session that climbs
+   * back up.
+   */
+  _maybeFlashProjectionWarning(result) {
+    if (!result || result.pct < CONTEXT_WARN_PCT) return;
+    if (this._projectionWarningShown) return;
+    this._projectionWarningShown = true;
+    const k = Math.round(result.totalTokens / 1000);
+    const winK = Math.round(result.windowSize / 1000);
+    this._flashStatus(
+      `Next send projected at ${result.pct}% (${k}K / ${winK}K). `
+      + `Switch to a larger-window model or /compact before continuing.`,
+    );
   }
 
   /**
@@ -1418,7 +1906,7 @@ class GryphonChatView extends ItemView {
   _currentContextPct() {
     const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
     if (!tokens) return 0;
-    const model = this.plugin.settings.model || "sonnet";
+    const model = this.plugin.settings.model || "claude-sonnet-4-6";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     return Math.min(100, Math.round(tokens / windowSize * 100));
   }
@@ -1483,6 +1971,7 @@ class GryphonChatView extends ItemView {
       { match: (c) => c === "/doctor", run: () => this._cmdDoctor() },
       { match: (c) => c === "/recap", run: () => this._cmdRecap() },
       { match: (c) => c === "/init", run: () => this._cmdInitManual() },
+      { match: (c) => c === "/memory", run: () => this._cmdMemoryAudit() },
       { match: (c) => c === "/feedback" || c.startsWith("/feedback "), run: () => {
           const arg = cmd === "/feedback" ? "" : text.trim().substring(10).trim();
           return this._cmdFeedback(arg);
@@ -1528,6 +2017,175 @@ class GryphonChatView extends ItemView {
    * Shows a confirmation modal before /clear. Resolves to true if the
    * user clicked Clear, false if they cancelled or dismissed.
    */
+  /**
+   * F1 (v1.7.0) confirm modal for context-overflow send. Shown when the
+   * projection chip reads ≥95% of the window. Wording is structured
+   * around the recovery levers so the user can pick one before sending
+   * a doomed prompt.
+   */
+  _confirmOverflowSend(projection) {
+    const { Modal, Setting } = require("obsidian");
+    return new Promise((resolve) => {
+      const modal = new Modal(this.app);
+      const pctLabel = projection.mode === "exact"
+        ? `${projection.rawPct}%` : `~${projection.rawPct}%`;
+      const usedK = Math.round(projection.totalTokens / 1000);
+      const winK = Math.round(projection.windowSize / 1000);
+      modal.titleEl.setText("Context budget likely exceeded");
+      modal.contentEl.createEl("p", {
+        text:
+          `This send is projected at ${pctLabel} of the model's window `
+          + `(${usedK}K / ${winK}K). The model is likely to reject it with `
+          + `"Prompt is too long".`,
+      });
+      modal.contentEl.createEl("p", { text: "Before sending, you can:" });
+      const ul = modal.contentEl.createEl("ul");
+      ul.createEl("li", {
+        text: "Switch to a larger-window model (Sonnet 4.6 or Opus 4.6+ have 1M context)",
+      });
+      ul.createEl("li", { text: "Run /compact to summarize chat history" });
+      ul.createEl("li", {
+        text: "Run /clear to start fresh (if chat history is the bloat)",
+      });
+      let resolved = false;
+      const finish = (ok) => {
+        if (resolved) return;
+        resolved = true;
+        modal.close();
+        resolve(ok);
+      };
+      new Setting(modal.contentEl)
+        .addButton((btn) =>
+          btn.setButtonText("Cancel").onClick(() => finish(false))
+        )
+        .addButton((btn) =>
+          btn.setButtonText("Send anyway").setWarning().onClick(() => finish(true))
+        );
+      modal.onClose = () => finish(false);
+      modal.open();
+    });
+  }
+
+  /**
+   * F2 (v1.7.0) — show a per-source breakdown of where context tokens
+   * are going. Opens on click of the "Used X%" or "Next ~X%" chips.
+   * Renders one row per source (system prompt, tool schemas, each
+   * loaded CLAUDE.md, memory dir, chat history, current input) with a
+   * proportional bar and an absolute K-token count, plus a few action
+   * buttons that target the largest movable sources.
+   *
+   * Reads the live projection result if one exists; otherwise computes
+   * a fresh snapshot so the modal still renders something useful on
+   * first open before any keystroke has triggered a debounce.
+   */
+  async _showContextBreakdownModal() {
+    const { Modal } = require("obsidian");
+    let result = this._projectionLastResult;
+    if (!result || typeof result.totalTokens !== "number") {
+      try {
+        await this._refreshContextProjection();
+        result = this._projectionLastResult;
+      } catch {
+        // Fall through; we'll render a "no data" state below.
+      }
+    }
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("Context budget breakdown");
+
+    if (!result || typeof result.totalTokens !== "number") {
+      modal.contentEl.createEl("p", {
+        text:
+          "Gryphon hasn't built a context snapshot for this view yet. "
+          + "Type something into the input — the breakdown rebuilds "
+          + "after the next debounce.",
+      });
+      modal.open();
+      return;
+    }
+
+    const totalK = Math.round(result.totalTokens / 1000);
+    const winK = Math.round(result.windowSize / 1000);
+    const pctLabel = result.mode === "exact"
+      ? `${result.rawPct}%` : `~${result.rawPct}%`;
+    modal.contentEl.createEl("p", {
+      text:
+        `Projected: ${totalK}K of ${winK}K context window (${pctLabel}).`,
+      cls: "gryphon-breakdown-header",
+    });
+
+    // Rows: ordered by token count descending so the worst offenders
+    // sit at the top. The user's primary question — "what's filling
+    // this up?" — is answered visually within one glance.
+    const ROW_LABELS = {
+      ccSystemPromptTokens: "Built-in system prompt",
+      toolSchemaTokens: "Tool schemas",
+      userClaudeMdTokens: "~/.claude/CLAUDE.md",
+      homeClaudeMdTokens: "~/CLAUDE.md",
+      vaultClaudeMdTokens: "Vault CLAUDE.md",
+      vaultAgentsMdTokens: "Vault AGENTS.md",
+      memoryMdTokens: "MEMORY.md (auto-memory index)",
+      memoryDirTokens: "Memory directory (other files)",
+      chatHistoryTokens: "Chat history",
+      userInputTokens: "Your current input",
+    };
+    const rows = Object.entries(result.bySource || {})
+      .map(([key, tokens]) => ({ key, tokens, label: ROW_LABELS[key] || key }))
+      .filter((r) => Number.isFinite(r.tokens) && r.tokens > 0)
+      .sort((a, b) => b.tokens - a.tokens);
+
+    const list = modal.contentEl.createDiv("gryphon-breakdown-list");
+    for (const row of rows) {
+      const lineEl = list.createDiv("gryphon-breakdown-row");
+      const labelEl = lineEl.createDiv("gryphon-breakdown-label");
+      labelEl.setText(row.label);
+      const barWrap = lineEl.createDiv("gryphon-breakdown-bar-wrap");
+      const bar = barWrap.createDiv("gryphon-breakdown-bar");
+      const fillPct = Math.min(100, Math.round((row.tokens / result.totalTokens) * 100));
+      bar.style.width = `${fillPct}%`;
+      const numEl = lineEl.createDiv("gryphon-breakdown-num");
+      const k = Math.round(row.tokens / 1000);
+      numEl.setText(`${k}K · ${Math.round((row.tokens / result.windowSize) * 100)}%`);
+    }
+
+    // Action buttons. Targets are deliberate: each addresses the most
+    // common movable source for users who reach this modal.
+    const actions = modal.contentEl.createDiv("gryphon-breakdown-actions");
+
+    const compactBtn = actions.createEl("button", {
+      text: "Run /compact",
+      cls: "mod-cta",
+    });
+    compactBtn.addEventListener("click", () => {
+      modal.close();
+      // Prefill the input with /compact so the user reviews and presses
+      // enter — we never auto-send a slash command on the user's behalf.
+      if (this.inputEl) {
+        this.inputEl.value = "/compact";
+        this.inputEl.focus();
+      }
+    });
+
+    const clearBtn = actions.createEl("button", { text: "Run /clear" });
+    clearBtn.addEventListener("click", () => {
+      modal.close();
+      if (this.inputEl) {
+        this.inputEl.value = "/clear";
+        this.inputEl.focus();
+      }
+    });
+
+    const memoryBtn = actions.createEl("button", { text: "Open /memory" });
+    memoryBtn.addEventListener("click", () => {
+      modal.close();
+      if (this.inputEl) {
+        this.inputEl.value = "/memory";
+        this.inputEl.focus();
+      }
+    });
+
+    modal.open();
+  }
+
   _confirmClear() {
     const { Modal, Setting } = require("obsidian");
     return new Promise((resolve) => {
@@ -1608,7 +2266,23 @@ class GryphonChatView extends ItemView {
       this.inputEl.style.height = "auto";
     }
     this.messagesEl.empty();
+    // v1.7.0 — clear the persisted token count too so the "Used" chip
+    // genuinely resets to 0%. Without this, /clear leaves the stored
+    // value behind and the next model-switch + settings-changed event
+    // would resurrect the old "Used N%" reading.
+    this._lastMeasuredTokens = 0;
     this.updateContextMeter(0);
+    // F1 (v1.7.0) — drop the projection snapshot + warning flag so a
+    // fresh session re-stats from scratch and the 80% warning toast
+    // can re-fire if the new session also climbs back up.
+    this._projectionSources = null;
+    this._projectionWarningShown = false;
+    this._refreshContextProjection();
+    // F4 (v1.7.0) — also reset the REST API GET counter so the warning
+    // toast can re-fire in this fresh chat if enumeration recurs.
+    if (typeof this.plugin._resetRestApiCounter === "function") {
+      this.plugin._resetRestApiCounter();
+    }
     // Set idle status FIRST so a save failure (which flashes its own
     // status) overwrites it and remains visible — order matters here.
     this._setIdleStatus();
@@ -1624,7 +2298,7 @@ class GryphonChatView extends ItemView {
    */
   _cmdShowContext() {
     const contextTokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-    const model = this.plugin.settings.model || "sonnet";
+    const model = this.plugin.settings.model || "claude-sonnet-4-6";
     const windowSize = MODEL_CONTEXT[model] || 200000;
 
     if (contextTokens === 0) {
@@ -1912,7 +2586,7 @@ class GryphonChatView extends ItemView {
       return settings.providerPreference || "auto";
     })();
     const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-    const model = settings.model || "sonnet";
+    const model = settings.model || "claude-sonnet-4-6";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
     let obsidianVersion = "unknown";
@@ -2292,6 +2966,222 @@ class GryphonChatView extends ItemView {
       this.app.workspace.openLinkText("Gryphon/MANUAL", "");
     });
     manualP.createSpan({ text: " in your vault." });
+
+    modal.open();
+  }
+
+  /**
+   * F3 (v1.7.0) — auto-memory audit modal.
+   *
+   * Lists files in `~/.claude/projects/<escaped-vault>/memory/` with
+   * size + age, lets the user select stale entries, and moves the
+   * selection to `memory-archive/` (a sibling that CC doesn't scan).
+   * The MEMORY.md index file gets the same names commented out so the
+   * tree stays consistent. An Undo button on a 5-second toast reverses
+   * the batch.
+   */
+  async _cmdMemoryAudit() {
+    const { Modal, Notice } = require("obsidian");
+    const audit = require("./memory-audit");
+    const os = require("os");
+
+    const vaultPath = this.app && this.app.vault && this.app.vault.adapter && this.app.vault.adapter.basePath;
+    const homeDir = os.homedir();
+    const memoryDir = audit.findMemoryDir({ vaultPath, homeDir });
+
+    const modal = new Modal(this.app);
+    modal.titleEl.setText("Auto-memory audit");
+
+    if (!memoryDir) {
+      modal.contentEl.createEl("p", {
+        text:
+          "No Claude Code memory directory exists for this vault yet. "
+          + "Memory is created the first time CC saves a memory entry "
+          + "during a chat — nothing to manage right now.",
+      });
+      // Help the user diagnose if they expected a directory to exist
+      // (e.g. iCloud-synced vault with an unusual path escape, or a
+      // path that doesn't match CC's escape convention on this OS).
+      // Show the path Gryphon looked at so a mismatch is visible
+      // without having to grep source.
+      if (vaultPath && homeDir) {
+        const { escapeVaultPath } = require("./context-budget");
+        const expected = require("path").join(
+          homeDir, ".claude", "projects",
+          escapeVaultPath(vaultPath), "memory",
+        );
+        const hintEl = modal.contentEl.createEl("div");
+        hintEl.style.fontSize = "0.85em";
+        hintEl.style.color = "var(--text-muted)";
+        hintEl.style.marginTop = "0.6em";
+        hintEl.setText(`Looked for: ${expected}`);
+      }
+      modal.open();
+      return;
+    }
+
+    const ageThreshold = (this.plugin.settings.memoryArchiveAgeDays
+      != null && Number.isFinite(this.plugin.settings.memoryArchiveAgeDays))
+      ? this.plugin.settings.memoryArchiveAgeDays
+      : audit.DEFAULT_ARCHIVE_AGE_DAYS;
+
+    const files = audit.listMemoryFiles({ memoryDir });
+    const { candidates, recent } = audit.classifyMemoryFiles(files, {
+      ageDaysThreshold: ageThreshold,
+    });
+    const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0);
+
+    const headerEl = modal.contentEl.createDiv("gryphon-memory-header");
+    headerEl.createEl("div", { text: `Memory directory: ${memoryDir}` });
+    headerEl.createEl("div", {
+      text: `Total: ${(totalBytes / 1024).toFixed(1)} KB across ${files.length} files`,
+    });
+    const indexFile = files.find((f) => f.name === audit.MEMORY_INDEX_NAME);
+    if (indexFile && indexFile.size > 24 * 1024) {
+      const warn = headerEl.createEl("div", {
+        text:
+          `MEMORY.md is ${(indexFile.size / 1024).toFixed(1)} KB — past CC's `
+          + `24 KB cap; the tail is being truncated at load time.`,
+        cls: "gryphon-memory-warn",
+      });
+      warn.style.color = "var(--color-yellow)";
+    }
+
+    if (candidates.length === 0) {
+      modal.contentEl.createEl("p", {
+        text:
+          `No files older than ${ageThreshold} days. The memory tree is `
+          + `compact — nothing to archive right now.`,
+      });
+      modal.open();
+      return;
+    }
+
+    modal.contentEl.createEl("h3", {
+      text: `Candidates (older than ${ageThreshold} days)`,
+    });
+
+    // Render rows. Each row is a checkbox + filename + age/size. The
+    // first-render state has everything pre-selected — the typical
+    // intent on opening /memory is "archive all stale entries"; users
+    // who want a subset uncheck a few.
+    const selected = new Set(candidates.map((c) => c.name));
+    const listEl = modal.contentEl.createDiv("gryphon-memory-list");
+    for (const f of candidates) {
+      const row = listEl.createDiv("gryphon-memory-row");
+      const cb = row.createEl("input", { type: "checkbox" });
+      cb.checked = true;
+      cb.addEventListener("change", () => {
+        if (cb.checked) selected.add(f.name);
+        else selected.delete(f.name);
+      });
+      const labelText = `${f.name}  ·  ${(f.size / 1024).toFixed(1)} KB  ·  ${f.ageDays}d old`;
+      row.createEl("span", { text: " " + labelText });
+    }
+
+    const actions = modal.contentEl.createDiv("gryphon-memory-actions");
+    const cancelBtn = actions.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => modal.close());
+    const archiveBtn = actions.createEl("button", {
+      text: "Archive selected",
+      cls: "mod-cta",
+    });
+    archiveBtn.addEventListener("click", () => {
+      const toMove = candidates.filter((c) => selected.has(c.name));
+      if (toMove.length === 0) {
+        modal.close();
+        return;
+      }
+      let moved;
+      try {
+        moved = audit.archiveMemoryFiles({ memoryDir, files: toMove });
+      } catch (e) {
+        try {
+          new Notice(`Gryphon: couldn't create memory-archive/ — ${(e && e.message) || e}`, 8000);
+        } catch { /* headless */ }
+        modal.close();
+        return;
+      }
+      const attempted = toMove.length;
+      const indexResult = audit.updateMemoryIndex({
+        memoryDir,
+        archivedNames: moved.map((m) => m.name),
+      });
+      modal.close();
+      // Compose the user-facing message. Three signals to convey:
+      //   1. Partial archive (moved < attempted) — some renames failed.
+      //   2. Index write failure — files moved, but MEMORY.md still
+      //      points at the old names (CC will 404 those on future turns
+      //      until the user fixes manually or re-runs /memory).
+      //   3. Happy path — single sentence, click to undo.
+      try {
+        if (moved.length < attempted) {
+          console.error("[gryphon] memory-audit partial archive:", {
+            attempted: toMove.map((f) => f.name),
+            moved: moved.map((m) => m.name),
+          });
+          new Notice(
+            `Archived ${moved.length} of ${attempted} files — ${attempted - moved.length} couldn't be moved (see console).`,
+            8000,
+          );
+        }
+        if (indexResult && indexResult.indexWriteError) {
+          new Notice(
+            `Gryphon archived the files but couldn't update MEMORY.md — ${indexResult.indexWriteError}. Open MEMORY.md and remove or comment out the archived entries manually.`,
+            12000,
+          );
+        }
+        // Only show the Undo toast on the happy path. If anything above
+        // already fired, the user has more important things to read.
+        if (moved.length > 0 && moved.length === attempted && !(indexResult && indexResult.indexWriteError)) {
+          const n = new Notice(
+            `Archived ${moved.length} memory file${moved.length === 1 ? "" : "s"}. Click to undo.`,
+            5000,
+          );
+          // Notice exposes its DOM as `noticeEl`; clicks anywhere on the
+          // toast reverse the archive batch within the 5-second window.
+          if (n && n.noticeEl) {
+            n.noticeEl.style.cursor = "pointer";
+            n.noticeEl.addEventListener("click", () => {
+              const restored = audit.unarchiveMemoryFiles(moved);
+              const undoIndex = audit.updateMemoryIndex({
+                memoryDir,
+                archivedNames: [],
+                restoredNames: restored.map((r) => r.name),
+              });
+              try {
+                new Notice(
+                  `Restored ${restored.length} of ${moved.length} files.`
+                    + (undoIndex && undoIndex.indexWriteError
+                       ? ` (MEMORY.md update failed: ${undoIndex.indexWriteError})`
+                       : ""),
+                  4000,
+                );
+              } catch { /* headless */ }
+              try { n.hide(); } catch { /* swallow */ }
+            });
+          }
+        }
+      } catch { /* obsidian unavailable (tests / headless) */ }
+    });
+
+    if (recent.length > 0) {
+      modal.contentEl.createEl("h3", { text: "Recent (not candidates)" });
+      const recentList = modal.contentEl.createDiv("gryphon-memory-list gryphon-memory-recent");
+      const RECENT_SHOWN = 10;
+      for (const f of recent.slice(0, RECENT_SHOWN)) {
+        const row = recentList.createDiv("gryphon-memory-row");
+        row.createEl("span", {
+          text: `${f.name}  ·  ${(f.size / 1024).toFixed(1)} KB  ·  ${f.ageDays}d old`,
+        });
+      }
+      if (recent.length > RECENT_SHOWN) {
+        recentList.createEl("div", {
+          text: `… and ${recent.length - RECENT_SHOWN} more.`,
+          cls: "gryphon-memory-more",
+        });
+      }
+    }
 
     modal.open();
   }
@@ -2720,6 +3610,22 @@ class GryphonChatView extends ItemView {
     // Drop any pre-built seed history for the active provider; it will
     // be recomputed on the next send and naturally honor the marker.
     this._pendingSdkHistory = null;
+    // F1 (v1.7.0) — context-reset means the next send won't include
+    // prior history; drop the projection snapshot + warning flag so the
+    // chip recomputes from scratch. ALSO clear _lastMeasuredTokens so
+    // the "Used" chip resets — the prior conversation's measurement is
+    // no longer load-bearing for the next turn.
+    this._lastMeasuredTokens = 0;
+    this.updateContextMeter(0);
+    this._projectionSources = null;
+    this._projectionWarningShown = false;
+    this._refreshContextProjection().catch(() => {});
+    // F4 (v1.7.0) — context boundary means the next turn starts fresh
+    // for REST-API budgeting too; reset the counter so the warning
+    // toast remains a per-turn signal.
+    if (typeof this.plugin._resetRestApiCounter === "function") {
+      this.plugin._resetRestApiCounter();
+    }
     this.scrollToBottom();
     this._flashStatus(
       "Context cleared for next message — prior conversation stays visible.",
@@ -4670,6 +5576,26 @@ class GryphonChatView extends ItemView {
     let text = this.inputEl.value.trim();
     if (!text) return;
 
+    // F4 (v1.7.0) — fresh turn means fresh REST-API GET budget. The
+    // counter lives on the plugin (because the IPC classify handler
+    // increments it from a hook subprocess); we just signal a reset.
+    if (typeof this.plugin._resetRestApiCounter === "function") {
+      this.plugin._resetRestApiCounter();
+    }
+
+    // F1 (v1.7.0) — overflow gate. If the projection chip read the
+    // input as >=95% of the window, show a confirm modal so the user
+    // doesn't silently burn a turn on a prompt the API will reject.
+    // Skipped for slash commands (they bypass send) and when the user
+    // has opted out via `confirmOnContextOverflow: false`.
+    if (!text.startsWith("/")
+        && this._projectionLastResult
+        && this._projectionLastResult.likelyOverflow
+        && (this.plugin.settings.confirmOnContextOverflow !== false)) {
+      const proceed = await this._confirmOverflowSend(this._projectionLastResult);
+      if (!proceed) return;
+    }
+
     // Issue #34: capture the user's raw typed text BEFORE any expansion
     // (skills, /quote, /btw, etc.) so we can restore it to the input box
     // on rate-limit / quota errors. The downstream `text` variable gets
@@ -5184,7 +6110,74 @@ class GryphonChatView extends ItemView {
       // each trigger one). See _markLastUserPromptFailed for the why.
       this._markLastUserPromptFailed();
       this.finalizeStreamingMessage(this.streamingText || "");
-      this.addSystemMessage(`Error: ${err.message}`);
+      // Context-overflow ("Prompt is too long") error path. Witnessed
+      // 2026-05-19: user sent a tiny prompt and got the bare error with
+      // the meter still at 0% — no warning, no actionable info, no way
+      // to know /compact wouldn't help.
+      //
+      // Three things go wrong simultaneously on a first-turn overflow:
+      //   (a) `contextTokens` is 0 because the LLM never reported usage
+      //       for the rejected turn — the meter reads 0% even though
+      //       the prompt was huge.
+      //   (b) the chat history is empty/small so /compact wouldn't help.
+      //   (c) the user typed a short message, so the error is confusing
+      //       — they don't realize the bloat is in the SYSTEM prompt
+      //       (CLAUDE.md + auto-loaded memory + skills + tool defs).
+      //
+      // We address all three: peg the meter to the window on overflow
+      // (so the visible 0% doesn't contradict the error), and emit an
+      // error body that names the active model + window, calls out
+      // input size vs. history size, and recommends the concrete fix
+      // (switch to a 1M-context model, or trim the system-prompt side).
+      const meterModel = this.plugin.settings.model || "claude-sonnet-4-6";
+      const meterWindow = MODEL_CONTEXT[meterModel] || 200000;
+      const msgDepth = (this.messages || []).length;
+      const inputChars = (originalRawText || "").length;
+      let errBody = `Error: ${err.message}`;
+      if (isOverflow) {
+        if (this.claudeProcess) {
+          // Peg meter to 100% — token usage wasn't reported for the
+          // rejected turn, so leaving contextTokens at 0 misleads the
+          // user. The window itself is the closest honest upper bound.
+          this.claudeProcess.contextTokens = meterWindow;
+          this.updateContextMeter(meterWindow);
+        }
+        const modelEntry = MODELS.find((m) => m.value === meterModel);
+        const modelLabel = (modelEntry && modelEntry.label) || meterModel;
+        const windowK = Math.round(meterWindow / 1000);
+        const onSmallWindow = meterWindow < 1_000_000;
+        errBody += `\n\n**Active model:** ${modelLabel} (${windowK}K context window).`
+                 + ` The model rejected this prompt without reporting token usage,`
+                 + ` so the meter (now pegged to 100%) reflects "presumed overflow"`
+                 + ` rather than a measurement.`;
+        if (msgDepth > 10) {
+          errBody += `\n\n**Recovery:** chat history is at ${msgDepth} messages — `
+                   + "run `/compact` to summarize, or `/clear` to start over. "
+                   + "Your last prompt is preserved in the input box.";
+        } else {
+          errBody += `\n\n**Recovery:** your input was short (${inputChars} chars)`
+                   + ` and history is small (${msgDepth} message${msgDepth === 1 ? "" : "s"}) —`
+                   + ` the overflow is in the **system prompt**, not your text. Likely`
+                   + ` culprits: a heavy \`CLAUDE.md\` / \`AGENTS.md\` in the current`
+                   + ` project, oversized auto-loaded memory files`
+                   + ` (\`~/.claude/projects/*/memory/\`), or many bundled skills`
+                   + ` (each adds tool definitions). \`/compact\` won't help here.`;
+          if (onSmallWindow) {
+            errBody += ` **Easiest fix:** switch to **Sonnet 4.6** or **Opus 4.6+**`
+                     + ` (all 1M context) in Settings → Gryphon → Default model.`;
+          } else {
+            errBody += ` Trim \`MEMORY.md\` and the memory files it indexes, or`
+                     + ` disable some skills, then \`/clear\` and retry.`;
+          }
+        }
+      }
+      this.addSystemMessage(errBody);
+      // Parallel UX to the rate-limit handler below: when a context-overflow
+      // failure surfaces, restore the user's typed text into the input box
+      // so they can re-send after /compact without re-typing.
+      if (isOverflow && originalRawText && !this.inputEl.value) {
+        this.inputEl.value = originalRawText;
+      }
       // Issue #34: when the failure is a rate-limit / quota error, put
       // the user's original typed text back in the input box so they
       // don't have to re-type. Same UX consideration as form validation
