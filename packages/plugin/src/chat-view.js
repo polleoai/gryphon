@@ -4652,7 +4652,7 @@ class GryphonChatView extends ItemView {
     const provider = createProvider(
       this.plugin,
       this.app.vault.adapter.basePath,
-      {}
+      { hostAdapter: this.plugin.hostAdapter }
     );
     if (provider) return;  // a provider can resolve — nothing to show
 
@@ -4874,7 +4874,7 @@ class GryphonChatView extends ItemView {
     const provider = createProvider(
       this.plugin,
       this.app.vault.adapter.basePath,
-      {}
+      { hostAdapter: this.plugin.hostAdapter }
     );
     if (provider) {
       this._welcomePanelEl.remove();
@@ -5753,6 +5753,7 @@ class GryphonChatView extends ItemView {
         extraArgs,
         extraArgsByProvider: this.extraProcessArgsByProvider,
         initialHistory: sdkInitialHistory,
+        hostAdapter: this.plugin.hostAdapter,
       });
       if (!this.claudeProcess) {
         // Bug #23: failed sends (no provider could be constructed) used

@@ -7,6 +7,12 @@
  * options.extraToolStatus hook.
  */
 
+// v2.2: registry must be required at the top so it is available when
+// DEFAULT_SETTINGS is constructed. The duplicate declaration near the
+// bottom of this file was moved here — underscore-prefixed to mark it
+// module-private (avoids visual collision with the many public exports).
+const _registry = require("@gryphon/provider-config").registry;
+
 // Tool names → user-friendly status messages
 const TOOL_STATUS_CORE = {
   "Bash": "Working...",
@@ -758,7 +764,11 @@ const DEFAULT_SETTINGS = {
   // (acceptEdits — auto-accepts file edits, still prompts on bash) or
   // "YOLO" (bypassPermissions — skips all prompts) in settings.
   permissionMode: "default",
-  model: "claude-sonnet-4-6",
+  // Default model for fresh installs — derived from registry's isDefault flag
+  // to stay in sync with the canonical source of truth. The migration table
+  // (MODEL_ALIAS_MIGRATION below) handles upgrades for existing users with
+  // persisted settings.
+  model: _registry.defaultModelFor("anthropic"),
   effort: "high",
   openInMainTab: false,
   lastSessionId: null,
@@ -930,7 +940,7 @@ const DEFAULT_SETTINGS = {
 
   // Issue #38: override for the cold-start connection-timeout budget.
   // null = use the model-adaptive default from COLD_START_BUDGET_MS
-  // (Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s; non-Anthropic
+  // (Haiku 30s, Sonnet 90s, Opus 4.6/4.7/4.8 180s; non-Anthropic
   // models fall back to DEFAULT_COLD_START_BUDGET_MS = 60s).
   // A number (in milliseconds, must be in [MIN, MAX] from the bounds
   // below) overrides for slow networks or unusually large prompts.
@@ -938,39 +948,25 @@ const DEFAULT_SETTINGS = {
   connectionTimeoutMs: null,
 };
 
-// Concrete model IDs (no aliases). Aliases like "sonnet"/"opus" were
-// dropped 2026-05-19 after a real user incident: the claude-code CLI
-// resolves `sonnet` to whatever its installed binary considers "latest",
-// which on some boxes still pins to Sonnet 4.5 (200K window) — causing
-// "Prompt is too long" errors in long-context vaults. Pinning to
-// concrete IDs guarantees the 1M-window Sonnet 4.6 / Opus 4.6+
-// regardless of the installed CLI version. The resolved version is
-// still captured from the `system.init` stream event and shown in the
-// model tooltip.
+// v2.2: derive Anthropic-family tables from the canonical registry in
+// @gryphon/provider-config. Adding a new Anthropic model is now a one-
+// place edit in registry.js — these tables regenerate at module load.
 //
-// Supported set (per Anthropic's current model directory):
-//   Haiku 4.5  — 200K context, fast + cheapest
-//   Sonnet 4.6 — 1M context, balanced default
-//   Opus 4.6   — 1M context, production tier
-//   Opus 4.7   — 1M context, most capable
-const MODELS = [
-  { value: "claude-haiku-4-5",  label: "Haiku 4.5",   desc: "Fast, cheapest (200K)" },
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6",  desc: "Balanced (1M)" },
-  { value: "claude-opus-4-6",   label: "Opus 4.6",    desc: "Production (1M)" },
-  { value: "claude-opus-4-7",   label: "Opus 4.7",    desc: "Most capable (1M)" },
-];
+// Migration map (MODEL_ALIAS_MIGRATION) handles users whose persisted
+// settings.model is still one of the old aliases (haiku/sonnet/opus/
+// opus[1m]); applied once at plugin load via _migrateSettings.
+// (_registry is declared at the top of this file so it is available when
+// DEFAULT_SETTINGS is constructed.)
 
-// Migration map for users whose persisted `settings.model` is still
-// one of the old aliases. Applied once at plugin load — see
-// `migrateModelAlias` in plugin.js. Maps each old alias to the concrete
-// ID that preserves the user's original tier intent (sonnet → balanced,
-// opus → most-capable, opus[1m] → also most-capable since 4.7 is 1M).
-const MODEL_ALIAS_MIGRATION = {
-  "haiku":     "claude-haiku-4-5",
-  "sonnet":    "claude-sonnet-4-6",
-  "opus":      "claude-opus-4-7",
-  "opus[1m]":  "claude-opus-4-7",
-};
+const MODELS = _registry.modelsByVendor("anthropic")
+  .filter((m) => m.dropdown)
+  .map((m) => ({
+    value: m.id,
+    label: m.dropdown.label,
+    desc: m.dropdown.desc,
+  }));
+
+const MODEL_ALIAS_MIGRATION = _registry.legacyAliasMigrationFor("anthropic");
 
 const EFFORTS = [
   { value: "low",    label: "Low",    desc: "Quick answers" },
@@ -985,12 +981,13 @@ const PERMS = [
   { value: "plan",              label: "Plan",   desc: "Propose only" },
 ];
 
-const MODEL_CONTEXT = {
-  "claude-haiku-4-5":  200000,
-  "claude-sonnet-4-6": 1000000,
-  "claude-opus-4-6":   1000000,
-  "claude-opus-4-7":   1000000,
-};
+const MODEL_CONTEXT = (() => {
+  const out = {};
+  for (const m of _registry.modelsByVendor("anthropic")) {
+    if (m.contextTokens) out[m.id] = m.contextTokens;
+  }
+  return out;
+})();
 
 // Issue #38: cold-start latency varies materially by model. Haiku spawns
 // fast; Opus 1M is slow because of KV-cache allocation for its larger
@@ -1003,12 +1000,13 @@ const MODEL_CONTEXT = {
 // have entries — non-Anthropic providers (OpenAI / Google) make
 // stateless HTTPS calls without a comparable cold-start cost, so they
 // fall through to DEFAULT_COLD_START_BUDGET_MS.
-const COLD_START_BUDGET_MS = {
-  "claude-haiku-4-5":  30_000,
-  "claude-sonnet-4-6": 90_000,   // 1M-window: KV alloc costs more than 200K Sonnet 4.5 did
-  "claude-opus-4-6":   180_000,
-  "claude-opus-4-7":   180_000,
-};
+const COLD_START_BUDGET_MS = (() => {
+  const out = {};
+  for (const m of _registry.modelsByVendor("anthropic")) {
+    if (m.coldStartMs) out[m.id] = m.coldStartMs;
+  }
+  return out;
+})();
 // Used when settings.model isn't in COLD_START_BUDGET_MS (non-Anthropic
 // providers, future model identifiers we haven't tabulated yet).
 const DEFAULT_COLD_START_BUDGET_MS = 60_000;

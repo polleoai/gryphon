@@ -37,6 +37,14 @@ async function runOpenAIToolLoop({
   ctx,
   callbacks,
 }) {
+  // ctx.responseFormat is set by the provider when the caller passes
+  // { structuredOutput: { name, schema } }. It is injected into every
+  // chat.completions call in this loop so the vendor enforces the schema
+  // grammar-side. It is NOT passed alongside tools — the structured-output
+  // path is mutually exclusive with tool dispatch for the purposes of this
+  // feature (a structuredOutput send is a single-shot request, not an
+  // agentic loop). If future callers combine both, this co-exists: OpenAI
+  // honours response_format on assistant text even when tools are present.
   const anthropicSchemas = getActiveTools({
     allowWrite: true,
     allowWeb: true,
@@ -78,12 +86,20 @@ async function runOpenAIToolLoop({
       ? [{ role: "system", content: systemPrompt }, ...history]
       : [...history];
 
-    const stream = client.chat.completions.stream({
+    const streamParams = {
       model,
       messages,
       tools: tools.length > 0 ? tools : undefined,
       stream_options: { include_usage: true },
-    });
+    };
+    // L6 structured output: inject vendor-native response_format when set.
+    // ctx.responseFormat is only present when the caller passed
+    // { structuredOutput: { name, schema } } to send(). OpenAI enforces the
+    // JSON schema grammar-side, so the model cannot return malformed JSON.
+    if (ctx && ctx.responseFormat) {
+      streamParams.response_format = ctx.responseFormat;
+    }
+    const stream = client.chat.completions.stream(streamParams);
     if (callbacks.onStream) callbacks.onStream(stream);
 
     // OpenAI's `content` event delivers (delta, snapshot) — we forward
@@ -130,6 +146,24 @@ async function runOpenAIToolLoop({
       priorTurnText = priorTurnText
         ? `${priorTurnText}\n\n${iterationText}`
         : iterationText;
+    }
+
+    // L5 per-call budget cap: check mid-loop after each model response.
+    // SDK providers throw here; CLI providers can only check post-turn
+    // (subprocess owns its internal loop; cannot abort mid-stream).
+    if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+      const iterCost = ctx.computeIterationCost(u);
+      if (!ctx._loopCost) ctx._loopCost = 0;
+      ctx._loopCost += iterCost;
+      const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
+      if (callCumulative >= ctx.maxUsdBudget) {
+        const { BudgetExceededError } = require("../../budget-error");
+        throw new BudgetExceededError({
+          budget: ctx.maxUsdBudget,
+          spent: callCumulative,
+          lastTurnCost: iterCost,
+        });
+      }
     }
 
     // Append assistant turn to history. OpenAI requires preserving

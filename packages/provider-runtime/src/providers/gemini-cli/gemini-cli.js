@@ -223,9 +223,27 @@ function _formatRateLimitMessage(body) {
 
 class GeminiCliProvider {
   constructor(geminiPath, cwd, options = {}) {
+    // Test-harness options-bag form: GeminiCliProvider({ config, hostAdapter,
+    // _spawnOverride }) — no geminiPath or cwd required. The _spawnOverride
+    // function replaces the real CLI spawn for unit tests.
+    if (geminiPath && typeof geminiPath === "object" && !cwd) {
+      const bag = geminiPath;
+      geminiPath = bag.geminiPath || "";
+      cwd = bag.cwd || "";
+      options = {
+        model: bag.config && bag.config.model,
+        hostAdapter: bag.hostAdapter,
+        _spawnOverride: bag._spawnOverride,
+      };
+    }
     this.geminiPath = geminiPath;
     this.cwd = cwd;
     this.options = options;
+    // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
+    // contextTokens, ...}> injected by tests to replace the real CLI spawn.
+    this._spawnOverride = options._spawnOverride || null;
+    this.hostAdapter = options.hostAdapter ||
+      new (require("../../host-adapter").HeadlessHostAdapter)();
     this.process = null;
     this.alive = false;
     this.sessionId = _wrapSession(options.resumeSessionId) || null;
@@ -315,7 +333,143 @@ class GeminiCliProvider {
     return env;
   }
 
-  send(prompt) {
+  send(prompt, options) {
+    if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
+      throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
+    }
+    // L6.1 — structured-output retry budget for CLI providers.
+    // When structuredOutput is set, wrap _spawnTurn in inject + parse +
+    // validate + retry up to maxRetries (default 3). On exhaustion throw
+    // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
+    // path (no option) falls through to _spawnTurn unchanged.
+    if (options && options.structuredOutput) {
+      const {
+        injectSchemaHint,
+        parseAndValidate,
+        CliStructuredOutputError,
+      } = require("../../cli-structured-output");
+
+      const maxRetries = options.structuredOutput.maxRetries ?? 3;
+      const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
+
+      const savedOnDone = this.onDone;
+      // Suppress the per-turn onDone from _handleClose — we call it
+      // ourselves on success with the enriched result (json + text).
+      this.onDone = null;
+
+      const loop = async () => {
+        let lastError = null;
+        // Snapshot before the retry loop: each failed attempt still costs
+        // money; the per-call cap covers all attempts within this send().
+        const priorCallCumulative = this.lastCumulativeCost;
+        try {
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const turnResult = await this._spawnTurn(enrichedPrompt);
+            // Keep lastCumulativeCost in sync when _spawnOverride is active
+            // (the real path updates it in _handleClose; the override bypasses that).
+            if (this._spawnOverride) this.lastCumulativeCost = turnResult.cumulativeCost || 0;
+            // L5 per-call budget cap (post-turn): CLI subprocess owns its
+            // internal loop; we can only check at turn-end. Throw immediately
+            // rather than continuing into the structured-output retry loop.
+            // perCallSpent accumulates across retries within this send().
+            if (options && typeof options.maxUsdBudget === "number") {
+              const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
+              if (cumCost === null) {
+                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                  `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
+                  { level: "warn" },
+                );
+              }
+              const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
+              if (perCallSpent >= options.maxUsdBudget) {
+                const { BudgetExceededError } = require("../../budget-error");
+                throw new BudgetExceededError({
+                  budget: options.maxUsdBudget,
+                  spent: perCallSpent,
+                  lastTurnCost: turnResult.cost || 0,
+                });
+              }
+            }
+            try {
+              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              const result = { ...turnResult, json, text: JSON.stringify(json) };
+              this.onDone = savedOnDone;
+              if (this.onDone) this.onDone(result);
+              return result;
+            } catch (e) {
+              if (!(e instanceof CliStructuredOutputError)) throw e;
+              lastError = e;
+              try {
+                this.hostAdapter.notify(
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
+                  { level: "warn" },
+                );
+              } catch (_) { /* notify must never block */ }
+            }
+          }
+          throw new CliStructuredOutputError(
+            `structured-output budget exhausted after ${maxRetries} attempts on gemini-cli: ${lastError && lastError.message}`,
+            {
+              reason: "budget-exhausted",
+              attempts: maxRetries,
+              lastOutput: lastError && lastError.lastOutput,
+            },
+          );
+        } finally {
+          this.onDone = savedOnDone;
+        }
+      };
+      return loop();
+    }
+
+    // Plain (non-structured-output) path.
+    // L5 per-call budget cap (post-turn): CLI subprocess owns its internal
+    // loop; we can only check at turn-end after the spawn returns.
+    // Snapshot before the call so multi-send works correctly: the CLI
+    // reports a monotonically-growing cumulativeCost (session total), but
+    // maxUsdBudget is a PER-CALL cap. Using the delta avoids falsely
+    // throwing on call 2 when (session total > budget) even though
+    // (this call's cost < budget).
+    if (options && typeof options.maxUsdBudget === "number") {
+      const priorCallCumulative = this.lastCumulativeCost;
+      return this._spawnTurn(prompt).then((result) => {
+        // Keep lastCumulativeCost in sync when _spawnOverride is active
+        // (the real path updates it in _handleClose; the override bypasses that).
+        if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
+        const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
+        if (cumCost === null) {
+          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+            `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
+            { level: "warn" },
+          );
+        }
+        const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
+        if (perCallSpent >= options.maxUsdBudget) {
+          const { BudgetExceededError } = require("../../budget-error");
+          throw new BudgetExceededError({
+            budget: options.maxUsdBudget,
+            spent: perCallSpent,
+            lastTurnCost: result.cost || 0,
+          });
+        }
+        return result;
+      });
+    }
+
+    return this._spawnTurn(prompt);
+  }
+
+  /**
+   * Execute one gemini -p turn and return a Promise that resolves with the
+   * result object {text, cost, cumulativeCost, sessionId, duration,
+   * contextTokens}. When _spawnOverride is set (test-harness injection),
+   * delegates directly to the override function.
+   */
+  _spawnTurn(prompt) {
+    if (this._spawnOverride) {
+      return this._spawnOverride(prompt);
+    }
+
     return new Promise((resolve, reject) => {
       // Supersede an in-flight turn — same shape as CodexProvider.
       if (this.alive && this.process) {

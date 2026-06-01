@@ -36,14 +36,10 @@ const SCHEMA = {
   },
 };
 
-// See web-fetch.js for why we use Obsidian's requestUrl rather than
-// fetch or undici: the renderer's fetch is CORS-restricted, and undici
-// breaks on browser-style timers in Obsidian's Electron. requestUrl
-// runs in the main process and works reliably. Wrapped in try/catch so
-// unit tests that import this module in a plain Node context don't
-// crash on the unresolved 'obsidian' require.
-let requestUrl;
-try { ({ requestUrl } = require("obsidian")); } catch (_) { /* test context */ }
+// Network requests are routed through ctx.hostAdapter.fetch() (same
+// reasoning as web-fetch.js — requestUrl in Obsidian, globalThis.fetch
+// in headless). The module-level lazy require is gone; the adapter is
+// injected at execute() time via ctx.
 
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -84,11 +80,11 @@ async function execute(input, ctx) {
     setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
+  const hostAdapter = ctx.hostAdapter;
   let response;
   try {
     response = await Promise.race([
-      requestUrl({
-        url: url.toString(),
+      hostAdapter.fetch(url.toString(), {
         method: "GET",
         headers: {
           "Accept": "application/json",

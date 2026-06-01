@@ -11,29 +11,32 @@
  * Gemini API call — no model invocation, no token consumption, just an
  * auth check that returns the list of available models if the key is good.
  *
- * Uses Obsidian's `requestUrl` to bypass the renderer's CORS restrictions
- * (Obsidian plugins can't use plain `fetch` against arbitrary hosts).
+ * Network access is routed through the `hostAdapter` parameter
+ * (Task 0.4). Callers in Obsidian will pass ObsidianHostAdapter (Task 0.6);
+ * callers that omit it get HeadlessHostAdapter as a default so old call
+ * sites don't crash before Task 0.6 lands.
  */
-
-// Lazy access (`require("obsidian").requestUrl(...)` at call time, not
-// `const { requestUrl } = ...` at module load). This keeps tests able to
-// swap the mock — destructuring at top would freeze the binding before
-// the test gets a chance to replace it.
-const obsidian = require("obsidian");
 
 const GEMINI_LIST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
-async function testApiKey(apiKey) {
+async function testApiKey(apiKey, hostAdapter) {
+  // Default to HeadlessHostAdapter so callers that pre-date Task 0.6 still
+  // work (they pass undefined). Task 0.6 will supply ObsidianHostAdapter.
+  if (!hostAdapter) {
+    hostAdapter = new (require("../../host-adapter").HeadlessHostAdapter)();
+  }
+
   if (!apiKey) return { ok: false, message: "No API key provided" };
 
   try {
-    // requestUrl throws on non-2xx by default; pass throw:false so we can
-    // inspect the status and surface a meaningful error message ourselves.
-    const res = await obsidian.requestUrl({
-      url: `${GEMINI_LIST_MODELS_URL}?key=${encodeURIComponent(apiKey)}`,
-      method: "GET",
-      throw: false,
-    });
+    // hostAdapter.fetch with throw:false — ObsidianHostAdapter passes it
+    // through to requestUrl; HeadlessHostAdapter ignores unknown opts and
+    // uses globalThis.fetch (which may throw on non-2xx depending on
+    // configuration — the try/catch below catches that).
+    const res = await hostAdapter.fetch(
+      `${GEMINI_LIST_MODELS_URL}?key=${encodeURIComponent(apiKey)}`,
+      { method: "GET", throw: false },
+    );
 
     if (res.status === 200) {
       return { ok: true, message: "Key works" };

@@ -1,8 +1,13 @@
 /**
- * OpenAI per-model pricing + cost calculator.
+ * OpenAI pricing view — thin derivation over the canonical registry.
  *
- * USD per million tokens. Update when OpenAI's pricing changes
- * (https://openai.com/api/pricing/).
+ * Public API preserved exactly for back-compat with v1.x callers
+ * (provider-runtime's openai-api provider, plugin settings UI).
+ *
+ * gpt-5.5 long-context multiplier (prompts > 272K input tokens are
+ * priced at 2× input / 1.5× output for the full session) is NOT modeled
+ * here — see registry.js banner. Flat rate applies for typical <272K
+ * prompts.
  *
  * The `cached_input` field is tracked **separately** for telemetry but
  * the v1.2 cost calculator bills cached tokens at the full input rate.
@@ -10,75 +15,60 @@
  * reserve until OpenAI's public pricing for prompt-cache hits is stable
  * across SKUs. Once formalized, switch the cost calculator to apply the
  * cached_input rate without changing the table shape.
- *
- * Model aliases (gpt-4o-mini etc.) resolve via MODEL_ALIAS so the chat
- * panel's dropdown can use short, friendly labels while the API gets the
- * concrete vendor model id.
  */
 
-// Pricing source: developers.openai.com/api/docs/models/<model> (verified
-// 2026-05-02 against the live pricing pages for the gpt-5 family). gpt-4o
-// and gpt-4.1 rates retained for older user setups + as the historical
-// default-tier reference. Update whenever OpenAI publishes a price change.
-const MODEL_PRICES = {
-  // GPT-5 family (current-tier, post-2026-Q1 — what you'd pick for new work)
-  // gpt-5.5: prompts > 272K input tokens are priced at 2× input / 1.5× output
-  // for the full session — NOT modeled here (computeCost would need a context-
-  // length input to apply the multiplier). Tracked as a v1.3 follow-up; for
-  // typical prompts <272K the flat rate below is correct.
-  "gpt-5":             { input: 1.25,  output: 10.00, cached_input: 0.125 },
-  "gpt-5-mini":        { input: 0.25,  output: 2.00,  cached_input: 0.025 },
-  "gpt-5.4":           { input: 2.50,  output: 15.00, cached_input: 0.25  },
-  "gpt-5.4-mini":      { input: 0.75,  output: 4.50,  cached_input: 0.075 },
-  "gpt-5.5":           { input: 5.00,  output: 30.00, cached_input: 0.50  },
+const registry = require("../registry");
 
-  // GPT-4o family (still supported; cheaper for plain chat)
-  "gpt-4o":            { input: 2.50,  output: 10.00, cached_input: 1.25  },
-  "gpt-4o-mini":       { input: 0.15,  output: 0.60,  cached_input: 0.075 },
+// Guard against NaN / Infinity token counts (see anthropic.js for rationale).
+function _finite(n) {
+  return (typeof n === "number" && Number.isFinite(n)) ? n : 0;
+}
 
-  // GPT-4.1 family
-  "gpt-4.1":           { input: 2.00,  output: 8.00,  cached_input: 0.50  },
-  "gpt-4.1-mini":      { input: 0.40,  output: 1.60,  cached_input: 0.10  },
-  "gpt-4.1-nano":      { input: 0.10,  output: 0.40,  cached_input: 0.025 },
+// Derive MODEL_PRICES object keyed by model id (back-compat shape).
+// Includes `_default` fallback for unknown model ids.
+const MODEL_PRICES = (() => {
+  const out = {};
+  for (const m of registry.modelsByVendor("openai")) out[m.id] = m.pricing;
+  out._default = registry.VENDOR_FALLBACK_PRICING.openai;
+  return out;
+})();
 
-  // o-series reasoning
-  "o3":                { input: 2.00,  output: 8.00,  cached_input: 0.50  },
-  "o3-mini":           { input: 1.10,  output: 4.40,  cached_input: 0.55  },
-  "o4-mini":           { input: 1.10,  output: 4.40,  cached_input: 0.275 },
+// Derive cross-vendor + native-passthrough alias map.
+// Cross-vendor: haiku/sonnet/opus/opus[1m] → concrete OpenAI ids.
+// Native passthrough: concrete id → itself (so resolveModel is a no-op
+// for callers already holding a concrete id).
+const MODEL_ALIAS = (() => {
+  const out = {};
+  for (const [alias, perVendor] of Object.entries(registry.CROSS_VENDOR_ALIASES)) {
+    if (perVendor.openai) out[alias] = perVendor.openai;
+  }
+  for (const m of registry.modelsByVendor("openai")) {
+    if (out[m.id] && out[m.id] !== m.id) {
+      throw new Error(
+        `pricing/openai.js: alias collision — concrete id "${m.id}" would overwrite ` +
+        `cross-vendor mapping "${m.id}" → "${out[m.id]}". Rename either the model ` +
+        `id or the cross-vendor alias in registry.js.`,
+      );
+    }
+    out[m.id] = m.id;
+  }
+  return out;
+})();
 
-  // Conservative default for unknown models — assume gpt-5.4-mini pricing
-  // (the new general-purpose mid-tier; not the cheapest, not the most expensive,
-  // so over/under-estimation symmetric across the unknown surface).
-  "_default":          { input: 0.75,  output: 4.50,  cached_input: 0.075 },
-};
+const DEFAULT_MODEL = registry.defaultModelFor("openai");
 
-const MODEL_ALIAS = {
-  // Friendly cross-vendor aliases — Anthropic-style names map to GPT-5-tier
-  // counterparts. When a user switches Provider from Anthropic → OpenAI
-  // their settings.model carries over and these aliases keep behavior sane.
-  "haiku":      "gpt-5-mini",      // cheap + fast (was gpt-4o-mini before gpt-5 family)
-  "sonnet":     "gpt-5.4-mini",    // balanced default (was gpt-4o)
-  "opus":       "gpt-5.4",         // most capable general model (was gpt-4.1)
-  "opus[1m]":   "gpt-5.4",         // 1M-context flag handled at request layer
-
-  // OpenAI native names pass through unchanged
-  "gpt-5":          "gpt-5",
-  "gpt-5-mini":     "gpt-5-mini",
-  "gpt-5.4":        "gpt-5.4",
-  "gpt-5.4-mini":   "gpt-5.4-mini",
-  "gpt-5.5":        "gpt-5.5",
-  "gpt-4o":         "gpt-4o",
-  "gpt-4o-mini":    "gpt-4o-mini",
-  "gpt-4.1":        "gpt-4.1",
-  "gpt-4.1-mini":   "gpt-4.1-mini",
-  "gpt-4.1-nano":   "gpt-4.1-nano",
-  "o3":             "o3",
-  "o3-mini":        "o3-mini",
-  "o4-mini":        "o4-mini",
-};
-
-const DEFAULT_MODEL = "gpt-5.4-mini";
-
+/**
+ * Resolve an alias or concrete model id to a concrete model id for this vendor.
+ *
+ * - Falsy input (null, undefined, "") → DEFAULT_MODEL.
+ * - Known cross-vendor alias (haiku/sonnet/opus/opus[1m]) → vendor-specific concrete id.
+ * - Known concrete id (native passthrough) → returned unchanged.
+ * - Unknown id → returned unchanged (callers may layer `coerceToVendorModel`
+ *   on top for vendor-strict resolution; this function is permissive).
+ *
+ * @param {string|null|undefined} alias
+ * @returns {string} concrete model id
+ */
 function resolveModel(alias) {
   if (!alias) return DEFAULT_MODEL;
   return MODEL_ALIAS[alias] || alias;
@@ -101,38 +91,9 @@ function coerceToVendorModel(alias) {
   return DEFAULT_MODEL;
 }
 
-/**
- * Subset of OpenAI model ids that work via the Codex CLI when authed
- * with a ChatGPT account (the most common Codex CLI auth path —
- * `codex login` browser flow). Empirically tested 2026-05-09:
- *
- *   ✓ gpt-5.5
- *   ✓ gpt-5.4
- *   ✓ gpt-5.4-mini
- *
- *   ✗ gpt-5, gpt-5-mini   — server-side rejected: "model not supported"
- *   ✗ gpt-4o, gpt-4o-mini — same
- *   ✗ gpt-4.1, gpt-4.1-mini — same
- *   ✗ o3, o3-mini, o4-mini — same
- *
- * Codex CLI authed with an OpenAI API key (OPENAI_API_KEY env var) is
- * NOT subject to this restriction; it can use any model the API
- * supports. This whitelist is a defensive default — it filters the
- * dropdown surface so the most-common ChatGPT-account user doesn't see
- * options that error at spawn time. A user on API-key auth who wants
- * the full list can override via `extraArgs: ["-m", "gpt-5-mini"]`,
- * which bypasses the dropdown entirely.
- *
- * Update this set when ChatGPT subscription tiers change which models
- * Codex CLI surfaces. The runtime `coerceToCodexCliModel` falls back
- * to `gpt-5.4-mini` (the safest member of the supported set) when the
- * user's persisted model isn't in the whitelist.
- */
-const CODEX_CLI_SUPPORTED_MODELS = new Set([
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-]);
+// CODEX_CLI_SUPPORTED_MODELS — derived from registry's codexCliSupported flag.
+// See registry.js for empirical verdict + rationale.
+const CODEX_CLI_SUPPORTED_MODELS = registry.codexCliSupportedModels();
 
 function priceFor(modelId) {
   return MODEL_PRICES[modelId] || MODEL_PRICES._default;
@@ -156,10 +117,11 @@ function priceFor(modelId) {
 function computeCost(usage, modelId) {
   if (!usage) return { cost: 0, breakdown: { input: 0, output: 0, cachedTokens: 0 } };
   const p = priceFor(modelId);
-  const inputTokens = usage.prompt_tokens || 0;
-  const outputTokens = usage.completion_tokens || 0;
-  const cachedTokens =
-    (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0;
+  const inputTokens  = _finite(usage.prompt_tokens);
+  const outputTokens = _finite(usage.completion_tokens);
+  const cachedTokens = _finite(
+    usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens,
+  );
 
   const inputCost  = (inputTokens / 1_000_000) * p.input;   // cached billed at full rate (v1.2 decision)
   const outputCost = (outputTokens / 1_000_000) * p.output;
@@ -175,27 +137,10 @@ function computeCost(usage, modelId) {
  * shape the chat-view consumes from anthropic-api: `[{ id, label }]`.
  */
 function getModelDropdownOptions() {
-  // Ordering rule: newest models first within each tier; tiers listed in
-  // descending recency. Update whenever OpenAI ships a new model.
-  return [
-    // GPT-5.5 — flagship as of 2026-Q2
-    { id: "gpt-5.5",        label: "GPT-5.5 · Most capable (newest)" },
-    // GPT-5.4 family
-    { id: "gpt-5.4",        label: "GPT-5.4 · Capable" },
-    { id: "gpt-5.4-mini",   label: "GPT-5.4 mini · Balanced (default)" },
-    // GPT-5 family
-    { id: "gpt-5",          label: "GPT-5 · Older balanced" },
-    { id: "gpt-5-mini",     label: "GPT-5 mini · Fast / cheap" },
-    // o-series reasoning models
-    { id: "o4-mini",        label: "o4-mini · Reasoning (newer)" },
-    { id: "o3",             label: "o3 · Deep reasoning" },
-    { id: "o3-mini",        label: "o3-mini · Reasoning" },
-    // Legacy GPT-4 family — kept for users on older setups
-    { id: "gpt-4.1",        label: "GPT-4.1 · Legacy capable" },
-    { id: "gpt-4.1-mini",   label: "GPT-4.1 mini · Legacy cheap" },
-    { id: "gpt-4o",         label: "GPT-4o · Legacy balanced" },
-    { id: "gpt-4o-mini",    label: "GPT-4o mini · Legacy cheap" },
-  ];
+  return registry.dropdownFor("openai").map((o) => ({
+    id: o.id,
+    label: o.desc ? `${o.label} · ${o.desc}` : o.label,
+  }));
 }
 
 /**

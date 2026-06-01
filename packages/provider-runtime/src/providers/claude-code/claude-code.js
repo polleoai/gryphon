@@ -57,9 +57,27 @@ function _looksLikeUUID(value) {
 
 class ClaudeCodeProvider {
   constructor(claudePath, cwd, options = {}) {
+    // Test-harness options-bag form: ClaudeCodeProvider({ config, hostAdapter,
+    // _spawnOverride }) — no claudePath or cwd required. The _spawnOverride
+    // function replaces the real CLI spawn for unit tests.
+    if (claudePath && typeof claudePath === "object" && !cwd) {
+      const bag = claudePath;
+      claudePath = bag.claudePath || "";
+      cwd = bag.cwd || "";
+      options = {
+        model: bag.config && bag.config.model,
+        hostAdapter: bag.hostAdapter,
+        _spawnOverride: bag._spawnOverride,
+      };
+    }
     this.claudePath = claudePath;
     this.cwd = cwd;
     this.options = options;
+    // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
+    // contextTokens, ...}> injected by tests to replace the real CLI spawn.
+    this._spawnOverride = options._spawnOverride || null;
+    this.hostAdapter = options.hostAdapter ||
+      new (require("../../host-adapter").HeadlessHostAdapter)();
     this.process = null;
     this.alive = false;
     this.sessionId = null;
@@ -293,13 +311,10 @@ class ClaudeCodeProvider {
         // actionability — prior to this, "Claude Code mode provides no
         // protection" presented as "no modal ever" with no indication
         // where to look.
-        try {
-          const { Notice } = require("obsidian");
-          new Notice(
-            `Gryphon: advanced protections unavailable — plugin files are incomplete.\n\n${msg}`,
-            20000,  // 20s — long enough to read the path
-          );
-        } catch (_) { /* obsidian not available (tests / headless) */ }
+        this.hostAdapter.notify(
+          `Gryphon: advanced protections unavailable — plugin files are incomplete.\n\n${msg}`,
+          { level: "error", timeoutMs: 20000 },
+        );
         if (hookSettingsFile && fs.existsSync(hookSettingsFile)) {
           try { fs.unlinkSync(hookSettingsFile); } catch (_) { /* ignore */ }
         }
@@ -341,8 +356,7 @@ class ClaudeCodeProvider {
         : [];
     }
     if (autoDenyProtected && protectedModeOn && !hooksActive) {
-      try {
-        const { Notice } = require("obsidian");
+      {
         const failed = Object.entries(hookPreflight)
           .filter(([, v]) => !v)
           .map(([k]) => k)
@@ -363,8 +377,8 @@ class ClaudeCodeProvider {
               `produced zero globs (check your protected-pattern list). ` +
               `Reload Obsidian to restore.`
             );
-        new Notice(notice, 15000);
-      } catch (_) { /* obsidian not available in tests / headless */ }
+        this.hostAdapter.notify(notice, { level: "error", timeoutMs: 15000 });
+      }
     }
     if (!hooksActive && protectedModeOn) {
       if (denyGlobs.length > 0) {
@@ -389,17 +403,14 @@ class ClaudeCodeProvider {
           // fall back here already saw the upstream "plugin files
           // incomplete" Notice, so we skip to avoid redundant toasts.)
           if (autoDenyProtected) {
-            try {
-              const { Notice } = require("obsidian");
-              new Notice(
-                `Gryphon: couldn't apply protected-pattern enforcement — ` +
-                `Auto-deny settings file write failed (${msg}). The CLI ` +
-                `will run without pattern enforcement this session. ` +
-                `Check available space / permissions on the system ` +
-                `temp directory, then restart Gryphon.`,
-                20000,
-              );
-            } catch (_) { /* obsidian not available in tests / headless */ }
+            this.hostAdapter.notify(
+              `Gryphon: couldn't apply protected-pattern enforcement — ` +
+              `Auto-deny settings file write failed (${msg}). The CLI ` +
+              `will run without pattern enforcement this session. ` +
+              `Check available space / permissions on the system ` +
+              `temp directory, then restart Gryphon.`,
+              { level: "error", timeoutMs: 20000 },
+            );
           }
         }
       }
@@ -569,7 +580,146 @@ class ClaudeCodeProvider {
     proc.on("error", (err) => { if (forThisProcess()) this._handleProcessError(err); });
   }
 
-  send(prompt) {
+  send(prompt, options) {
+    if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
+      throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
+    }
+    // L6.1 — structured-output retry budget for CLI providers.
+    // When structuredOutput is set, wrap _doOneTurn in inject + parse +
+    // validate + retry up to maxRetries (default 3). On exhaustion throw
+    // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
+    // path (no option) falls through to _doOneTurn unchanged.
+    if (options && options.structuredOutput) {
+      const {
+        injectSchemaHint,
+        parseAndValidate,
+        CliStructuredOutputError,
+      } = require("../../cli-structured-output");
+
+      const maxRetries = options.structuredOutput.maxRetries ?? 3;
+      const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
+
+      const savedOnDone = this.onDone;
+      // Suppress the per-turn onDone from _processEvent — we call it
+      // ourselves on success with the enriched result (json + text).
+      this.onDone = null;
+
+      const loop = async () => {
+        let lastError = null;
+        // Snapshot before the retry loop: each failed attempt still costs
+        // money; the per-call cap covers all attempts within this send().
+        const priorCallCumulative = this.lastCumulativeCost;
+        try {
+          for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            const turnResult = await this._doOneTurn(enrichedPrompt);
+            // Keep lastCumulativeCost in sync when _spawnOverride is active
+            // (the real path updates it via _processEvent; the override bypasses that).
+            if (this._spawnOverride) this.lastCumulativeCost = turnResult.cumulativeCost || 0;
+            // L5 per-call budget cap (post-turn): CLI subprocess owns its
+            // internal loop; we can only check at turn-end. Throw immediately
+            // rather than continuing into the structured-output retry loop.
+            // perCallSpent accumulates across retries within this send().
+            if (options && typeof options.maxUsdBudget === "number") {
+              const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
+              if (cumCost === null) {
+                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                  `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
+                  { level: "warn" },
+                );
+              }
+              const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
+              if (perCallSpent >= options.maxUsdBudget) {
+                const { BudgetExceededError } = require("../../budget-error");
+                throw new BudgetExceededError({
+                  budget: options.maxUsdBudget,
+                  spent: perCallSpent,
+                  lastTurnCost: turnResult.cost || 0,
+                });
+              }
+            }
+            try {
+              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              const result = { ...turnResult, json, text: JSON.stringify(json) };
+              this.onDone = savedOnDone;
+              if (this.onDone) this.onDone(result);
+              return result;
+            } catch (e) {
+              if (!(e instanceof CliStructuredOutputError)) throw e;
+              lastError = e;
+              try {
+                this.hostAdapter.notify(
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
+                  { level: "warn" },
+                );
+              } catch (_) { /* notify must never block */ }
+            }
+          }
+          throw new CliStructuredOutputError(
+            `structured-output budget exhausted after ${maxRetries} attempts on claude-code: ${lastError && lastError.message}`,
+            {
+              reason: "budget-exhausted",
+              attempts: maxRetries,
+              lastOutput: lastError && lastError.lastOutput,
+            },
+          );
+        } finally {
+          this.onDone = savedOnDone;
+        }
+      };
+      return loop();
+    }
+
+    // Plain (non-structured-output) path.
+    // L5 per-call budget cap (post-turn): CLI subprocess owns its internal
+    // loop; we can only check at turn-end after the spawn returns.
+    // Snapshot before the call so multi-send works correctly: the CLI
+    // reports a monotonically-growing cumulativeCost (session total), but
+    // maxUsdBudget is a PER-CALL cap. Using the delta avoids falsely
+    // throwing on call 2 when (session total > budget) even though
+    // (this call's cost < budget).
+    if (options && typeof options.maxUsdBudget === "number") {
+      const priorCallCumulative = this.lastCumulativeCost;
+      return this._doOneTurn(prompt).then((result) => {
+        // Keep lastCumulativeCost in sync when _spawnOverride is active
+        // (the real path updates it via _processEvent; the override bypasses that).
+        if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
+        const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
+        if (cumCost === null) {
+          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+            `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
+            { level: "warn" },
+          );
+        }
+        const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
+        if (perCallSpent >= options.maxUsdBudget) {
+          const { BudgetExceededError } = require("../../budget-error");
+          throw new BudgetExceededError({
+            budget: options.maxUsdBudget,
+            spent: perCallSpent,
+            lastTurnCost: result.cost || 0,
+          });
+        }
+        return result;
+      });
+    }
+
+    return this._doOneTurn(prompt);
+  }
+
+  /**
+   * Execute one prompt turn and return a Promise that resolves with the
+   * result object {text, cost, cumulativeCost, sessionId, duration,
+   * contextTokens, thinking?}.
+   *
+   * When _spawnOverride is set (test-harness injection), delegates directly
+   * to the override function. Otherwise runs the real persistent-process
+   * stdin write → stream-json event → result pipeline.
+   */
+  _doOneTurn(prompt) {
+    if (this._spawnOverride) {
+      return this._spawnOverride(prompt);
+    }
+
     if (!this.alive || !this.process) this.spawn();
 
     // v0.5.12 supersede handling. Without `-p`, CC stays alive across

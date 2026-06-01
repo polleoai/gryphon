@@ -4,6 +4,42 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.2.0] — 2026-05-30
+
+### Changed
+
+- **Centralized model registry.** Pricing tables, dropdown labels, and per-model metadata (context window, cold-start budgets, legacy-alias migrations, Codex-CLI subset) now live in a single source of truth (`packages/provider-config/src/registry.js`). Per-vendor pricing files (`pricing/openai.js`, `pricing/google.js`, plus the new `pricing/anthropic.js`) and plugin-shell tables derive from it. *(No user-visible behaviour change.)*
+
+### Added
+
+- **Probe-before-commit discipline.** Two scripts (`scripts/probe-model.sh`, `scripts/probe-all-models.sh`) let maintainers confirm any model id resolves against the live vendor API before adding it to the registry. Catches the "announcement-only SKU" failure mode that bit `gemini-3.5-flash` in the v2.1 → v2.2 window.
+
+### Removed
+
+- Inline `MODEL_PRICES` / `MODEL_ALIAS` declarations from per-vendor pricing files and the plugin's `constants.js`. All four are derived from the registry now.
+
+## [2.1.0] — 2026-05-29
+
+### Added
+
+- **Headless consumption** — Gryphon's LLM and permission-gate layers now work in non-Obsidian environments (Node CLIs, web companions, custom hosts). The `@gryphon/protect` and `@gryphon/provider-runtime` packages no longer require Obsidian at load time. *(No effect on the Obsidian plugin experience.)*
+
+- **Structured JSON output across all providers** — Provider calls can now request schema-validated JSON output. SDK providers (Claude, GPT, Gemini) use vendor-native grammar-constrained decode; CLI providers (Claude Code, Codex, Gemini CLI) use prompt-injected schema validation with configurable retry budget.
+
+- **Per-call USD budget cap** — Provider calls accept a `maxUsdBudget` ceiling; the provider aborts and surfaces a clear error when exceeded. SDK providers enforce mid-loop (between model turns); CLI providers enforce post-turn.
+
+- **Decision-audit hook** — Hosts can supply an `onDecision` callback to log every permission decision (timestamp, tool, redacted args summary, decision, reason). Audit-sink errors are isolated and never block the gate.
+
+- **New error types** — `BudgetExceededError`, `CliStructuredOutputError`, plus structured `code` fields on parse/coercion failures for programmatic error handling.
+
+### Changed
+
+- Internal architectural reorganization for cleaner LLM/security separation. No user-visible behaviour change for the Obsidian plugin.
+
+### Fixed
+
+- Settings "Test API key" for Gemini now uses Obsidian's request layer (avoids potential CORS surprises in some environments).
+
 ## [2.0.0] — 2026-05-19
 
 ### Added — context budget UX (the 2.0 arc)

@@ -18,15 +18,13 @@
 
 const { buildDenyReason } = require("./deny-copy");
 
-// Obsidian's Modal + Setting are loaded LAZILY (only when the modal is
-// actually rendered) so non-Obsidian consumers — and Node test runners
-// that haven't registered an `obsidian` stub — can `require("@gryphon/
-// protect")` for non-UI helpers (resolveVaultPath, classify, etc.) without
-// triggering an Obsidian-runtime resolve at module load. The stub-or-real
-// resolution happens inside _showPermissionModal where Modal is needed.
-function _loadObsidianUI() {
-  return require("obsidian");
-}
+// Obsidian's Modal + Setting are resolved lazily inside _showPermissionModal
+// (only when a modal is actually about to be rendered). This keeps the module
+// loadable in headless Node processes — hook scripts, tests, and any future
+// non-Obsidian consumer — without triggering an Obsidian-runtime resolve at
+// module load. The HostAdapter pattern (Task 0.5 / v2.1 Phase 0) is the
+// longer-term home for UI surface calls; the lazy inline require below is the
+// interim bridge until the plugin shell wires ObsidianHostAdapter in Task 0.6.
 
 // Per-session cache: filePath → "always" | "deny-always".
 // Lives on the plugin instance so it survives across tool calls within
@@ -278,7 +276,10 @@ function _showPermissionModal({
   categoryTitle = null,
   assistantName = "Claude",
 }) {
-  const { Modal, Setting } = _loadObsidianUI();
+  // require("obsidian") is safe here: _showPermissionModal is only called
+  // from checkPermission when ctx.plugin.app is present (Obsidian is running).
+  // eslint-disable-next-line import/no-extraneous-dependencies
+  const { Modal, Setting } = require("obsidian");
   return new Promise((resolve) => {
     const modal = new Modal(app);
 

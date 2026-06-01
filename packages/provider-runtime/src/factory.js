@@ -53,10 +53,15 @@
 const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
 
 /**
- * @param {object} plugin     — the GryphonPlugin instance (we read settings)
- * @param {string} cwd        — vault root for the provider
- * @param {object} options    — per-turn options:
- *   { model, effort, permissionMode, resumeSessionId, extraArgs, ... }
+ * @param {object} pluginOrBag  — either:
+ *   (a) Legacy positional form: the GryphonPlugin instance (we read settings).
+ *       Second and third args are `cwd` and `options` respectively.
+ *   (b) Headless options-bag form (new): plain object with shape:
+ *         { kind, config, cwd?, options?, hostAdapter? }
+ *       Detection: if pluginOrBag.kind is a string and pluginOrBag.settings
+ *       is absent, we treat it as the bag form.
+ * @param {string} [cwd]        — (legacy form) vault root for the provider
+ * @param {object} [options={}] — (legacy form) per-turn options
  *
  *   `claudePath` is read from settings, NOT from options — it's a
  *   provider-selection input, not a per-turn override.
@@ -65,7 +70,17 @@ const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
  *                              provider can be constructed (caller shows
  *                              setup guidance).
  */
-function createProvider(plugin, cwd, options = {}) {
+function createProvider(pluginOrBag, cwd, options = {}) {
+  // Detect headless options-bag form: { kind, config, cwd?, options?, hostAdapter? }
+  // Positive discriminant: real Obsidian plugin instances never have a `.kind`
+  // string property, so this single check is unambiguous and removes the
+  // previous `settings === undefined` footgun (a test stub like
+  // `{ settings: undefined, ... }` would have routed into the bag path,
+  // missed `.kind`, and silently returned null).
+  if (typeof pluginOrBag.kind === "string") {
+    return _createProviderFromBag(pluginOrBag);
+  }
+  const plugin = pluginOrBag;
   const settings = plugin.settings || {};
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
   const claudePath = settings.claudePath || _detectClaudeBinary();
@@ -83,6 +98,12 @@ function createProvider(plugin, cwd, options = {}) {
   // extraArgsByProvider['codex-cli'] = ['--allowedTools'] still gets
   // dropped. The filter is a safety net regardless of which bucket the
   // flag came from. SDK providers ignore extraArgs entirely.
+  // hostAdapter: callers may supply one via options (Task 0.6 will pass
+  // ObsidianHostAdapter here). If absent, default to HeadlessHostAdapter so
+  // the provider is always adapter-safe regardless of whether we're in
+  // Obsidian or a headless test environment.
+  const hostAdapter = options.hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
+
   const enrich = (kind) => {
     const legacy = Array.isArray(options.extraArgs) ? options.extraArgs : [];
     const perKind =
@@ -91,6 +112,7 @@ function createProvider(plugin, cwd, options = {}) {
       ...options,
       extraArgs: [...legacy, ...perKind],
       plugin,
+      hostAdapter,
     };
   };
 
@@ -162,6 +184,58 @@ function createProvider(plugin, cwd, options = {}) {
   if (googleKey) {
     const { GoogleProvider } = require("./providers/google-api/google-api");
     return new GoogleProvider(googleKey, cwd, enrich("google-api"));
+  }
+  return null;
+}
+
+/**
+ * Headless options-bag path for createProvider.
+ * Accepts { kind, config, cwd?, options?, hostAdapter? }.
+ * `kind` must be one of the six provider IDs.
+ * `config` is passed as options to the concrete constructor.
+ * `hostAdapter` defaults to HeadlessHostAdapter when absent.
+ */
+function _createProviderFromBag(bag) {
+  const kind = bag.kind;
+  const config = bag.config || {};
+  const cwd = bag.cwd || "";
+  const baseOptions = bag.options || {};
+  const { HeadlessHostAdapter } = require("./host-adapter");
+  const hostAdapter = bag.hostAdapter || new HeadlessHostAdapter();
+  const opts = { ...config, ...baseOptions, hostAdapter };
+
+  if (kind === "anthropic-api") {
+    if (!opts.apiKey) return null;
+    const { AnthropicAPIProvider } = require("./providers/anthropic-api/anthropic-api");
+    return new AnthropicAPIProvider(opts.apiKey, cwd, opts);
+  }
+  if (kind === "openai-api") {
+    if (!opts.apiKey) return null;
+    const { OpenAIProvider } = require("./providers/openai-api/openai-api");
+    return new OpenAIProvider(opts.apiKey, cwd, opts);
+  }
+  if (kind === "google-api") {
+    if (!opts.apiKey) return null;
+    const { GoogleProvider } = require("./providers/google-api/google-api");
+    return new GoogleProvider(opts.apiKey, cwd, opts);
+  }
+  if (kind === "claude-code") {
+    const claudePath = opts.claudePath || _detectClaudeBinary();
+    if (!claudePath) return null;
+    const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
+    return new ClaudeCodeProvider(claudePath, cwd, opts);
+  }
+  if (kind === "codex-cli") {
+    const codexPath = opts.codexPath || _detectCodexBinary();
+    if (!codexPath) return null;
+    const { CodexProvider } = require("./providers/codex-cli/codex-cli");
+    return new CodexProvider(codexPath, cwd, opts);
+  }
+  if (kind === "gemini-cli") {
+    const geminiPath = opts.geminiPath || _detectGeminiBinary();
+    if (!geminiPath) return null;
+    const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
+    return new GeminiCliProvider(geminiPath, cwd, opts);
   }
   return null;
 }

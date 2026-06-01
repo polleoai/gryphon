@@ -68,6 +68,8 @@ class GoogleProvider {
     this.apiKey = apiKey;
     this.cwd = cwd;
     this.options = options;
+    this.hostAdapter = options.hostAdapter ||
+      new (require("../../host-adapter").HeadlessHostAdapter)();
 
     // Test seam: callers may inject a mock client. Otherwise construct
     // the real Gemini SDK client. The API surface used here is
@@ -133,7 +135,10 @@ class GoogleProvider {
    * `historyCheckpoint` — the second send's user message could be truncated
    * by the first send's error rollback. Inherited from openai-api / anthropic-api.
    */
-  async send(prompt) {
+  async send(prompt, options = {}) {
+    if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
+      throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
+    }
     if (this.pending) {
       this.abort();
     }
@@ -162,6 +167,31 @@ class GoogleProvider {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
+    };
+
+    // L6 structured output: pass the schema into ctx so the tool loop
+    // can inject it as generationConfig.responseSchema + responseMimeType.
+    // Google enforces the schema grammar-side; the model cannot return
+    // malformed JSON when responseSchema is set.
+    //
+    // ctx.responseSchemaName mirrors ctx.coercionTool.name (Anthropic) and
+    // ctx.responseFormat.json_schema.name (OpenAI) — stored for diagnostic
+    // parity so any future error/log path has a hookable schema name.
+    // The Gemini SDK itself does not use the name field.
+    if (options && options.structuredOutput) {
+      ctx.responseSchema = options.structuredOutput.schema;
+      ctx.responseSchemaName = options.structuredOutput.name;
+    }
+
+    // L5 per-call budget cap: thread maxUsdBudget and the per-call cost
+    // helper into ctx so the tool-loop can check it mid-loop after each
+    // model response. SDK providers throw mid-loop; CLI providers throw
+    // post-turn (subprocess owns mid-stream).
+    ctx.maxUsdBudget = options && typeof options.maxUsdBudget === "number" ? options.maxUsdBudget : null;
+    ctx.priorCumulativeCost = this.cumulativeCost;
+    ctx.computeIterationCost = (usage) => {
+      const { cost } = computeCost(usage, this.resolvedModel);
+      return cost;
     };
 
     try {
@@ -225,14 +255,33 @@ class GoogleProvider {
       const peak = peakUsage || totalUsage;
       this.contextTokens = (peak && peak.promptTokenCount) || 0;
 
+      const rawText = turnText || _extractFinalText(finalMessage) || "";
       const result = {
-        text: turnText || _extractFinalText(finalMessage) || "",
+        text: rawText,
         cost: turnCost,
         cumulativeCost: this.cumulativeCost,
         sessionId: this.sessionId,
         duration: Date.now() - turnStart,
         contextTokens: this.contextTokens,
       };
+
+      // L6 structured output: parse the model's JSON response when
+      // ctx.responseSchema was set. Google enforces the schema grammar-side
+      // when responseSchema is in generationConfig, but we defensively wrap
+      // the parse so a malformed response doesn't crash the turn.
+      if (ctx.responseSchema) {
+        try {
+          result.json = JSON.parse(rawText);
+          result.text = JSON.stringify(result.json);
+        } catch (parseErr) {
+          const err = new Error(`structuredOutput: failed to parse model output as JSON: ${parseErr.message}`);
+          err.code = "STRUCTURED_OUTPUT_PARSE_FAILED";
+          err.cause = parseErr;
+          err.lastOutput = rawText;
+          if (this.onError) this.onError(err.message);
+          throw err;
+        }
+      }
 
       if (this.onDone) this.onDone(result);
       return result;

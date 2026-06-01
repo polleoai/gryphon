@@ -77,12 +77,22 @@ async function runGeminiToolLoop({
     // Gemini's `contents` is the full chat history; system instruction lives
     // separately in `config.systemInstruction`. History items are role
     // "user" or "model" (NOT "assistant" — that's OpenAI).
+    const generationConfig = {};
+    // L6 structured output: inject responseSchema + responseMimeType when set.
+    // ctx.responseSchema is only present when the caller passed
+    // { structuredOutput: { name, schema } } to send(). Google enforces the
+    // JSON schema grammar-side, so the model cannot return malformed JSON.
+    if (ctx && ctx.responseSchema) {
+      generationConfig.responseMimeType = "application/json";
+      generationConfig.responseSchema = ctx.responseSchema;
+    }
     const stream = await client.models.generateContentStream({
       model,
       contents: history,
       config: {
         systemInstruction: systemPrompt || undefined,
         tools: toolsConfig,
+        ...generationConfig,
       },
     });
     if (callbacks.onStream) callbacks.onStream(stream);
@@ -137,6 +147,38 @@ async function runGeminiToolLoop({
       priorTurnText = priorTurnText
         ? `${priorTurnText}\n\n${iterationText}`
         : iterationText;
+    }
+
+    // L5 per-call budget cap: check mid-loop after each model response.
+    // SDK providers throw here; CLI providers can only check post-turn
+    // (subprocess owns its internal loop; cannot abort mid-stream).
+    // Drop the `&& lastUsage` precondition so the cap can't be silently
+    // skipped on a streaming iteration without usageMetadata. If lastUsage
+    // is missing, treat the iteration cost as 0 (warn via hostAdapter) so
+    // subsequent iterations still fire the cap reactively.
+    if (ctx && ctx.maxUsdBudget !== null && ctx.maxUsdBudget !== undefined && ctx.computeIterationCost) {
+      let iterCost = 0;
+      try {
+        iterCost = ctx.computeIterationCost(lastUsage || {});
+      } catch (e) {
+        // unmeasurable; warn but treat as 0 to keep cap reactive on subsequent turns
+        if (ctx.hostAdapter && ctx.hostAdapter.notify) {
+          try {
+            ctx.hostAdapter.notify(`[gryphon] iteration cost unmeasurable: ${e.message}`, { level: "warn" });
+          } catch (_) { /* notify must not block */ }
+        }
+      }
+      if (!ctx._loopCost) ctx._loopCost = 0;
+      ctx._loopCost += iterCost;
+      const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
+      if (callCumulative >= ctx.maxUsdBudget) {
+        const { BudgetExceededError } = require("../../budget-error");
+        throw new BudgetExceededError({
+          budget: ctx.maxUsdBudget,
+          spent: callCumulative,
+          lastTurnCost: iterCost,
+        });
+      }
     }
 
     // Append the model's turn to history so subsequent iterations + future

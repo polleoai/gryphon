@@ -414,7 +414,7 @@ class GryphonSettingTab extends PluginSettingTab {
               (this.plugin.settings.googleApiKey || "").trim() ||
               process.env.GOOGLE_API_KEY ||
               "";
-            const { ok, message } = await testGoogleApiKey(key);
+            const { ok, message } = await testGoogleApiKey(key, this.plugin.hostAdapter);
             btn.setDisabled(false).setButtonText("Test key");
             if (googleKeyStatusEl) {
               googleKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
@@ -1647,6 +1647,12 @@ class GryphonPlugin extends Plugin {
         );
       } catch (_) { /* obsidian unavailable in tests */ }
     }
+
+    // Single shared HostAdapter instance for the entire plugin session.
+    // Passed to createProvider() and createProtectionContext() so runtime/
+    // protect internals stay headless and never require("obsidian") directly.
+    const { ObsidianHostAdapter } = require("./obsidian-host-adapter");
+    this.hostAdapter = new ObsidianHostAdapter();
 
     this.skillRegistry = new SkillRegistry(this.app);
     // Init asynchronously — folder seeding + scan. The view consults the

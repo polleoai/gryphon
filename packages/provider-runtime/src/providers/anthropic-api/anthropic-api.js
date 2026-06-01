@@ -11,59 +11,27 @@
  * (settings field → ANTHROPIC_API_KEY env) is the factory's job, not ours.
  *
  * Cost calculation: SDK reports token usage; we multiply by a per-model
- * price table to estimate per-turn cost. Price table is approximate and
- * lives in MODEL_PRICES below — keep in sync with Anthropic's pricing
- * page when it changes.
+ * price table to estimate per-turn cost. The price table lives in the
+ * canonical registry at `packages/provider-config/src/registry.js` — update
+ * that file when Anthropic's pricing changes, and run
+ * `scripts/probe-model.sh anthropic <id>` for any newly-added model id.
  */
 
 const Anthropic = require("@anthropic-ai/sdk").default;
 const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop");
 const { getToolSchemas } = require("./tools/tool-registry");
 
-// USD per million tokens. Update when Anthropic's pricing changes.
-// Cache write defaults to 1.25× input (5min ephemeral); cache read is
-// 0.1× input. We don't request 1h cache writes anywhere yet.
-const MODEL_PRICES = {
-  "claude-haiku-4-5":  { input: 0.80,  output: 4.00 },
-  "claude-sonnet-4-6": { input: 3.00,  output: 15.00 },
-  "claude-opus-4-6":   { input: 15.00, output: 75.00 },
-  "claude-opus-4-7":   { input: 15.00, output: 75.00 },
-  // Fallback for unknown model IDs — assume Sonnet pricing
-  "_default":          { input: 3.00,  output: 15.00 },
-};
-
-// Back-compat: callers from earlier Gryphon versions may still pass the
-// old aliases (`haiku`/`sonnet`/`opus`/`opus[1m]`) even though the
-// settings migration in plugin.js rewrites them to concrete IDs on load.
-// We keep alias resolution here so any in-flight call from a pre-migration
-// chat view still maps to a working model. New code should pass concrete
-// IDs directly.
-const MODEL_ALIAS = {
-  "haiku":     "claude-haiku-4-5",
-  "sonnet":    "claude-sonnet-4-6",
-  "opus":      "claude-opus-4-7",
-  "opus[1m]":  "claude-opus-4-7",
-};
-
-function resolveModel(alias) {
-  return MODEL_ALIAS[alias] || alias || "claude-sonnet-4-6";
-}
-
-function priceFor(modelId) {
-  return MODEL_PRICES[modelId] || MODEL_PRICES._default;
-}
-
-function computeCost(usage, modelId) {
-  if (!usage) return 0;
-  const p = priceFor(modelId);
-  const inputTokens =
-    (usage.input_tokens || 0) +
-    (usage.cache_creation_input_tokens || 0) * 1.25 +  // write premium
-    (usage.cache_read_input_tokens || 0) * 0.1;        // read discount
-  const outputTokens = usage.output_tokens || 0;
-  return (inputTokens / 1_000_000) * p.input +
-         (outputTokens / 1_000_000) * p.output;
-}
+// Pricing + alias resolution lives in @gryphon/provider-config (v2.2).
+// We import the helpers and re-export the names this module's consumers
+// rely on (notably `resolveModel`, which the factory imports).
+const {
+  MODEL_PRICES,
+  MODEL_ALIAS,
+  DEFAULT_MODEL,
+  resolveModel,
+  priceFor,
+  computeCost,
+} = require("@gryphon/provider-config").pricing.anthropic;
 
 class AnthropicAPIProvider {
   constructor(apiKey, cwd, options = {}) {
@@ -73,6 +41,8 @@ class AnthropicAPIProvider {
     this.apiKey = apiKey;
     this.cwd = cwd;  // unused in Phase 2 — relevant once tools land
     this.options = options;
+    this.hostAdapter = options.hostAdapter ||
+      new (require("../../host-adapter").HeadlessHostAdapter)();
 
     // dangerouslyAllowBrowser: required because Obsidian's renderer process
     // exposes the `window` global, which the SDK treats as "browser-like"
@@ -199,12 +169,12 @@ class AnthropicAPIProvider {
     }
   }
 
-  // Anthropic API mode: cost is computed locally from token usage × MODEL_PRICES.
-  // The price table in this file may drift from Anthropic's published
-  // pricing between Gryphon releases, and cache discounts are estimated
-  // (we assume 5-min ephemeral cache: 1.25× write, 0.10× read). UI labels
-  // SDK costs as "(est.)" so users know to check console.anthropic.com
-  // for authoritative billing.
+  // Anthropic API mode: cost is computed locally from token usage × pricing
+  // imported from @gryphon/provider-config.pricing.anthropic (derived from
+  // the canonical registry). Prices may drift between Gryphon releases, and
+  // cache discounts are estimated (we assume 5-min ephemeral cache: 1.25×
+  // write, 0.10× read). UI labels SDK costs as "(est.)" so users know to
+  // check console.anthropic.com for authoritative billing.
   get costIsEstimate() { return true; }
 
   abort() {
@@ -221,7 +191,10 @@ class AnthropicAPIProvider {
     this.destroyed = true;
   }
 
-  async send(prompt) {
+  async send(prompt, options = {}) {
+    if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
+      throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
+    }
     if (this.pending) {
       // Caller started a new turn before previous resolved — abort old.
       this.abort();
@@ -252,7 +225,28 @@ class AnthropicAPIProvider {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
+      hostAdapter: this.hostAdapter,
     };
+    // L5 per-call budget cap: thread maxUsdBudget and the per-call cost
+    // helper into ctx so the tool-loop can check it mid-loop after each
+    // model response. priorCumulativeCost is what has been spent before
+    // this send() call so the loop can compute a per-call running total.
+    ctx.maxUsdBudget = options && typeof options.maxUsdBudget === "number" ? options.maxUsdBudget : null;
+    ctx.priorCumulativeCost = this.cumulativeCost;
+    ctx.computeIterationCost = (usage) => computeCost(usage, this.resolvedModel);
+
+    // L6 structured output: tool-use coercion. Declare a single forced tool
+    // whose input_schema is the caller's schema. The model must call it — which
+    // gives us grammar-constrained JSON output. The coercion tool is NOT
+    // dispatched to Gryphon's tool registry; it is purely an output channel.
+    if (options && options.structuredOutput) {
+      ctx.coercionTool = {
+        name: options.structuredOutput.name,
+        description: "Return the structured response.",
+        input_schema: options.structuredOutput.schema,
+      };
+      ctx.toolChoice = { type: "tool", name: options.structuredOutput.name };
+    }
 
     try {
       const { turnText, finalMessage, totalUsage, peakUsage, thinkingBlocks } = await runToolLoop({
@@ -335,6 +329,31 @@ class AnthropicAPIProvider {
         thinking: Array.isArray(thinkingBlocks) && thinkingBlocks.length > 0
           ? thinkingBlocks : undefined,
       };
+
+      // L6 structured output: extract coercion tool_use block's input.
+      // When ctx.coercionTool is set, the loop skips dispatch on the
+      // matching tool_use block (it is purely an output channel). The
+      // block's `input` is already-parsed JSON — assign it to result.json
+      // and serialize result.text for consumer consistency.
+      if (ctx.coercionTool && finalMessage && Array.isArray(finalMessage.content)) {
+        const coercionBlock = finalMessage.content.find(
+          (b) => b && b.type === "tool_use" && b.name === ctx.coercionTool.name,
+        );
+        if (coercionBlock) {
+          result.json = coercionBlock.input;
+          result.text = JSON.stringify(coercionBlock.input);
+        } else {
+          // The model was forced via tool_choice but returned stop_reason
+          // without invoking the coercion tool — surface a clear error so
+          // callers get an actionable code rather than result.json === undefined.
+          const err = new Error(
+            `structuredOutput: Anthropic returned stop_reason "${finalMessage.stop_reason}" ` +
+            `without invoking the forced "${ctx.coercionTool.name}" tool — coercion failed.`,
+          );
+          err.code = "STRUCTURED_OUTPUT_COERCION_FAILED";
+          throw err;
+        }
+      }
 
       if (this.onDone) this.onDone(result);
       return result;

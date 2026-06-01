@@ -33,9 +33,26 @@
  *     }
  *
  * Required methods:
- *   send(prompt: string): Promise<Result>
+ *   send(prompt: string, options?: SendOptions): Promise<Result>
  *   abort(): void                 — cancel in-flight turn
  *   isAlive(): boolean            — is a request currently active or pending?
+ *
+ * SendOptions:
+ *   structuredOutput?: { name: string, schema: object }
+ *     When set, the provider enforces the JSON schema vendor-side and returns:
+ *       result.json — parsed, schema-validated object
+ *       result.text — JSON.stringify(result.json)
+ *     Enforcement mechanism per provider:
+ *       - openai-api:    response_format: { type: "json_schema", strict: true }
+ *       - anthropic-api: tool-use coercion (forced tool whose input_schema is
+ *                        the caller's schema). Throws Error with code
+ *                        "STRUCTURED_OUTPUT_COERCION_FAILED" if the model
+ *                        returns end_turn instead of invoking the forced tool.
+ *       - google-api:    generationConfig.responseSchema
+ *     CLI providers (claude-code, codex-cli, gemini-cli) support structuredOutput
+ *     via L6.1 prompt-injection + parse + validate + retry. options.structuredOutput.maxRetries
+ *     defaults to 3. Throws CliStructuredOutputError with reason:"budget-exhausted"
+ *     after maxRetries failed attempts.
  *
  * Required properties (read by chat-view for UI):
  *   sessionId:      string|null   — current session identifier (for resume)

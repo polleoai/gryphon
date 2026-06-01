@@ -54,10 +54,10 @@ test("_migrateSettings rewrites old alias to concrete ID", () => {
   assert.equal(stub.settings.model, "claude-sonnet-4-6");
 });
 
-test("_migrateSettings rewrites opus[1m] to claude-opus-4-7 (preserves intent)", () => {
+test("_migrateSettings rewrites opus[1m] to claude-opus-4-8 (preserves intent)", () => {
   const stub = { settings: { model: "opus[1m]" } };
   GryphonPlugin.prototype._migrateSettings.call(stub, {});
-  assert.equal(stub.settings.model, "claude-opus-4-7");
+  assert.equal(stub.settings.model, "claude-opus-4-8");
 });
 
 test("_migrateSettings is idempotent on already-concrete model IDs", () => {

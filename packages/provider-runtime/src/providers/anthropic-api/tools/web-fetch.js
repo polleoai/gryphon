@@ -22,22 +22,18 @@
  */
 
 const dns = require("dns").promises;
-// Use Obsidian's requestUrl. The global `fetch` in the renderer is
-// Chromium's browser fetch (CORS-restricted for arbitrary URLs), and
-// undici doesn't survive Obsidian's renderer context — its internal
-// calls to setTimeout(..).unref() fail because renderer timers are
-// browser-style (a number, not a Node Timeout). requestUrl runs in
-// Obsidian's main process and bypasses both problems, at the cost of
-// losing the undici Agent's connect-pinning SSRF defense. We compensate
-// by pre-resolving DNS ourselves and rejecting private addresses before
-// the request goes out — the TTL=0 rebinding window remains a known
-// gap and is documented as such.
+// Network requests are routed through ctx.hostAdapter.fetch(url, opts)
+// (supplied at execute() time from the provider that owns the tool loop).
+// In Obsidian, ObsidianHostAdapter.fetch wraps requestUrl — requestUrl
+// runs in Obsidian's main process and bypasses the renderer's
+// CORS-restricted browser fetch. In headless / test contexts,
+// HeadlessHostAdapter.fetch wraps globalThis.fetch.
 //
-// The require is wrapped so that unit tests (which import this file for
-// its pure helpers like `_isPrivateHost`) can still load the module in
-// a plain Node context where `obsidian` isn't resolvable.
-let requestUrl;
-try { ({ requestUrl } = require("obsidian")); } catch (_) { /* test context */ }
+// Response shape: ObsidianHostAdapter returns the requestUrl shape
+// ({ status, text (string), json, arrayBuffer, headers }).
+// HeadlessHostAdapter returns standard fetch Response (async .text()/.json()).
+// The body-extraction code below handles both: it checks `typeof
+// response.text === "string"` first (Obsidian) then falls back.
 
 const SCHEMA = {
   name: "WebFetch",
@@ -142,11 +138,11 @@ async function execute(input, ctx) {
     setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
+  const hostAdapter = ctx.hostAdapter;
   let response;
   try {
     response = await Promise.race([
-      requestUrl({
-        url,
+      hostAdapter.fetch(url, {
         method: "GET",
         headers: BROWSER_HEADERS,
         // throw:false → return even non-2xx responses so we can surface

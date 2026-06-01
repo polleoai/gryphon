@@ -7,6 +7,7 @@
 // non-Obsidian hosts, and the future engine/content packaging story.
 
 const extraArgsFilter = require("./extra-args-filter");
+const anthropicPricing = require("./pricing/anthropic");
 const openaiPricing = require("./pricing/openai");
 const googlePricing = require("./pricing/google");
 
@@ -26,7 +27,12 @@ module.exports = {
 
   // Pricing namespaces (cost tables + getModelDropdownOptions per vendor)
   pricing: {
+    anthropic: anthropicPricing,
     openai: openaiPricing,
     google: googlePricing,
   },
+
+  // Canonical registry — single source of truth for models, pricing,
+  // context windows, cold-start budgets, and alias resolution.
+  registry: require("./registry"),
 };

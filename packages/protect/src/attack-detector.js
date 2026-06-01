@@ -31,9 +31,17 @@ const { checkPermission } = require("./permission-gate");
  * get a Notice / console warning on every classify call. First time
  * we see a bad pattern → warn loudly; subsequent classifies silently
  * skip it. Reset on plugin reload (module cache clears).
+ *
+ * @param {string}      pattern     — the offending regex string
+ * @param {Error}       err         — compile error
+ * @param {object|null} hostAdapter — optional duck-type {notify(msg, opts?)}
+ *   supplied by the plugin shell (Task 0.6). When present, the warning is
+ *   surfaced as an Obsidian toast via hostAdapter.notify; when absent (headless
+ *   callers, hook scripts, tests), console.error is the only output — callers
+ *   that don't pass hostAdapter have opted out of UI notifications.
  */
 const _warnedBadPatterns = new Set();
-function _warnInvalidPatternOnce(pattern, err) {
+function _warnInvalidPatternOnce(pattern, err, hostAdapter) {
   if (_warnedBadPatterns.has(pattern)) return;
   _warnedBadPatterns.add(pattern);
   const msg =
@@ -41,11 +49,11 @@ function _warnInvalidPatternOnce(pattern, err) {
     `(${(err && err.message) || err}). That rule is NOT enforcing — ` +
     `fix it in Settings → Gryphon → Protected commands or Protected file paths.`;
   try { console.error("[gryphon/classifier]", msg); } catch (_) {}
-  try {
-    // Obsidian Notice may not exist in tests / headless — guard.
-    const { Notice } = require("obsidian");
-    new Notice(msg, 15000);
-  } catch (_) { /* not running under Obsidian — console is enough */ }
+  if (hostAdapter && typeof hostAdapter.notify === "function") {
+    hostAdapter.notify(msg, { level: "warn", timeoutMs: 15000 });
+  }
+  // else: silently drop UI notification — a headless caller that doesn't pass
+  // hostAdapter has opted out of UI toasts; console.error above is sufficient.
 }
 
 /**
@@ -140,7 +148,12 @@ const TOOL_ALIASES = {
 
 function classify(tool, input, ctx) {
   if (!tool || !input) return null;
-  const settings = (ctx && ctx.plugin && ctx.plugin.settings) || {};
+  // Prefer ctx.settings (explicit headless form) over ctx.plugin.settings
+  // (legacy form). Either route works; both paths construct the same ctx
+  // shape elsewhere.
+  const settings = (ctx && ctx.settings)
+    || (ctx && ctx.plugin && ctx.plugin.settings)
+    || {};
 
   // Normalize provider-specific tool names to the Claude-Code vocabulary
   // the per-tool branches below understand. Unknown names pass through
@@ -260,7 +273,7 @@ function _classifyCommand(tool, input, ctx, settings) {
       // via a one-time-per-pattern warning so they can fix it in
       // Settings. Classifier still skips this rule (can't match with
       // an un-compilable regex) but every OTHER rule still runs.
-      _warnInvalidPatternOnce(def.pattern, compileErr);
+      _warnInvalidPatternOnce(def.pattern, compileErr, ctx && ctx.hostAdapter);
       continue;
     }
     if (re.test(command)) {

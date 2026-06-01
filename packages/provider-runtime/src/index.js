@@ -14,11 +14,12 @@
 
 const factory = require("./factory");
 const utils = require("./utils");
+const { BudgetExceededError } = require("./budget-error");
+const { CliStructuredOutputError } = require("./cli-structured-output");
 
-// Pricing tables — currently live under their respective provider dirs
-// because they were colocated with the provider implementation. Stage 4
-// (provider-config extraction) re-routes these to the config layer; for
-// now they ride along with runtime.
+// Pricing tables live in @gryphon/provider-config (centralized in v2.2's
+// registry refactor). Re-exported here for back-compat with callers that
+// import via `@gryphon/provider-runtime`.pricing.
 const openaiPricing = require("@gryphon/provider-config").pricing.openai;
 const googlePricing = require("@gryphon/provider-config").pricing.google;
 
@@ -41,9 +42,15 @@ module.exports = {
   displayPath: utils.displayPath,
   utils,
 
-  // Pricing namespaces (Stage 4 will move these to provider-config)
+  // Pricing namespaces — re-exported from @gryphon/provider-config for back-compat.
+  // All three vendors are available; anthropic is listed first alphabetically.
   pricing: {
+    anthropic: require("@gryphon/provider-config").pricing.anthropic,
     openai: openaiPricing,
     google: googlePricing,
   },
+
+  // Error classes — consumers can instanceof-check against these.
+  BudgetExceededError,
+  CliStructuredOutputError,
 };

@@ -105,6 +105,15 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     allowBash: true,    // Phase 5: Bash (always prompts in default mode)
   });
 
+  // L6 structured output: inject the coercion tool when the caller set
+  // ctx.coercionTool. The tool lives in ctx (not in the tool registry) so
+  // it is invisible to executeTool() — the dispatch guard below uses this
+  // to detect and skip it, treating its tool_use block as output only.
+  const coercionToolName = ctx && ctx.coercionTool ? ctx.coercionTool.name : null;
+  const allTools = coercionToolName
+    ? [...tools, ctx.coercionTool]
+    : tools;
+
   const totalUsage = {
     input_tokens: 0,
     output_tokens: 0,
@@ -146,13 +155,19 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
   while (iterations < MAX_ITERATIONS) {
     iterations++;
 
-    const stream = client.messages.stream({
+    const streamParams = {
       model,
       max_tokens: 8192,
       system: GRYPHON_SDK_SYSTEM_PROMPT,
-      tools: tools.length > 0 ? tools : undefined,
+      tools: allTools.length > 0 ? allTools : undefined,
       messages: history,
-    });
+    };
+    // L6 structured output: force the model to call the coercion tool.
+    // ctx.toolChoice is only present when the caller passed structuredOutput.
+    if (ctx && ctx.toolChoice) {
+      streamParams.tool_choice = ctx.toolChoice;
+    }
+    const stream = client.messages.stream(streamParams);
     if (callbacks.onStream) callbacks.onStream(stream);
 
     // `iterationText` collects the current iteration's deltas. The bubble
@@ -207,6 +222,25 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
         : iterationText;
     }
 
+    // L5 per-call budget cap: check after each model response. Cost is
+    // accumulated inside the loop (per iteration) and compared against
+    // the consumer-supplied maxUsdBudget. SDK providers throw mid-loop;
+    // CLI providers can only check post-turn (subprocess owns mid-stream).
+    if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+      const iterCost = ctx.computeIterationCost(u);
+      if (!ctx._loopCost) ctx._loopCost = 0;
+      ctx._loopCost += iterCost;
+      const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
+      if (callCumulative >= ctx.maxUsdBudget) {
+        const { BudgetExceededError } = require("../../budget-error");
+        throw new BudgetExceededError({
+          budget: ctx.maxUsdBudget,
+          spent: callCumulative,
+          lastTurnCost: iterCost,
+        });
+      }
+    }
+
     // Append assistant turn to history (always — tool_use or end_turn)
     history.push({ role: "assistant", content: finalMessage.content });
 
@@ -223,8 +257,21 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
       return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
     }
 
+    // L6 structured output: if ALL tool_use blocks are the coercion tool,
+    // return immediately — the block's input IS the result; we must not
+    // dispatch it to the tool registry or feed a tool_result back to the
+    // model (that would trigger another iteration). The provider-level
+    // send() extracts the block.input from finalMessage.content.
+    if (coercionToolName && toolUseBlocks.every((b) => b.name === coercionToolName)) {
+      return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
+    }
+
     const toolResults = [];
     for (const block of toolUseBlocks) {
+      // L6: skip the coercion tool if it appears alongside real tool calls
+      // (defensive — caller shouldn't mix both, but guard anyway).
+      if (coercionToolName && block.name === coercionToolName) continue;
+
       if (callbacks.onTool) callbacks.onTool(block.name);
       const result = await executeTool(block.name, block.input, ctx);
       toolResults.push({
