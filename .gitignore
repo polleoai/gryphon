@@ -21,3 +21,7 @@ packages/*/dist/
 # System / editor
 .DS_Store
 
+
+# TypeScript build output
+dist/
+packages/*/dist/

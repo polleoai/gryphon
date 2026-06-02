@@ -1,0 +1,22 @@
+{
+  // Shared compiler settings. Per-package tsconfig extends this.
+  // esbuild does the JS transpile/bundle; tsc is used ONLY for
+  // typechecking (--noEmit) and for emitting .d.ts at publish time.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "lib": ["ES2022", "DOM"],
+    "strict": false,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "allowJs": true,
+    "checkJs": false,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "moduleDetection": "force",
+    "declaration": false,
+    "sourceMap": false
+  }
+}

@@ -1,6 +1,6 @@
 {
   "name": "obsidian-gryphon",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Bring AI to your vault — with guardrails at runtime. (npm workspace root)",
   "main": "main.js",
   "private": true,
@@ -23,9 +23,17 @@
     "packages/*"
   ],
   "scripts": {
+    "prebuild": "npm run build:dist -w @gryphon/protect && npm run build:dist -w @gryphon/provider-config && npm run build:dist -w @gryphon/provider-runtime && npm run build:dist -w @gryphon/plugin",
     "build": "npm run build -w @gryphon/plugin",
     "dev": "npm run dev -w @gryphon/plugin",
     "test": "npm test --workspaces --if-present",
+    "typecheck": "tsc -p packages/protect && tsc -p packages/provider-config && tsc -p packages/provider-runtime && tsc -p packages/plugin",
     "build:install": "npm run build && echo 'Built. Copy main.js + manifest.json + styles.css into your vault .obsidian/plugins/gryphon/ to install.'"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "obsidian": "^1.13.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.9.3"
   }
 }

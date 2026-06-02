@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.3.0] — 2026-06-01
+
+### Changed
+
+- **Internal: source migrated to TypeScript** (no runtime or behaviour change). All four packages (`provider-runtime`, `provider-config`, `protect`, `plugin`) are now TypeScript; the three library packages compile under `strict`. The build is unchanged (esbuild still emits `main.js`; hook scripts still ship as plain Node `.js`), and the library packages now also emit `.d.ts` declarations so downstream consumers get full type-checking. See `docs/adr/0008-typescript-migration.md`.
+
 ## [2.2.0] — 2026-05-30
 
 ### Changed
