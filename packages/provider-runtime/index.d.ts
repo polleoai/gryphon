@@ -53,6 +53,13 @@ export declare const pricing: {
   google: any;
 };
 
+// ── subprocess lifecycle (registry) ───────────────────────────────────
+/** Reap every CLI child process tree the runtime spawned. Call from the host's shutdown path (Obsidian onunload). Idempotent; never throws. Returns the number of trees signalled. */
+export declare function killAllSubprocesses(signal?: NodeJS.Signals): number;
+/** Number of currently-tracked (presumed-live) CLI children. Diagnostics. */
+export declare function liveSubprocessCount(): number;
+export declare const subprocessRegistry: any;
+
 // ── error types thrown by send() ──────────────────────────────────────
 export declare class BudgetExceededError extends Error {
   constructor(...args: any[]);

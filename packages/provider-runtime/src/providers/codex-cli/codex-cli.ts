@@ -28,7 +28,7 @@
  *   { type: "turn.completed", usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }
  */
 
-const { spawn } = require("child_process");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath } = require("../../utils");
 const {
   computeCost,
@@ -391,6 +391,15 @@ class CodexProvider {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
+    // R7 cancellation: route a consumer AbortSignal to abort() so the child
+    // process tree is reaped promptly. abort() is idempotent and tree-kills.
+    // Opt-in — existing callers that pass no signal are unaffected.
+    if (options && options.signal) {
+      if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
+      if (typeof options.signal.addEventListener === "function") {
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+      }
+    }
     // L6.1 — structured-output retry budget for CLI providers.
     // When structuredOutput is set, wrap _spawnTurn in inject + parse +
     // validate + retry up to maxRetries (default 3). On exhaustion throw
@@ -529,7 +538,7 @@ class CodexProvider {
       // abort it — chat-view's supersede semantics expect the new turn
       // to take over cleanly.
       if (this.alive && this.process) {
-        try { this.process.kill("SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch {}
         if (this._currentReject) {
           const r = this._currentReject;
           this._currentReject = null;
@@ -631,7 +640,7 @@ class CodexProvider {
 
       let proc;
       try {
-        proc = spawn(spawnCommand, spawnArgs, spawnOpts);
+        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
       } catch (err) {
         if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
         reject(err);
@@ -779,7 +788,7 @@ class CodexProvider {
   _handleStaleSession() {
     // Kill the failed exec (if still running).
     if (this.process) {
-      try { this.process.kill("SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch {}
       this.process = null;
     }
     this.alive = false;
@@ -905,7 +914,7 @@ class CodexProvider {
 
     let proc;
     try {
-      proc = spawn(spawnCommand, spawnArgs, spawnOpts);
+      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
     } catch (err) {
       if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
       const reject = this._currentReject;
@@ -1060,9 +1069,11 @@ class CodexProvider {
 
   abort() {
     if (this.process) {
-      try { this.process.kill("SIGTERM"); } catch {}
       const proc = this.process;
-      setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+      // Tree-kill: codex's child tree (incl. any MCP grandchildren) — not
+      // just the direct pid. SIGKILL the group after 5s if still alive.
+      try { killProcessTree(proc, "SIGTERM"); } catch {}
+      setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
     this.alive = false;

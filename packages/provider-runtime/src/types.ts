@@ -16,6 +16,7 @@ export interface StructuredOutputRequest {
 export interface SendOptions {
   structuredOutput?: StructuredOutputRequest;
   maxUsdBudget?: number;   // hard per-call cost cap → throws BudgetExceededError
+  signal?: AbortSignal;    // CLI providers: abort() (tree-kills the child) when the signal fires
 }
 
 export interface Result {

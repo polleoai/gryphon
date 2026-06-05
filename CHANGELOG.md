@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.3.1] — 2026-06-05
+
+### Fixed
+
+- **CLI subprocesses no longer leak.** When chatting through a locally-installed CLI (Claude Code, Codex, or Gemini), Gryphon now owns the full lifecycle of every process it starts: each is tracked, its **entire process tree** (including any MCP servers the CLI launches) is terminated when the request ends or is cancelled, and nothing survives the plugin being disabled or Obsidian quitting. Previously a finished or cancelled request could leave the CLI process — and its child processes — running indefinitely, accumulating one per message over a long session.
+
 ## [2.3.0] — 2026-06-01
 
 ### Changed

@@ -1847,6 +1847,25 @@ class GryphonPlugin extends Plugin {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (leaf.view.claudeProcess) leaf.view.claudeProcess.abort();
     }
+    // Belt-and-suspenders (R4): flush the subprocess registry so any CLI
+    // child tree the runtime spawned — including one whose provider
+    // reference was dropped (provider swap, closed view) before we could
+    // abort() it — is reaped. Without this, a leaked `claude` + its MCP
+    // grandchildren would orphan on plugin unload / Obsidian quit.
+    try {
+      const { killAllSubprocesses } = require("@gryphon/provider-runtime");
+      if (typeof killAllSubprocesses === "function") {
+        killAllSubprocesses("SIGTERM");
+        // Escalate: a tree that ignores SIGTERM (a wedged MCP grandchild)
+        // must not survive unload. The registry deregisters children that
+        // already exited and killProcessTree skips exited pids, so this
+        // SIGKILL sweep only hits genuine survivors. Disabling the plugin
+        // does not tear down the renderer, so the timer still fires.
+        setTimeout(() => {
+          try { killAllSubprocesses("SIGKILL"); } catch (_) { /* best-effort */ }
+        }, 2000);
+      }
+    } catch (_) { /* best-effort — never block unload */ }
     if (this.skillRegistry) this.skillRegistry.unload();
     // Close IPC server last so any in-flight hook request from a CC
     // process we just aborted gets a clean connection drop rather than

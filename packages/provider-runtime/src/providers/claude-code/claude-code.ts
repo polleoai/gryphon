@@ -10,7 +10,7 @@
  * callers can supply plugin-specific flags without modifying this module.
  */
 
-const { spawn } = require("child_process");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -562,7 +562,10 @@ class ClaudeCodeProvider {
       resumeSessionId: this.options.resumeSessionId || null,
       hookSettingsFile: hookSettingsFile,
     };
-    const proc = spawn(spawnCommand, spawnArgs, spawnOpts);
+    // managedSpawn: detached process group on POSIX so killProcessTree can
+    // reap the whole tree (claude + its MCP-server grandchildren), tracked
+    // in the subprocess registry for guaranteed cleanup on unload / exit.
+    const proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "claude-code" });
     this.process = proc;
     this.alive = true;
     this.buffer = "";
@@ -584,6 +587,16 @@ class ClaudeCodeProvider {
   send(prompt: any, options: any) {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
+    }
+    // R7 cancellation: when the consumer passes an AbortSignal, route it to
+    // abort() so the child process tree is reaped promptly rather than left
+    // to run to completion. abort() is idempotent and tree-kills. Opt-in —
+    // existing callers that pass no signal are unaffected.
+    if (options && options.signal) {
+      if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
+      if (typeof options.signal.addEventListener === "function") {
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+      }
     }
     // L6.1 — structured-output retry budget for CLI providers.
     // When structuredOutput is set, wrap _doOneTurn in inject + parse +
@@ -736,7 +749,7 @@ class ClaudeCodeProvider {
       this.pendingResolve = null;
       this.pendingReject = null;
       if (this.process) {
-        try { this.process.kill("SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch {}
         this.process = null;
       }
       this.alive = false;
@@ -792,7 +805,7 @@ class ClaudeCodeProvider {
 
     // Tear down the failed process.
     if (this.process) {
-      try { this.process.kill("SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch {}
       this.process = null;
     }
     this.alive = false;
@@ -1179,9 +1192,12 @@ class ClaudeCodeProvider {
   abort() {
     if (this.process) {
       try { this.process.stdin.end(); } catch {}
-      this.process.kill("SIGTERM");
+      // Tree-kill: take down claude AND its MCP-server grandchildren, not
+      // just the direct pid. SIGTERM first, SIGKILL the group after 5s if
+      // it's still alive.
       const proc = this.process;
-      setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+      killProcessTree(proc, "SIGTERM");
+      setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
     this.alive = false;

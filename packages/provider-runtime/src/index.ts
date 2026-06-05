@@ -14,6 +14,7 @@
 
 const factory = require("./factory");
 const utils = require("./utils");
+const subprocessRegistry = require("./subprocess-registry");
 const { BudgetExceededError } = require("./budget-error");
 const { CliStructuredOutputError } = require("./cli-structured-output");
 
@@ -49,6 +50,13 @@ module.exports = {
     openai: openaiPricing,
     google: googlePricing,
   },
+
+  // Subprocess lifecycle — the host (Obsidian onunload, or any embedder's
+  // shutdown path) calls killAllSubprocesses() to reap every CLI child tree
+  // the runtime spawned. See subprocess-registry.ts for the full contract.
+  killAllSubprocesses: subprocessRegistry.killAll,
+  liveSubprocessCount: subprocessRegistry.liveCount,
+  subprocessRegistry,
 
   // Error classes — consumers can instanceof-check against these.
   BudgetExceededError,

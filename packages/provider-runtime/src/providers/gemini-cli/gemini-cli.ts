@@ -28,7 +28,7 @@
  *   { type: "result",      timestamp, status, stats: { input_tokens, output_tokens, total_tokens, cached, duration_ms, ... } }
  */
 
-const { spawn } = require("child_process");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath } = require("../../utils");
 const {
   computeCost,
@@ -338,6 +338,15 @@ class GeminiCliProvider {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
+    // R7 cancellation: route a consumer AbortSignal to abort() so the child
+    // process tree is reaped promptly. abort() is idempotent and tree-kills.
+    // Opt-in — existing callers that pass no signal are unaffected.
+    if (options && options.signal) {
+      if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
+      if (typeof options.signal.addEventListener === "function") {
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+      }
+    }
     // L6.1 — structured-output retry budget for CLI providers.
     // When structuredOutput is set, wrap _spawnTurn in inject + parse +
     // validate + retry up to maxRetries (default 3). On exhaustion throw
@@ -474,7 +483,7 @@ class GeminiCliProvider {
     return new Promise((resolve, reject) => {
       // Supersede an in-flight turn — same shape as CodexProvider.
       if (this.alive && this.process) {
-        try { this.process.kill("SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch {}
         if (this._currentReject) {
           const r = this._currentReject;
           this._currentReject = null;
@@ -573,7 +582,7 @@ class GeminiCliProvider {
 
       let proc;
       try {
-        proc = spawn(spawnCommand, spawnArgs, spawnOpts);
+        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" });
       } catch (err) {
         if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
         reject(err);
@@ -890,7 +899,7 @@ class GeminiCliProvider {
    */
   _handleStaleSession() {
     if (this.process) {
-      try { this.process.kill("SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch {}
       this.process = null;
     }
     this.alive = false;
@@ -988,7 +997,7 @@ class GeminiCliProvider {
 
     let proc;
     try {
-      proc = spawn(spawnCommand, spawnArgs, spawnOpts);
+      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" });
     } catch (err) {
       if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
       const reject = this._currentReject;
@@ -1021,9 +1030,11 @@ class GeminiCliProvider {
 
   abort() {
     if (this.process) {
-      try { this.process.kill("SIGTERM"); } catch {}
       const proc = this.process;
-      setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+      // Tree-kill: gemini's child tree (incl. any MCP grandchildren) — not
+      // just the direct pid. SIGKILL the group after 5s if still alive.
+      try { killProcessTree(proc, "SIGTERM"); } catch {}
+      setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
     this.alive = false;
