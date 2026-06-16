@@ -1,6 +1,6 @@
 {
   "name": "@gryphon/provider-runtime",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "description": "LLM provider runtime for Gryphon: provider abstraction, factory, six provider implementations (Claude/Codex/Gemini CLIs + Anthropic/OpenAI/Google APIs), tool loops, streaming + abort + retry.",
   "private": true,
   "license": "MIT",
@@ -21,7 +21,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build:dist": "tsc -p tsconfig.build.json",
+    "build:dist": "tsc -p tsconfig.build.json && node scripts/copy-passive-shim.cjs",
     "test": "node --import tsx --test tests/*.test.ts"
   },
   "dependencies": {

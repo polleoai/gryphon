@@ -15,6 +15,7 @@
 const factory = require("./factory");
 const utils = require("./utils");
 const subprocessRegistry = require("./subprocess-registry");
+const passive = require("./passive");
 const { BudgetExceededError } = require("./budget-error");
 const { CliStructuredOutputError } = require("./cli-structured-output");
 
@@ -57,6 +58,11 @@ module.exports = {
   killAllSubprocesses: subprocessRegistry.killAll,
   liveSubprocessCount: subprocessRegistry.liveCount,
   subprocessRegistry,
+
+  // Passive-backend mode — claude as a structured LLM backend (Anthropic
+  // Messages-API content blocks) for callers that own tool execution.
+  // See src/passive/README.md.
+  createPassiveSession: passive.createPassiveSession,
 
   // Error classes — consumers can instanceof-check against these.
   BudgetExceededError,

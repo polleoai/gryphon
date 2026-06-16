@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.4.0] — 2026-06-15
+
+### Added
+
+- **`createPassiveSession` — programmatic provider-backend API.** A new headless entry point in the provider runtime lets external, non-Obsidian tools embed Gryphon's CLI-backed model access as a structured backend: the model returns structured tool calls (Anthropic Messages-API content blocks) for the host application to execute and feed results back, instead of running them itself. Programmatic/headless only — no change to the Obsidian plugin, the chat experience, or existing `createProvider` callers.
+
 ## [2.3.1] — 2026-06-05
 
 ### Fixed
