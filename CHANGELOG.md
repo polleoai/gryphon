@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.4.2] — 2026-06-17
+
+### Changed
+
+- **Code-quality compliance for the Obsidian community-plugin review.** Element styling now uses CSS classes / `setCssStyles` instead of direct inline `style` assignments, and the redundant "Gryphon Settings" title was removed from the top of the settings tab (Obsidian already displays the plugin name there). No behaviour change — this clears the blocking findings from the community review's source-code check.
+
 ## [2.4.1] — 2026-06-16
 
 ### Fixed

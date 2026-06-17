@@ -1062,7 +1062,7 @@ class GryphonChatView extends ItemView {
     // The core view does not populate suggestions; extending plugins override
     // `_updateAutocomplete` if they want to offer completions.
     this.autocompleteEl = container.createDiv("gryphon-autocomplete");
-    this.autocompleteEl.style.display = "none";
+    this.autocompleteEl.setCssStyles({ display: "none" });
     this.autocompleteIdx = -1;
     // First mousemove inside the dropdown means the user has switched
     // from keyboard nav to mouse — drop the kbnav class so :hover
@@ -1172,8 +1172,8 @@ class GryphonChatView extends ItemView {
     });
 
     this.inputEl.addEventListener("input", () => {
-      this.inputEl.style.height = "auto";
-      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+      this.inputEl.setCssStyles({ height: "auto" });
+      this.inputEl.setCssStyles({ height: Math.min(this.inputEl.scrollHeight, 150) + "px" });
       // Any keystroke that changes the text exits history-navigation
       // mode — prevents the next ArrowUp from continuing through history
       // when the user's started composing a new message.
@@ -1255,14 +1255,16 @@ class GryphonChatView extends ItemView {
       "letterSpacing", "wordSpacing", "textTransform", "tabSize", "lineHeight",
     ];
     for (const p of props) mirror.style[p] = cs[p];
-    mirror.style.position = "absolute";
-    mirror.style.visibility = "hidden";
-    mirror.style.whiteSpace = "pre-wrap";
-    mirror.style.wordWrap = "break-word";
-    mirror.style.overflow = "hidden";
-    mirror.style.height = "auto";
-    mirror.style.left = "-9999px";
-    mirror.style.top = "0";
+    (mirror as unknown as { setCssStyles(styles: Partial<CSSStyleDeclaration>): void }).setCssStyles({
+      position: "absolute",
+      visibility: "hidden",
+      whiteSpace: "pre-wrap",
+      wordWrap: "break-word",
+      overflow: "hidden",
+      height: "auto",
+      left: "-9999px",
+      top: "0",
+    });
     mirror.style.width = el.clientWidth + "px";
     const caretPos = el.selectionEnd;
     mirror.textContent = el.value.substring(0, caretPos);
@@ -2288,7 +2290,7 @@ class GryphonChatView extends ItemView {
     // _clearQueuedPrompts's recovery restore.
     if (this.inputEl) {
       this.inputEl.value = "";
-      this.inputEl.style.height = "auto";
+      this.inputEl.setCssStyles({ height: "auto" });
     }
     this.messagesEl.empty();
     // v1.7.0 — clear the persisted token count too so the "Used" chip
@@ -2515,9 +2517,7 @@ class GryphonChatView extends ItemView {
     if (!lastBubble) return;
 
     const controls = this.messagesEl.createDiv("gryphon-compact-controls");
-    controls.style.display = "flex";
-    controls.style.gap = "8px";
-    controls.style.padding = "8px 0";
+    controls.setCssStyles({ display: "flex", gap: "8px", padding: "8px 0" });
 
     const commitBtn = controls.createEl("button", { text: "Commit compaction" });
     const cancelBtn = controls.createEl("button", { text: "Cancel" });
@@ -2886,7 +2886,7 @@ class GryphonChatView extends ItemView {
     modal.titleEl.setText("Send feedback");
 
     const note = modal.contentEl.createEl("p");
-    note.style.marginBottom = "0.8em";
+    note.setCssStyles({ marginBottom: "0.8em" });
     note.setText(
       "Gryphon never auto-sends — every option opens a draft you review " +
       "first. Conversation content is NOT included unless you paste it " +
@@ -2895,11 +2895,13 @@ class GryphonChatView extends ItemView {
     );
 
     const diagBox = modal.contentEl.createEl("pre");
-    diagBox.style.fontSize = "0.85em";
-    diagBox.style.padding = "0.5em";
-    diagBox.style.background = "var(--background-secondary)";
-    diagBox.style.borderRadius = "4px";
-    diagBox.style.marginBottom = "1em";
+    diagBox.setCssStyles({
+      fontSize: "0.85em",
+      padding: "0.5em",
+      background: "var(--background-secondary)",
+      borderRadius: "4px",
+      marginBottom: "1em",
+    });
     diagBox.setText(this._buildFeedbackDiagText());
 
     new Setting(modal.contentEl)
@@ -3036,9 +3038,7 @@ class GryphonChatView extends ItemView {
           escapeVaultPath(vaultPath), "memory",
         );
         const hintEl = modal.contentEl.createEl("div");
-        hintEl.style.fontSize = "0.85em";
-        hintEl.style.color = "var(--text-muted)";
-        hintEl.style.marginTop = "0.6em";
+        hintEl.setCssStyles({ fontSize: "0.85em", color: "var(--text-muted)", marginTop: "0.6em" });
         hintEl.setText(`Looked for: ${expected}`);
       }
       modal.open();
@@ -3069,7 +3069,7 @@ class GryphonChatView extends ItemView {
           + `24 KB cap; the tail is being truncated at load time.`,
         cls: "gryphon-memory-warn",
       });
-      warn.style.color = "var(--color-yellow)";
+      warn.setCssStyles({ color: "var(--color-yellow)" });
     }
 
     if (candidates.length === 0) {
@@ -3166,7 +3166,7 @@ class GryphonChatView extends ItemView {
           // Notice exposes its DOM as `noticeEl`; clicks anywhere on the
           // toast reverse the archive batch within the 5-second window.
           if (n && n.noticeEl) {
-            n.noticeEl.style.cursor = "pointer";
+            n.noticeEl.setCssStyles({ cursor: "pointer" });
             n.noticeEl.addEventListener("click", () => {
               const restored = audit.unarchiveMemoryFiles(moved);
               const undoIndex = audit.updateMemoryIndex({
@@ -3357,8 +3357,8 @@ class GryphonChatView extends ItemView {
     // via up-arrow recall through `_pendingQueuedTexts`.
     if (oldestText && this.inputEl && !this.inputEl.value.trim()) {
       this.inputEl.value = oldestText;
-      this.inputEl.style.height = "auto";
-      this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+      this.inputEl.setCssStyles({ height: "auto" });
+      this.inputEl.setCssStyles({ height: Math.min(this.inputEl.scrollHeight, 150) + "px" });
       this.inputEl.selectionStart = this.inputEl.selectionEnd = oldestText.length;
     }
     if (queuedCount > 0) {
@@ -4110,8 +4110,8 @@ class GryphonChatView extends ItemView {
   _setInputFromHistory(text) {
     this.inputEl.value = text;
     // Auto-resize to fit recalled prompt (same logic as the input handler)
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+    this.inputEl.setCssStyles({ height: "auto" });
+    this.inputEl.setCssStyles({ height: Math.min(this.inputEl.scrollHeight, 150) + "px" });
     // Place cursor at end — standard terminal behavior
     this.inputEl.selectionStart = this.inputEl.selectionEnd = text.length;
     this.inputEl.focus();
@@ -5220,8 +5220,8 @@ class GryphonChatView extends ItemView {
     // Cursor at end so the user continues typing after the quote.
     this.inputEl.selectionStart = this.inputEl.selectionEnd = this.inputEl.value.length;
     // Grow textarea to fit.
-    this.inputEl.style.height = "auto";
-    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 150) + "px";
+    this.inputEl.setCssStyles({ height: "auto" });
+    this.inputEl.setCssStyles({ height: Math.min(this.inputEl.scrollHeight, 150) + "px" });
     this._flashStatus(`Inserted selection from ${noteName}`);
   }
 
@@ -5498,7 +5498,7 @@ class GryphonChatView extends ItemView {
     for (const m of matches) {
       this._createAcItem(this.autocompleteEl, m.cmd, m.desc);
     }
-    this.autocompleteEl.style.display = "block";
+    this.autocompleteEl.setCssStyles({ display: "block" });
     this.autocompleteIdx = -1;
   }
 
@@ -5544,7 +5544,7 @@ class GryphonChatView extends ItemView {
 
   _hideAutocomplete() {
     if (this.autocompleteEl) {
-      this.autocompleteEl.style.display = "none";
+      this.autocompleteEl.setCssStyles({ display: "none" });
       this.autocompleteIdx = -1;
       // Fresh state for the next open — mouse vs keyboard detection
       // starts over rather than inheriting the prior mode.
@@ -5630,10 +5630,10 @@ class GryphonChatView extends ItemView {
 
     // Hide autocomplete and clear input up front so slash commands (which
     // can run during streaming, e.g. /stop) don't leak the typed text.
-    this.autocompleteEl.style.display = "none";
+    this.autocompleteEl.setCssStyles({ display: "none" });
     this.autocompleteIdx = -1;
     this.inputEl.value = "";
-    this.inputEl.style.height = "auto";
+    this.inputEl.setCssStyles({ height: "auto" });
 
     // Skill expansion — if text is /<name> [args] and <name> is a registered
     // skill, substitute the skill body for the input and continue as a

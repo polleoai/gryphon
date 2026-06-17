@@ -44,7 +44,6 @@ function stripFence(text: string): string {
   return m ? m[1] : text;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function parseAndValidate(text: string, schema: any): unknown {
   const cleaned = stripFence(text).trim();
   let parsed;
@@ -67,7 +66,6 @@ function parseAndValidate(text: string, schema: any): unknown {
 }
 
 // Minimal JSON Schema validator. See module header for scope.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function validate(value: unknown, schema: any, path: string): string[] {
   const errors = [];
   if (schema.enum && !schema.enum.includes(value)) {

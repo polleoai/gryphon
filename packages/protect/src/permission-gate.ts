@@ -303,7 +303,7 @@ function _showPermissionModal({
 }) {
   // require("obsidian") is safe here: _showPermissionModal is only called
   // from checkPermission when ctx.plugin.app is present (Obsidian is running).
-  // eslint-disable-next-line import/no-extraneous-dependencies
+  // eslint-disable-next-line import/no-extraneous-dependencies -- 'obsidian' is provided by the host app at runtime, not a bundled dependency
   const { Modal, Setting } = require("obsidian");
   return new Promise((resolve) => {
     const modal = new Modal(app);
@@ -370,12 +370,6 @@ function _showPermissionModal({
       const pre = modal.contentEl.createEl("pre", {
         cls: "gryphon-permission-detail",
       });
-      pre.style.maxHeight = "300px";
-      pre.style.overflow = "auto";
-      pre.style.fontSize = "12px";
-      pre.style.padding = "8px";
-      pre.style.background = "var(--background-secondary)";
-      pre.style.borderRadius = "4px";
       pre.setText(safeDetail);
     }
 

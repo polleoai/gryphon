@@ -881,6 +881,15 @@
   color: var(--text-normal);
 }
 
+.gryphon-permission-detail {
+  max-height: 300px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 8px;
+  background: var(--background-secondary);
+  border-radius: 4px;
+}
+
 /* ── Settings-tab section styling ──────────────────────────────────── */
 
 /* Section heading — h3 + optional info icon, same pattern across
@@ -894,7 +903,7 @@
   padding-bottom: 6px;
   border-bottom: 1px solid var(--background-modifier-border);
 }
-.gryphon-section-heading h3 {
+.gryphon-section-heading-label {
   margin: 0;
   font-size: 17px;
   font-weight: 600;

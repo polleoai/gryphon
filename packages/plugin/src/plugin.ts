@@ -142,7 +142,6 @@ class GryphonSettingTab extends PluginSettingTab {
     this.plugin._activeSettingTab = this;
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Gryphon Settings" });
 
     // Quick-start callout — surfaces the two setup paths up-front so
     // first-time users don't have to infer them from individual settings.
@@ -337,7 +336,7 @@ class GryphonSettingTab extends PluginSettingTab {
       )
       .then((setting) => {
         keyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        keyStatusEl.style.marginTop = "4px";
+        keyStatusEl.setCssStyles({ marginTop: "4px" });
       });
 
     // OpenAI + Google API keys (v1.2.0 — per ADR 0003). OpenAI adapter
@@ -385,7 +384,7 @@ class GryphonSettingTab extends PluginSettingTab {
       )
       .then((setting) => {
         openaiKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        openaiKeyStatusEl.style.marginTop = "4px";
+        openaiKeyStatusEl.setCssStyles({ marginTop: "4px" });
       });
 
     let googleKeyStatusEl = null;
@@ -429,7 +428,7 @@ class GryphonSettingTab extends PluginSettingTab {
       )
       .then((setting) => {
         googleKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        googleKeyStatusEl.style.marginTop = "4px";
+        googleKeyStatusEl.setCssStyles({ marginTop: "4px" });
       });
 
     // Codex CLI + Gemini CLI binary path settings (v1.3 — codex-cli /
@@ -482,7 +481,7 @@ class GryphonSettingTab extends PluginSettingTab {
       )
       .then((setting) => {
         codexStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        codexStatusEl.style.marginTop = "4px";
+        codexStatusEl.setCssStyles({ marginTop: "4px" });
       });
 
     let geminiCliStatusEl = null;
@@ -527,7 +526,7 @@ class GryphonSettingTab extends PluginSettingTab {
       )
       .then((setting) => {
         geminiCliStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        geminiCliStatusEl.style.marginTop = "4px";
+        geminiCliStatusEl.setCssStyles({ marginTop: "4px" });
       });
 
     this._descToTooltip(
@@ -730,8 +729,7 @@ class GryphonSettingTab extends PluginSettingTab {
       })
       .then((setting) => {
         timeoutStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
-        timeoutStatusEl.style.marginTop = "4px";
-        timeoutStatusEl.style.fontStyle = "italic";
+        timeoutStatusEl.setCssStyles({ marginTop: "4px", fontStyle: "italic" });
         // Initial render — show the current effective timeout from the
         // stored setting so the user sees their last-saved state.
         const stored = this.plugin.settings.connectionTimeoutMs;
@@ -1411,7 +1409,7 @@ class GryphonSettingTab extends PluginSettingTab {
     // Provider / Defaults / Diagnostics section headers.
     if (!toggleKey) {
       const wrap = parentEl.createEl("div", { cls: "gryphon-section-heading" });
-      wrap.createEl("h3", { text: title });
+      wrap.createEl("div", { text: title, cls: "gryphon-section-heading-label" });
       if (tooltip) {
         const info = wrap.createEl("span", {
           cls: "gryphon-info-icon",
@@ -2157,15 +2155,11 @@ class GryphonPlugin extends Plugin {
       const table = modal.contentEl.createEl("table", {
         cls: "gryphon-provenance-list",
       });
-      table.style.width = "100%";
-      table.style.fontSize = "12px";
-      table.style.borderCollapse = "collapse";
+      table.setCssStyles({ width: "100%", fontSize: "12px", borderCollapse: "collapse" });
       const head = table.createEl("tr");
       for (const h of ["Path", "Source", "Origin", "Tagged at"]) {
         const th = head.createEl("th", { text: h });
-        th.style.textAlign = "left";
-        th.style.padding = "4px 8px";
-        th.style.borderBottom = "1px solid var(--background-modifier-border)";
+        th.setCssStyles({ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--background-modifier-border)" });
       }
       for (const { path: p, metadata } of entries) {
         const tr = table.createEl("tr");
@@ -2177,9 +2171,7 @@ class GryphonPlugin extends Plugin {
         ];
         for (const text of cells) {
           const td = tr.createEl("td", { text: String(text) });
-          td.style.padding = "4px 8px";
-          td.style.verticalAlign = "top";
-          td.style.wordBreak = "break-all";
+          td.setCssStyles({ padding: "4px 8px", verticalAlign: "top", wordBreak: "break-all" });
         }
       }
     }

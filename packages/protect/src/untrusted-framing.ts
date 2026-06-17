@@ -103,7 +103,7 @@ function buildFraming({ tool, sourceDetail, injectionHits }: { tool?: string; so
  */
 function _clipSourceDetail(s: unknown): string {
   if (typeof s !== "string") return "";
-  // eslint-disable-next-line no-control-regex
+  // eslint-disable-next-line no-control-regex -- intentional: strips invisible/control characters exploited in prompt-injection
   const INV_CTRL_RE = /[\u0000-\u001f\u007f-\u009f\u00ad\u0600-\u0605\u061c\u06dd\u070f\u08e2\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff\ufff9-\ufffb]/g;
   const cleaned = s.replace(INV_CTRL_RE, " ").replace(/\s+/g, " ").trim();
   if (cleaned.length <= 120) return cleaned;
