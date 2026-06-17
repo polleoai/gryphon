@@ -762,7 +762,7 @@ const DEFAULT_SETTINGS = {
   // New default: "default" prompts on every edit and shell command.
   // Users who want the old frictionless behavior can switch to "Safe"
   // (acceptEdits — auto-accepts file edits, still prompts on bash) or
-  // "YOLO" (bypassPermissions — skips all prompts) in settings.
+  // "YOLO" (bypassPermissions — auto-accepts all, still prompts on protected ops) in settings.
   permissionMode: "default",
   // Default model for fresh installs — derived from registry's isDefault flag
   // to stay in sync with the canonical source of truth. The migration table
@@ -977,7 +977,7 @@ const EFFORTS = [
 const PERMS = [
   { value: "default",           label: "Prompt", desc: "Ask before every edit and command" },
   { value: "acceptEdits",       label: "Safe",   desc: "Auto-accept edits, still prompt on bash" },
-  { value: "bypassPermissions", label: "YOLO",   desc: "Skip all checks" },
+  { value: "bypassPermissions", label: "YOLO",   desc: "Auto-accept all, still ask on risky actions" },
   { value: "plan",              label: "Plan",   desc: "Propose only" },
 ];
 
