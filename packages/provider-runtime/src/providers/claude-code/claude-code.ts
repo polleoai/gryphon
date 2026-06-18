@@ -14,7 +14,7 @@ const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { buildEnhancedPath, findNodeBinary } = require("../../utils");
+const { buildEnhancedPath, findNodeBinary, resolveCliBinary } = require("../../utils");
 const { buildDisallowedTools } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
 const {
@@ -104,6 +104,9 @@ class ClaudeCodeProvider {
     // output alive. 4KB is enough for the usual CC stack trace / error
     // summary (typically 1-3 lines from CC's error path).
     this._stderrTail = "";
+    // Set by spawn() when the binary preflight fails; _doOneTurn rejects the
+    // turn promise with it instead of writing to a null process stdin.
+    this._lastSpawnError = null;
 
     this.onMessage = null;
     this.onError = null;
@@ -112,6 +115,31 @@ class ClaudeCodeProvider {
 
   spawn() {
     if (this.alive) return;
+    this._lastSpawnError = null;
+
+    // Preflight (R1/R4/R5): resolve to the NEWEST valid claude binary on disk,
+    // self-healing a stale/empty configured path — or fail fast with an
+    // actionable message instead of spawning an unresolved path and hanging to
+    // the connection timeout. Skipped under _spawnOverride (unit tests inject a
+    // fake spawn and never touch a real binary).
+    //
+    // On failure we record _lastSpawnError and return WITHOUT establishing a
+    // process; _doOneTurn checks `this.process` after calling spawn() and
+    // rejects the turn promise with this message (rather than writing to a
+    // null stdin). spawn() has no caller-visible return value, so the turn
+    // promise is the single clean surface for the error.
+    if (!this._spawnOverride) {
+      const resolved = resolveCliBinary("claude-code", this.claudePath);
+      if (!resolved.ok) {
+        this._lastSpawnError = new Error(
+          resolved.error === "too-old"
+            ? `Found ${resolved.detail}. Update the Claude CLI, or set a newer path in Settings → Gryphon → Claude CLI path.`
+            : "Claude CLI not found. Install it, or set the full path in Settings → Gryphon → Claude CLI path.",
+        );
+        return;
+      }
+      this.claudePath = resolved.path; // self-heal to the newest valid binary
+    }
 
     // v0.5.12: NO `-p` / `--print`. That flag makes CC exit after a
     // single result event; without it, CC stays alive in the stream-json
@@ -757,6 +785,17 @@ class ClaudeCodeProvider {
       reject(new Error("Superseded by new message"));
     }
 
+    // Preflight failure (R5): the initial spawn() above — or the supersede
+    // re-spawn — couldn't resolve a usable claude binary and left no process
+    // (e.g. the CLI was uninstalled/downgraded mid-session). Reject this turn
+    // cleanly with the actionable message instead of falling through to
+    // _writePrompt and dereferencing a null stdin (opaque TypeError) or hanging.
+    if (!this.process) {
+      return Promise.reject(
+        this._lastSpawnError || new Error("Claude CLI failed to start."),
+      );
+    }
+
     // Remember the prompt so we can re-send transparently if we hit
     // the "stale session" recovery path below.
     this._lastPrompt = prompt;
@@ -823,6 +862,15 @@ class ClaudeCodeProvider {
 
     // Respawn and re-send the pending prompt.
     this.spawn();
+    // Preflight failure (R5): the re-spawn couldn't resolve a usable binary
+    // (e.g. the CLI was uninstalled mid-session). Surface the actionable
+    // message rather than writing to a null stdin.
+    if (!this.process) {
+      if (this.pendingReject) {
+        this.pendingReject(this._lastSpawnError || new Error("Claude CLI failed to start."));
+      }
+      return;
+    }
     if (prompt) {
       this._writePrompt(prompt, (err: any) => {
         if (this.pendingReject) this.pendingReject(err);

@@ -24,6 +24,9 @@ let _nodeBinaryCache: string | null | undefined;
 let _codexBinaryCache: string | null | undefined;
 let _geminiBinaryCache: string | null | undefined;
 let _flatpakCache: { isFlatpak: boolean; appId: string | null } | null | undefined;
+// Absolute-path → parsed [major,minor,patch] (or null = probe failed). Keyed
+// by path so repeated resolution across providers pays one --version spawn.
+let _versionCache: Record<string, number[] | null> = {};
 
 function clearBinaryDiscoveryCache() {
   _claudeBinaryCache = undefined;
@@ -31,6 +34,104 @@ function clearBinaryDiscoveryCache() {
   _codexBinaryCache = undefined;
   _geminiBinaryCache = undefined;
   _flatpakCache = undefined;
+  _versionCache = {};
+}
+
+// Minimum CLI versions Gryphon's spawn protocol supports. Permissive
+// ("0.0.0" = accept any parseable version): newest-on-disk ranking already
+// fixes the stale-binary case, so the floor rejects nothing today. Raise a
+// floor only when a provider starts depending on a newer CLI capability —
+// in the same change that introduces the dependency.
+const MIN_CLAUDE_VERSION = "0.0.0";
+const MIN_CODEX_VERSION = "0.0.0";
+const MIN_GEMINI_VERSION = "0.0.0";
+
+// Parse the first dotted numeric version (2- or 3-part) out of arbitrary
+// CLI `--version` output. Returns [major, minor, patch] or null.
+//   "2.1.181 (Claude Code)" → [2,1,181] ; "codex 0.9" → [0,9,0]
+function parseVersion(raw: unknown): number[] | null {
+  if (typeof raw !== "string") return null;
+  const m = raw.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3] || 0)];
+}
+
+// Compare two [major,minor,patch] arrays; missing parts count as 0.
+// Negative if a < b, positive if a > b, 0 if equal.
+function compareVersions(a: number[], b: number[]): number {
+  for (let i = 0; i < 3; i++) {
+    const d = (a[i] || 0) - (b[i] || 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+}
+
+// Run `<binPath> --version` and return its raw stdout. Windows .cmd/.bat
+// shims need a shell. Factored out so probeVersion can be unit-tested with
+// an injected runner (no real spawns).
+// 1500ms bounds worst-case preflight latency (probes run serially) while
+// still tolerating a slow cold-start. A `--version` that takes longer than
+// this is itself a strong "discard this candidate" signal — real CLIs answer
+// in well under 200ms.
+const _VERSION_PROBE_TIMEOUT_MS = 1500;
+
+function _runVersion(binPath: string): string {
+  const isWinShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(binPath);
+  // Windows .cmd/.bat shims must run through a shell. Under shell:true Node
+  // builds an UNQUOTED command line ("<path> --version"), so a path with
+  // spaces (e.g. C:\Program Files\nodejs\claude.cmd — a default candidate)
+  // would fail; quote the path so cmd parses it as one token.
+  const file = isWinShim ? `"${binPath}"` : binPath;
+  return execFileSync(file, ["--version"], {
+    timeout: _VERSION_PROBE_TIMEOUT_MS,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    env: { ...process.env, PATH: buildEnhancedPath() },
+    shell: isWinShim,
+  });
+}
+
+// Probe a binary's version synchronously and cache by absolute path. Returns
+// [maj,min,patch] or null (missing / non-responding / garbage output). `run`
+// is injectable for tests; production uses the real execFileSync wrapper.
+function probeVersion(
+  binPath: string,
+  run: (p: string) => string = _runVersion,
+): number[] | null {
+  if (Object.prototype.hasOwnProperty.call(_versionCache, binPath)) {
+    return _versionCache[binPath];
+  }
+  let parsed: number[] | null = null;
+  try {
+    parsed = parseVersion(run(binPath));
+  } catch (e: any) {
+    // execFileSync throws on nonzero exit / timeout but attaches the captured
+    // streams; some CLIs print `--version` to stderr.
+    const tail =
+      (e && e.stdout && e.stdout.toString()) ||
+      (e && e.stderr && e.stderr.toString()) ||
+      "";
+    parsed = parseVersion(tail);
+  }
+  _versionCache[binPath] = parsed;
+  return parsed;
+}
+
+// From a list of existing executable paths, return the newest whose
+// `--version` parses and is >= floor, as { path, version }, or null.
+function _pickNewestValid(
+  present: string[],
+  minVersion: string,
+): { path: string; version: number[] } | null {
+  const floor = parseVersion(minVersion) || [0, 0, 0];
+  let best: { path: string; version: number[] } | null = null;
+  for (const p of present) {
+    const v = probeVersion(p);
+    if (!v) continue;                            // unparseable / dead → discard
+    if (compareVersions(v, floor) < 0) continue; // below floor → reject
+    if (!best || compareVersions(v, best.version) > 0) best = { path: p, version: v };
+  }
+  return best;
 }
 
 /**
@@ -53,6 +154,36 @@ function findClaudeBinary() {
   if (_claudeBinaryCache !== undefined) return _claudeBinaryCache;
   _claudeBinaryCache = _findClaudeBinaryUncached();
   return _claudeBinaryCache;
+}
+
+// Collect ALL existing executable candidates for a CLI: the explicit
+// location list, then the PATH scan (platform-correct extensions), then the
+// login-shell hit (unless Windows / Flatpak, same guards as before). Order
+// preserved, deduped. This is the input set to version-aware ranking — it
+// replaces the previous "return the first executable" short-circuit (R6).
+function _collectPresentBinaries(
+  candidates: (string | undefined)[],
+  binName: string,
+  isWindows: boolean,
+): string[] {
+  const present: string[] = [];
+  const seen = new Set<string>();
+  const add = (c: string | null | undefined) => {
+    if (!c || seen.has(c)) return;
+    try { fs.accessSync(c, fs.constants.X_OK); seen.add(c); present.push(c); } catch {}
+  };
+  for (const c of candidates) add(c);
+  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) add(path.join(dir, binName + ext));
+  }
+  // Login-shell fallback catches nvm / asdf / rbenv / custom prefixes the
+  // Obsidian process PATH misses. Skip in Flatpak (sandbox shell can't see
+  // host PATH) and on Windows (cmd/PowerShell don't source rc files; system
+  // PATH is already visible to Node).
+  if (!(isWindows || detectFlatpakSandbox()!.isFlatpak)) add(_findViaLoginShell(binName));
+  return present;
 }
 
 function _findClaudeBinaryUncached() {
@@ -83,29 +214,13 @@ function _findClaudeBinaryUncached() {
     "C:\\Program Files\\nodejs\\claude.cmd",
     "C:\\Program Files\\nodejs\\claude.exe",
   ];
-  for (const c of candidates) {
-    if (!c) continue;
-    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-  }
-  // PATH fallback. On Windows the binary name includes an extension
-  // (claude.cmd for npm shims, claude.exe for native builds); on POSIX
-  // it's bare. Iterate the right suffix list for the platform.
-  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const c = path.join(dir, "claude" + ext);
-      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-    }
-  }
-  // Final fallback: ask the user's login shell. Catches installations in
-  // nvm / asdf / rbenv / custom prefixes — anywhere the user's shell
-  // PATH exposes `claude` that Obsidian's own process doesn't see.
-  // Skip this in Flatpak (sandbox shell can't see host PATH) and on
-  // Windows (cmd/PowerShell don't source rc files the same way; the
-  // system PATH is already available to Node).
-  if (isWindows || detectFlatpakSandbox()!.isFlatpak) return null;
-  return _findViaLoginShell("claude");
+  // Version-aware: probe every present candidate's --version and return the
+  // NEWEST that satisfies the floor — not the first merely-executable one.
+  // A stale binary that exists (or sorts earlier) no longer shadows a current
+  // install elsewhere on the system (R2/R3).
+  const present = _collectPresentBinaries(candidates, "claude", isWindows);
+  const best = _pickNewestValid(present, MIN_CLAUDE_VERSION);
+  return best ? best.path : null;
 }
 
 /**
@@ -252,20 +367,11 @@ function _findCodexBinaryUncached() {
     "C:\\Program Files\\nodejs\\codex.cmd",
     "C:\\Program Files\\nodejs\\codex.exe",
   ];
-  for (const c of candidates) {
-    if (!c) continue;
-    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-  }
-  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const c = path.join(dir, "codex" + ext);
-      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-    }
-  }
-  if (isWindows || detectFlatpakSandbox()!.isFlatpak) return null;
-  return _findViaLoginShell("codex");
+  // Version-aware: newest valid install wins (R2/R3) — identical algorithm
+  // to findClaudeBinary; codex has the same stale-binary exposure.
+  const present = _collectPresentBinaries(candidates, "codex", isWindows);
+  const best = _pickNewestValid(present, MIN_CODEX_VERSION);
+  return best ? best.path : null;
 }
 
 /**
@@ -296,20 +402,11 @@ function _findGeminiBinaryUncached() {
     "C:\\Program Files\\nodejs\\gemini.cmd",
     "C:\\Program Files\\nodejs\\gemini.exe",
   ];
-  for (const c of candidates) {
-    if (!c) continue;
-    try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-  }
-  const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
-  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const c = path.join(dir, "gemini" + ext);
-      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
-    }
-  }
-  if (isWindows || detectFlatpakSandbox()!.isFlatpak) return null;
-  return _findViaLoginShell("gemini");
+  // Version-aware: newest valid install wins (R2/R3) — identical algorithm
+  // to findClaudeBinary; gemini has the same stale-binary exposure.
+  const present = _collectPresentBinaries(candidates, "gemini", isWindows);
+  const best = _pickNewestValid(present, MIN_GEMINI_VERSION);
+  return best ? best.path : null;
 }
 
 function buildEnhancedPath() {
@@ -373,6 +470,95 @@ function displayPath(p: unknown): unknown {
   return p;
 }
 
+type ResolveResult =
+  | { ok: true; path: string; version: number[] }
+  | { ok: false; error: "not-found" | "too-old"; detail: string };
+
+const _MIN_BY_KIND: Record<string, string> = {
+  "claude-code": MIN_CLAUDE_VERSION,
+  "codex-cli": MIN_CODEX_VERSION,
+  "gemini-cli": MIN_GEMINI_VERSION,
+};
+const _LABEL_BY_KIND: Record<string, string> = {
+  "claude-code": "claude",
+  "codex-cli": "codex",
+  "gemini-cli": "gemini",
+};
+
+// Dispatch detection through module.exports (not the local fn refs) so the
+// finder stays patchable at runtime — tests reassign utils.findClaudeBinary,
+// and this picks up the override. Same rationale factory.ts documents for
+// re-reading require("./utils").find* fresh on each call.
+function _detectFor(kind: string): string | null {
+  if (kind === "claude-code") return module.exports.findClaudeBinary();
+  if (kind === "codex-cli") return module.exports.findCodexBinary();
+  if (kind === "gemini-cli") return module.exports.findGeminiBinary();
+  return null;
+}
+
+/**
+ * Resolve a usable CLI binary for a provider kind — the spawn-preflight verb
+ * (R1/R4/R5/R7). Order:
+ *   1. An explicit, valid, version-OK configured path wins (R7 override).
+ *   2. Otherwise self-heal to the newest detected install (R4) — find*Binary
+ *      already ranks by version (R2/R3).
+ *   3. If nothing valid, return a typed failure the caller turns into a fast,
+ *      actionable message (R5): "too-old" when a present binary is below the
+ *      floor, else "not-found".
+ *
+ * Pure resolution: never spawns the model, only `--version` probes (cached).
+ */
+function resolveCliBinary(
+  kind: string,
+  configuredPath?: string,
+  minVersionOverride?: string,
+): ResolveResult {
+  // minVersionOverride lets a caller (or a test) impose a stricter floor than
+  // the permissive per-kind default; the default keeps the too-old gate dormant.
+  const min = minVersionOverride || _MIN_BY_KIND[kind] || "0.0.0";
+  const floor = parseVersion(min) || [0, 0, 0];
+  const label = _LABEL_BY_KIND[kind] || kind;
+
+  // R7: an explicit, valid, version-OK configured path wins outright.
+  if (typeof configuredPath === "string" && configuredPath) {
+    let executable = false;
+    try { fs.accessSync(configuredPath, fs.constants.X_OK); executable = true; } catch {}
+    if (executable) {
+      const v = probeVersion(configuredPath);
+      if (v && compareVersions(v, floor) >= 0) {
+        return { ok: true, path: configuredPath, version: v };
+      }
+      // configured exists but is too old / unparseable → fall through to
+      // detection (R4 self-heal); the too-old detail is reported below only
+      // if detection also turns up nothing.
+    }
+  }
+
+  // find*Binary ranks by the DEFAULT (permissive) floor, so re-validate the
+  // detected binary against the (possibly overridden) floor here.
+  const detected = _detectFor(kind);
+  if (detected) {
+    const v = probeVersion(detected) || [0, 0, 0];
+    if (compareVersions(v, floor) >= 0) {
+      return { ok: true, path: detected, version: v };
+    }
+    // detected but below the overridden floor → fall through to too-old.
+  }
+
+  // Nothing valid anywhere. Report too-old when a present binary (configured
+  // or detected) parses but sits below the floor; else not-found.
+  const cfgV = (typeof configuredPath === "string" && configuredPath) ? probeVersion(configuredPath) : null;
+  const detV = detected ? probeVersion(detected) : null;
+  const belowFloor =
+    (cfgV && compareVersions(cfgV, floor) < 0 && cfgV) ||
+    (detV && compareVersions(detV, floor) < 0 && detV) ||
+    null;
+  if (belowFloor) {
+    return { ok: false, error: "too-old", detail: `${label} v${belowFloor.join(".")} (< required v${min})` };
+  }
+  return { ok: false, error: "not-found", detail: label };
+}
+
 module.exports = {
   findClaudeBinary,
   findCodexBinary,
@@ -382,4 +568,12 @@ module.exports = {
   detectFlatpakSandbox,
   clearBinaryDiscoveryCache,
   displayPath,
+  // Version-aware resolution (v2.4.3)
+  parseVersion,
+  compareVersions,
+  probeVersion,
+  resolveCliBinary,
+  // Exported for unit tests (internal ranking primitives).
+  _pickNewestValid,
+  _collectPresentBinaries,
 };

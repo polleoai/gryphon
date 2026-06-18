@@ -29,7 +29,7 @@
  */
 
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
-const { buildEnhancedPath } = require("../../utils");
+const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const {
   computeCost,
   coerceToVendorModel,
@@ -531,6 +531,20 @@ class CodexProvider {
   _spawnTurn(prompt: any) {
     if (this._spawnOverride) {
       return this._spawnOverride(prompt);
+    }
+
+    // Preflight (R1/R4/R5): resolve to the newest valid codex binary, self-heal
+    // a stale/empty configured path, or fail fast with an actionable message
+    // rather than spawning an unresolved path and hanging to the timeout.
+    {
+      const resolved = resolveCliBinary("codex-cli", this.codexPath);
+      if (!resolved.ok) {
+        const msg = resolved.error === "too-old"
+          ? `Found ${resolved.detail}. Update the Codex CLI, or set a newer path in Settings → Gryphon → Codex CLI path.`
+          : "Codex CLI not found. Install it, or set the full path in Settings → Gryphon → Codex CLI path.";
+        return Promise.reject(new Error(msg));
+      }
+      this.codexPath = resolved.path; // self-heal to the newest valid binary
     }
 
     return new Promise((resolve, reject) => {

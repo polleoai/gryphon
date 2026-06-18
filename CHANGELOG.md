@@ -4,6 +4,13 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.4.3] — 2026-06-17
+
+### Fixed
+
+- **CLI providers now select the newest installed Claude / Codex / Gemini CLI automatically.** When more than one copy of a CLI is present on a system — for example a current install in your home directory plus an older one left behind by an earlier install method — Gryphon now checks every copy it can find and uses the newest working one, instead of whichever happened to be found first. This fixes a first-run hang where an outdated CLI elsewhere on the system was picked and never responded, surfacing only as a connection timeout. Detection also re-checks itself on startup, so the right CLI keeps being used after an update moves it.
+- **Faster, clearer failure when no usable CLI is found.** If the selected provider's command-line tool can't be located, Gryphon now reports an actionable message right away (install it, or set the path in Settings → Gryphon) instead of waiting out the full connection timeout.
+
 ## [2.4.2] — 2026-06-17
 
 ### Changed
