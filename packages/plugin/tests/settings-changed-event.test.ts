@@ -241,6 +241,10 @@ test("Round 4 SFH-2: chat-view warns on unknown extraProcessArgsByProvider keys"
     const stubPlugin = {
       manifest: { version: "1.4.x-test" },
       settings: { model: "sonnet" },
+      // Valid host: provide the required contract method so the #3
+      // construction-time check doesn't add an unrelated console.error
+      // to the count this test asserts on.
+      saveSettings: async () => {},
     };
     new GryphonChatView(stubLeaf, stubPlugin, {
       extraProcessArgsByProvider: {
