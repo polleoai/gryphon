@@ -724,10 +724,42 @@ class GryphonChatView extends ItemView {
   constructor(leaf: any, plugin: any, options: GryphonChatViewOptions = {}) {
     super(leaf);
     this.plugin = plugin;
+    // Issue #3 — host-plugin embedding contract. GryphonChatView calls a
+    // set of methods on `this.plugin`. Surface a missing REQUIRED method
+    // loudly at construction rather than letting it throw deep inside a
+    // later UI path (where it's far harder to trace to the real cause).
+    //   REQUIRED (no safe default — the view cannot function without them):
+    //     • settings            — the plugin's settings object (read throughout)
+    //     • saveSettings()      — persists settings + fires gryphon:settings-changed
+    //   OPTIONAL (typeof-guarded at each call site; absence degrades gracefully):
+    //     • ensureIpcListening(ms)            — Claude Code guardrail IPC; absent ⇒ treated offline
+    //     • _resetActiveSessions()            — imperative cross-view reset; absent ⇒ this view self-refreshes
+    //     • _announceProviderChange(a,b)      — provider-switch notice; absent ⇒ skipped
+    //     • _resetRestApiCounter()            — REST-API GET counter reset; absent ⇒ skipped
+    //     • _vaultRoot()                      — vault base path for context sources; absent ⇒ null
+    //     • getProjectionCalibrationDelta()   — context-projection calibration; absent ⇒ 0
+    //     • recordProjectionCalibrationSample(d) — calibration feedback; absent ⇒ skipped
+    for (const m of ["saveSettings"]) {
+      if (!plugin || typeof plugin[m] !== "function") {
+        console.error(
+          `[gryphon] embedding host plugin is missing required method ${m}() — ` +
+          `GryphonChatView cannot function correctly. See the host-plugin contract ` +
+          `in the GryphonChatView constructor.`,
+        );
+      }
+    }
     this.messages = [];
     this.isStreaming = false;
     this.streamingText = "";
     this.claudeProcess = null;
+    // Spawn-time identity of the live provider, captured on each
+    // createProvider (sendMessage). Shape: { kind, model, effort,
+    // permissionMode }. Used to detect when a spawn-time setting changed
+    // out from under a live subprocess so the `gryphon:settings-changed`
+    // listener can tear it down — the embedding-consumer contract that
+    // lets embedding plugins switch provider/model mid-session without
+    // re-implementing _resetActiveSessions(). Null when no process is live.
+    this._providerSpawnSignature = null;
     this.cumulativeCost = 0;
     // One-shot flag set when the just-finalized assistant turn
     // contained the canonical Gryphon protected-deny marker. The
@@ -1208,6 +1240,26 @@ class GryphonChatView extends ItemView {
     if (this.app && this.app.workspace && typeof this.app.workspace.on === "function") {
       this.registerEvent(
         this.app.workspace.on("gryphon:settings-changed", () => {
+          // Subprocess ownership lives behind this event.
+          // A consumer that changes a spawn-time setting through its own
+          // settings tab fires gryphon:settings-changed but never calls
+          // Gryphon's imperative _resetActiveSessions(). Tear the live
+          // process down here when its spawn-time identity no longer
+          // matches settings, so switching Claude → Codex/Gemini (or the
+          // model) mid-session actually takes effect on the next message
+          // instead of silently reusing the old provider. Runs FIRST so
+          // the UI refresh below reflects the torn-down state — but is
+          // isolated in try/catch: the signature resolve calls
+          // getActiveProviderKind (consumer-facing surface), and a throw
+          // there must NOT suppress the must-run UI refresh that issue #40
+          // wired this listener for. Same isolate-and-continue pattern as
+          // saveSettings()'s trigger wrapper and the _refreshContextProjection
+          // catch two lines down.
+          try {
+            this._teardownLiveProcessIfSettingsChanged();
+          } catch (e) {
+            console.error("[gryphon] provider teardown on settings-change threw:", e);
+          }
           this.refreshToolbarLabels();
           this._updateRestApiChip();
           // F1 (v1.7.0) — model change flips the window denominator
@@ -1226,6 +1278,83 @@ class GryphonChatView extends ItemView {
           this._refreshContextProjection().catch(() => {});
         }),
       );
+    }
+  }
+
+  /**
+   * Compute the spawn-time identity that the next createProvider would use,
+   * from the current plugin settings. Resolved provider kind goes through
+   * getActiveProviderKind so "auto" + only-an-OpenAI-key compares as the
+   * concrete kind createProvider would pick (not the literal "auto").
+   *
+   * Shape mirrors the four spawn-time settings: provider kind, model,
+   * effort, permissionMode. Values are the RAW settings values (not the
+   * provider's coerced/resolved forms) so the stamp captured at spawn and
+   * the value computed later compare like-for-like.
+   *
+   * @returns {{kind: string, model: any, effort: any, permissionMode: any}}
+   */
+  _computeProviderSignature() {
+    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+    const s = (this.plugin && this.plugin.settings) || {};
+    return {
+      // Resolve the kind exactly as the spawn path does (getActiveProviderKind
+      // || providerPreference — the same chain used by modelButtonTitle), so
+      // the stamp can't drift from what createProvider actually spawned. No
+      // "claude-code" sentinel: a live process only exists when createProvider
+      // succeeded, which means getActiveProviderKind already returned a real
+      // kind; baking a sentinel here could only desync the two sides.
+      kind: getActiveProviderKind(this.plugin) || s.providerPreference || null,
+      model: s.model || null,
+      effort: s.effort || null,
+      permissionMode: s.permissionMode || null,
+    };
+  }
+
+  /**
+   * True when a live process exists, was stamped with a spawn signature,
+   * and that signature no longer matches current settings. Defensive: an
+   * unstamped process (no signature recorded) reports NO change so we never
+   * tear down a process we can't reason about.
+   *
+   * @returns {boolean}
+   */
+  _providerSignatureChanged() {
+    if (!this.claudeProcess) return false;
+    const have = this._providerSpawnSignature;
+    if (!have) return false;
+    const want = this._computeProviderSignature();
+    return have.kind !== want.kind
+      || have.model !== want.model
+      || have.effort !== want.effort
+      || have.permissionMode !== want.permissionMode;
+  }
+
+  /**
+   * The teardown half of the embedding-consumer contract. When a live
+   * subprocess's spawn-time identity no longer matches settings (the user
+   * switched provider/model/effort/permission through a consumer's own
+   * settings tab and fired gryphon:settings-changed), abort it and null it
+   * so the next message spawns a fresh process for the new provider. Surface
+   * the same "takes effect on next message" notice that the imperative
+   * _resetActiveSessions() path shows for Gryphon-as-a-plugin.
+   *
+   * No-op when there's no live process or the signature is unchanged — an
+   * unrelated settings change (e.g. a UI toggle) must not kill an active
+   * session. A process that has already died is left in place for the send
+   * path to replace; we only abort processes that are still alive.
+   */
+  _teardownLiveProcessIfSettingsChanged() {
+    if (!this.claudeProcess) return;
+    const alive = typeof this.claudeProcess.isAlive === "function"
+      && this.claudeProcess.isAlive();
+    if (!alive) return;
+    if (!this._providerSignatureChanged()) return;
+    try { this.claudeProcess.abort(); } catch (_) { /* best-effort */ }
+    this.claudeProcess = null;
+    this._providerSpawnSignature = null;
+    if (typeof this.addSystemMessage === "function") {
+      this.addSystemMessage("Setting updated — takes effect on next message");
     }
   }
 
@@ -2259,6 +2388,7 @@ class GryphonChatView extends ItemView {
     }
 
     if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
+    this._providerSpawnSignature = null;
     // Cancel any pending rate-limit auto-retry — /clear means the user
     // is resetting the session deliberately, and firing a stale retry
     // would resubmit a prompt against a now-empty conversation.
@@ -2563,6 +2693,7 @@ class GryphonChatView extends ItemView {
 
       // Reset state: memory, UI, process.
       if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
+      this._providerSpawnSignature = null;
       this.messages = [];
       this._fullHistory = [];
       this._historyLoadedUpTo = 0;
@@ -3272,6 +3403,10 @@ class GryphonChatView extends ItemView {
    */
   _cleanupStreamingState({ bubbleText, doneStatus, fallbackFlash }: { bubbleText?: string; doneStatus?: string; fallbackFlash?: string } = {}) {
     if (this.claudeProcess) { this.claudeProcess.abort(); this.claudeProcess = null; }
+    // Keep the spawn-signature invariant: it's meaningful only while a
+    // process is live, so clear it whenever we null the process here (the
+    // canonical teardown). Harmless if already null.
+    this._providerSpawnSignature = null;
     this.isStreaming = false;
     this._clearQueuedPrompts();
     // Issue #36: every path through here is an abort or timeout — the
@@ -4835,9 +4970,22 @@ class GryphonChatView extends ItemView {
   async _activateProvider(preference) {
     const prev = this.plugin.settings.providerPreference || "auto";
     this.plugin.settings.providerPreference = preference;
+    // saveSettings fires gryphon:settings-changed, which drives subprocess
+    // teardown + toolbar refresh for every embedder (issue #2/#40).
     await this.plugin.saveSettings();
-    this.plugin._resetActiveSessions();
-    if (prev !== preference) {
+    // Issue #3 — optional host hooks are typeof-guarded so an embedding
+    // consumer that doesn't shadow-implement Gryphon's private plugin
+    // surface degrades gracefully instead of throwing on this UI path.
+    // Gryphon-as-a-plugin runs the imperative cross-view reset (which also
+    // refreshes every view's welcome panel); for an embedder the event
+    // above already handled teardown, so we just refresh THIS view's
+    // welcome panel so it disappears now that a provider resolves.
+    if (typeof this.plugin._resetActiveSessions === "function") {
+      this.plugin._resetActiveSessions();
+    } else {
+      this.refreshWelcomePanel();
+    }
+    if (prev !== preference && typeof this.plugin._announceProviderChange === "function") {
       // Issue #29: same announcement path the Settings-tab dropdown uses
       // so the welcome-panel "Activate provider" buttons surface the
       // same context-forward notice.
@@ -5715,6 +5863,18 @@ class GryphonChatView extends ItemView {
     this.startStreamingMessage();
 
     const vaultPath = this.app.vault.adapter.basePath;
+    // Harden the reuse guard so a still-alive process whose
+    // spawn-time identity (provider/model/effort/permission) no longer
+    // matches settings is also treated as "new". This is the belt to the
+    // settings-changed listener's suspenders: even a consumer that mutates
+    // settings WITHOUT firing gryphon:settings-changed gets the right
+    // provider on the next message instead of silently reusing the old one.
+    // Abort the stale process first so we don't leak the subprocess.
+    if (this.claudeProcess && this.claudeProcess.isAlive() && this._providerSignatureChanged()) {
+      try { this.claudeProcess.abort(); } catch (_) { /* best-effort */ }
+      this.claudeProcess = null;
+      this._providerSpawnSignature = null;
+    }
     const isNewProcess = !this.claudeProcess || !this.claudeProcess.isAlive();
     if (isNewProcess) {
       // v0.5.13: pass any pending compaction summary as a dedicated
@@ -5756,7 +5916,13 @@ class GryphonChatView extends ItemView {
       // are degraded rather than finding out only via the CLI-path
       // Notice at spawn time (which competes with the streaming
       // response for their attention).
-      const ipcReady = await this.plugin.ensureIpcListening(2000);
+      // Issue #3 — optional host hook. Absent on an embedder ⇒ treat IPC as
+      // offline (fail-closed): the claude-code branch below then surfaces the
+      // "guardrails degraded" notice instead of throwing, and API-mode
+      // embedders are unaffected.
+      const ipcReady = typeof this.plugin.ensureIpcListening === "function"
+        ? await this.plugin.ensureIpcListening(2000)
+        : false;
       if (!ipcReady && this.plugin.settings.providerPreference === "claude-code") {
         try {
           const { Notice } = require("obsidian");
@@ -5780,6 +5946,13 @@ class GryphonChatView extends ItemView {
         initialHistory: sdkInitialHistory,
         hostAdapter: this.plugin.hostAdapter,
       });
+      // Record the spawn-time identity so a later
+      // gryphon:settings-changed (or the reuse guard above) can detect
+      // when this process no longer matches settings. Cleared on a failed
+      // spawn so a null process never carries a stale stamp.
+      this._providerSpawnSignature = this.claudeProcess
+        ? this._computeProviderSignature()
+        : null;
       if (!this.claudeProcess) {
         // Bug #23: failed sends (no provider could be constructed) used
         // to lose both the user message AND the error bubble across

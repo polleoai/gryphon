@@ -4,6 +4,13 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.4.4-rc2] — 2026-06-19
+
+### Fixed
+
+- **Switching the AI provider or model now takes effect on your next message, even when the chat is embedded in another plugin.** Previously, changing the provider (e.g. Claude → Codex), model, reasoning effort, or permission mode from a host app's own settings could relabel the toolbar while the next message was still answered by the previously-running provider — so, for example, a switch made to work around one provider's usage limit was silently ignored. The chat now retires the active session whenever a setting that affects it changes, so the new choice is always the one that answers.
+- **The chat view degrades gracefully when embedded in another plugin.** Hardened the boundary between the chat and its host so optional host behaviours (one-click provider activation, the guardrail readiness check, provider-change notices) no longer error when a host app embeds the chat without re-implementing Gryphon's internals; a missing required capability is now reported clearly up front instead of failing partway through.
+
 ## [2.4.3] — 2026-06-17
 
 ### Fixed
