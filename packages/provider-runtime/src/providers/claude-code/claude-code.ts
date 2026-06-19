@@ -1244,7 +1244,12 @@ class ClaudeCodeProvider {
       // just the direct pid. SIGTERM first, SIGKILL the group after 5s if
       // it's still alive.
       const proc = this.process;
-      killProcessTree(proc, "SIGTERM");
+      // Guard the SIGTERM the same way codex/gemini do, so a throw here
+      // can't skip the `this.process = null` / `this.alive = false` cleanup
+      // below and strand a process the caller has already dropped its
+      // reference to (killProcessTree is internally non-throwing, but the
+      // caller's best-effort catch makes this defence load-bearing).
+      try { killProcessTree(proc, "SIGTERM"); } catch {}
       setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
