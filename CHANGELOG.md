@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.4.5-rc1] — 2026-06-20
+
+### Fixed
+
+- **Release tags now ship the compiled distribution files, so projects that build Gryphon from a pinned source tag always get the current code.** Previously a release tag carried only the TypeScript sources; the compiled output was rebuilt locally and never committed, so an integrator pinning a new tag could keep stale compiled files from the previous pin and unknowingly run older behaviour. Each release now bundles freshly-built, version-matched compiled files, and the release tooling fails fast if they are missing or out of sync — keeping the published bundle authoritative at every tag. No change to behaviour for users installing through Obsidian's Community Plugins directory.
+
 ## [2.4.4] — 2026-06-19
 
 ### Fixed

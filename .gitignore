@@ -12,7 +12,6 @@ pnpm-lock.yaml
 # Build output
 main.js
 /hooks/
-packages/*/dist/
 
 # Temp + logs
 *.tmp-*
@@ -23,5 +22,3 @@ packages/*/dist/
 
 
 # TypeScript build output
-dist/
-packages/*/dist/
