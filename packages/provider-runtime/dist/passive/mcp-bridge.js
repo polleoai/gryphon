@@ -8,6 +8,7 @@
 //
 // Newline-delimited JSON framing both directions. See design spec §6 + §12.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.createBridge = createBridge;
 const net = require("net");
 const fs = require("fs");
 const os = require("os");
@@ -118,4 +119,3 @@ function createBridge() {
         });
     });
 }
-module.exports = { createBridge };

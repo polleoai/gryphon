@@ -21,8 +21,8 @@
  * narrows this to out-of-vault + tagged in-vault files.
  */
 
-const path = require("path");
-const fs = require("fs");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
 
 const {
   readStdinJson,

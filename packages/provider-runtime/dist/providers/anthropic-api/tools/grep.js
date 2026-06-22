@@ -12,6 +12,8 @@
  *   "count"              — match count per file
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const fs = require("fs");
 const path = require("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
@@ -50,6 +52,7 @@ const SCHEMA = {
         required: ["pattern"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const DEFAULT_LIMIT = 250;
 const MAX_FILES_SCANNED = 5000;
 const MAX_FILE_SIZE = 1024 * 1024; // skip files > 1MB
@@ -191,6 +194,7 @@ async function execute(input, ctx) {
     return _ok(out.join("\n"));
 }
 const IGNORED_DIRS = new Set([
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- directory skip-list entry matching the default config folder name
     ".git", ".obsidian", "node_modules", ".venv", "venv",
     "__pycache__", ".pytest_cache", "dist", "build", ".next",
     ".kb-trash",
@@ -214,4 +218,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

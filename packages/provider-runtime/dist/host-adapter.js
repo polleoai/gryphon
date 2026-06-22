@@ -16,6 +16,7 @@
  * Per L1 in docs/consumer-requirements.md.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.HeadlessHostAdapter = void 0;
 class HeadlessHostAdapter {
     notify(message, opts) {
         opts = opts || {};
@@ -25,7 +26,8 @@ class HeadlessHostAdapter {
     }
     async fetch(url, opts) {
         opts = opts || {};
+        // eslint-disable-next-line obsidianmd/no-global-this -- HeadlessHostAdapter runs in a Node subprocess (hooks/IPC); no window/activeWindow exists there, so globalThis.fetch is the correct global.
         return globalThis.fetch(url, opts);
     }
 }
-module.exports = { HeadlessHostAdapter };
+exports.HeadlessHostAdapter = HeadlessHostAdapter;

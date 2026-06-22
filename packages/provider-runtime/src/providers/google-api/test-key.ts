@@ -23,7 +23,7 @@ async function testApiKey(apiKey: any, hostAdapter: any) {
   // Default to HeadlessHostAdapter so callers that pre-date Task 0.6 still
   // work (they pass undefined). Task 0.6 will supply ObsidianHostAdapter.
   if (!hostAdapter) {
-    hostAdapter = new (require("../../host-adapter").HeadlessHostAdapter)();
+    hostAdapter = new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
   }
 
   if (!apiKey) return { ok: false, message: "No API key provided" };
@@ -64,4 +64,4 @@ async function testApiKey(apiKey: any, hostAdapter: any) {
   }
 }
 
-module.exports = { testApiKey };
+export { testApiKey };

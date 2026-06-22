@@ -81,4 +81,4 @@ class PassiveStreamParser {
   }
 }
 
-module.exports = { PassiveStreamParser };
+export { PassiveStreamParser };

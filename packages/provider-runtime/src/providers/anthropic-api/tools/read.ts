@@ -7,8 +7,8 @@
  * this format, so reproducing it gives better tool-use behavior.
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
 
 const SCHEMA = {
@@ -137,4 +137,4 @@ function _error(text: any) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
-module.exports = { SCHEMA, execute };
+export { SCHEMA, execute };

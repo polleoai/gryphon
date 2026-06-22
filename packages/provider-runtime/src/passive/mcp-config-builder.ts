@@ -4,9 +4,9 @@
 // `node <shimEntry>`; it receives the declared tools + the gryphon-side bridge
 // socket path via env. See design spec §6 + §12.
 
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const path = require("path") as typeof import("path");
 
 // MCP exposes tools to the model namespaced as mcp__<server>__<tool>.
 const MCP_SERVER_NAME = "gryphon-passive";
@@ -41,4 +41,4 @@ function buildMcpConfig(declaredTools: any[], opts: any): any {
   return { json, jsonPath };
 }
 
-module.exports = { buildMcpConfig, namespacedToolName, MCP_SERVER_NAME };
+export { buildMcpConfig, namespacedToolName, MCP_SERVER_NAME };

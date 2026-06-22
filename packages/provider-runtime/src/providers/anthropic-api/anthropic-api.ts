@@ -18,8 +18,8 @@
  */
 
 const Anthropic = require("@anthropic-ai/sdk").default;
-const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop");
-const { getToolSchemas } = require("./tools/tool-registry");
+const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop") as typeof import("./tool-loop");
+const { getToolSchemas } = require("./tools/tool-registry") as typeof import("./tools/tool-registry");
 
 // Pricing + alias resolution lives in @gryphon/provider-config (v2.2).
 // We import the helpers and re-export the names this module's consumers
@@ -43,7 +43,7 @@ class AnthropicAPIProvider {
     this.cwd = cwd;  // unused in Phase 2 — relevant once tools land
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
 
     // dangerouslyAllowBrowser: required because Obsidian's renderer process
     // exposes the `window` global, which the SDK treats as "browser-like"
@@ -436,4 +436,4 @@ async function testApiKey(apiKey: any) {
   }
 }
 
-module.exports = { AnthropicAPIProvider, testApiKey, resolveModel };
+export { AnthropicAPIProvider, testApiKey, resolveModel };

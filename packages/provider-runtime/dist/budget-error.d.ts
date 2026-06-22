@@ -7,4 +7,12 @@
  *
  * Per L5 in docs/consumer-requirements.md.
  */
-export {};
+declare class BudgetExceededError extends Error {
+    [key: string]: any;
+    constructor({ budget, spent, lastTurnCost }: {
+        budget: number;
+        spent: number;
+        lastTurnCost: number;
+    });
+}
+export { BudgetExceededError };

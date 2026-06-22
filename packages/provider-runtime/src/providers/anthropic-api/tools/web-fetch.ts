@@ -135,6 +135,7 @@ async function execute(input: any, ctx: any) {
   // Obsidian tears it down on plugin unload, but worth noting.
   const timeoutError = new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
   const timeoutPromise = new Promise((_, reject) => {
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
     setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
@@ -367,4 +368,4 @@ function _isAllowedContentType(contentType: any) {
 }
 
 // Exported for unit tests; the main export remains { SCHEMA, execute }.
-module.exports = { SCHEMA, execute, _isPrivateHost, _isAllowedContentType };
+export { SCHEMA, execute, _isPrivateHost, _isAllowedContentType };

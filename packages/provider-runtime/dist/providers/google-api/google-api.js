@@ -20,10 +20,14 @@
  * cachedContentTokenCount; pricing.js computeCost() converts to USD.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_MODEL = exports.resolveModel = exports.testApiKey = exports.GoogleProvider = void 0;
 const { GoogleGenAI } = require("@google/genai");
 const { runGeminiToolLoop } = require("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.google;
+exports.resolveModel = resolveModel;
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 const { testApiKey } = require("./test-key");
+exports.testApiKey = testApiKey;
 const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsidian plugin. The user's " +
     "own protected-pattern list inside Gryphon decides which file " +
@@ -298,6 +302,7 @@ class GoogleProvider {
         return msg;
     }
 }
+exports.GoogleProvider = GoogleProvider;
 /**
  * Normalize an incoming history entry into Gemini's Content shape.
  *
@@ -343,4 +348,3 @@ function _extractFinalText(finalMessage) {
         .map((p) => (typeof p.text === "string" ? p.text : ""))
         .join("");
 }
-module.exports = { GoogleProvider, testApiKey, resolveModel, DEFAULT_MODEL };

@@ -34,11 +34,17 @@
  * gets the same leak-free guarantee.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.LIVE_COUNT_WARN_THRESHOLD = exports._registry = void 0;
+exports.managedSpawn = managedSpawn;
+exports.killProcessTree = killProcessTree;
+exports.killAll = killAll;
+exports.liveCount = liveCount;
 const { spawn, spawnSync } = require("child_process");
 const IS_WINDOWS = process.platform === "win32";
 // pid → entry. A pid is registered at spawn and deleted on the child's
 // `exit`/`error` event (whichever fires first).
 const _registry = new Map();
+exports._registry = _registry;
 let _handlersInstalled = false;
 /**
  * Soft diagnostic threshold. Normal operation keeps ≤ a couple of live
@@ -49,6 +55,7 @@ let _handlersInstalled = false;
  * terminate-on-request-end + reuse + shutdown reaping.
  */
 const LIVE_COUNT_WARN_THRESHOLD = 16;
+exports.LIVE_COUNT_WARN_THRESHOLD = LIVE_COUNT_WARN_THRESHOLD;
 /**
  * Kill a child process and its entire descendant tree. Idempotent: a
  * double-kill (or a kill of an already-exited child) is a no-op and never
@@ -251,13 +258,3 @@ function managedSpawn(command, args, options = {}, meta = {}) {
 function liveCount() {
     return _registry.size;
 }
-module.exports = {
-    managedSpawn,
-    killProcessTree,
-    killAll,
-    liveCount,
-    // Exposed for tests only — resets handler-install state is intentionally
-    // NOT exposed (handlers are process-global and harmless once installed).
-    _registry,
-    LIVE_COUNT_WARN_THRESHOLD,
-};

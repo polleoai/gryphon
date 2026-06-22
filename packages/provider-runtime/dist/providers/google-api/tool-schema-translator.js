@@ -22,6 +22,9 @@
  * returned object without affecting the source registry.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.translateSchemaToGemini = translateSchemaToGemini;
+exports.translateSchemasToGemini = translateSchemasToGemini;
+exports.stripAdditionalProperties = stripAdditionalProperties;
 function translateSchemaToGemini(schema) {
     if (!schema || typeof schema !== "object") {
         throw new Error("translateSchemaToGemini: SCHEMA must be an object");
@@ -91,8 +94,3 @@ function _validateGeminiSchemaDialect(node, toolName, path = "") {
         _validateGeminiSchemaDialect(v, toolName, path ? `${path}.${k}` : k);
     }
 }
-module.exports = {
-    translateSchemaToGemini,
-    translateSchemasToGemini,
-    stripAdditionalProperties,
-};

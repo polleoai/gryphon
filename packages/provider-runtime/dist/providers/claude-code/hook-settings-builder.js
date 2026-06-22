@@ -38,6 +38,10 @@
  * sidesteps the whole handoff.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.POSTTOOL_MATCHER = exports.HOOK_FILES = exports.DEFAULT_HOOK_TIMEOUTS = void 0;
+exports.buildHookSettings = buildHookSettings;
+exports.buildPermissionsOnlySettings = buildPermissionsOnlySettings;
+exports.writeHookSettingsFile = writeHookSettingsFile;
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
@@ -50,6 +54,7 @@ const DEFAULT_HOOK_TIMEOUTS = {
     UserPromptSubmit: 10, // regex scan
     Notification: 2, // fire-and-forget notice forwarding
 };
+exports.DEFAULT_HOOK_TIMEOUTS = DEFAULT_HOOK_TIMEOUTS;
 const HOOK_FILES = {
     PreToolUse: "pretool.js",
     PostToolUse: "posttool.js",
@@ -58,6 +63,7 @@ const HOOK_FILES = {
     UserPromptSubmit: "user-prompt.js",
     Notification: "notification.js",
 };
+exports.HOOK_FILES = HOOK_FILES;
 // PostToolUse fires for (a) tools whose output might contain
 // attacker-authored text (so we can frame it) and (b) tools that
 // produce vault files we need to tag in the provenance store.
@@ -68,6 +74,7 @@ const HOOK_FILES = {
 // edits are user-intended modifications of existing files, not fresh
 // content arriving from an untrusted source.
 const POSTTOOL_MATCHER = "WebFetch|WebSearch|Bash|Read|Glob|Grep|Write";
+exports.POSTTOOL_MATCHER = POSTTOOL_MATCHER;
 /**
  * Build the settings JSON object. The caller is responsible for
  * writing it to disk (use `writeHookSettingsFile`) and passing the
@@ -227,11 +234,3 @@ function writeHookSettingsFile(settings) {
     });
     return fullPath;
 }
-module.exports = {
-    buildHookSettings,
-    buildPermissionsOnlySettings,
-    writeHookSettingsFile,
-    DEFAULT_HOOK_TIMEOUTS,
-    HOOK_FILES,
-    POSTTOOL_MATCHER,
-};

@@ -64,4 +64,3 @@
  * the first `send()` call is allowed to perform lazy initialization.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-module.exports = {};

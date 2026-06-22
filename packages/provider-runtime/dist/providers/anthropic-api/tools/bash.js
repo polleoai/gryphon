@@ -21,6 +21,8 @@
  *     should see and reason about the failure, not have it suppressed)
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const { spawn } = require("child_process");
 const { attackDetector } = require("@gryphon/protect");
 const SCHEMA = {
@@ -49,6 +51,7 @@ const SCHEMA = {
         required: ["command"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_BYTES = 100_000;
@@ -95,12 +98,14 @@ function _runCommand(command, cwd, timeoutMs) {
             shell: true,
             env: process.env,
         });
+        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
         const timer = setTimeout(() => {
             killed = true;
             try {
                 proc.kill("SIGTERM");
             }
             catch { }
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             setTimeout(() => { try {
                 proc.kill("SIGKILL");
             }
@@ -131,10 +136,12 @@ function _runCommand(command, cwd, timeoutMs) {
             }
         });
         proc.on("error", (err) => {
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             clearTimeout(timer);
             resolve(_error(`Failed to spawn command: ${err.message}`));
         });
         proc.on("close", (code, signal) => {
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             clearTimeout(timer);
             const parts = [];
             if (killed) {
@@ -160,4 +167,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

@@ -14,4 +14,11 @@
  *
  * Per L1 in docs/consumer-requirements.md.
  */
-export {};
+declare class HeadlessHostAdapter {
+    notify(message: unknown, opts?: {
+        level?: string;
+        timeoutMs?: number;
+    }): void;
+    fetch(url: string, opts?: RequestInit): Promise<Response>;
+}
+export { HeadlessHostAdapter };

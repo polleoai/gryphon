@@ -28,6 +28,15 @@ export interface Result {
   contextTokens: number;
   thinking?: unknown;      // present when model returns thinking blocks (anthropic-api)
   json?: unknown;          // present iff structuredOutput was set (schema-validated)
+  // Failover transparency signal (issue #15). Stamped by the chat-view
+  // orchestrator on every turn (happy path included) so the result always
+  // carries a consistent "who served this" answer. Backward-compatible:
+  // all four are optional, and `provider.send()` itself does NOT set them —
+  // headless consumers self-stamp from the kind they passed to createProviderForKind.
+  requestedProvider?: ProviderKind;  // what the user selected (resolved)
+  servedBy?: ProviderKind;           // who actually answered
+  fellBack?: boolean;                // true iff a fallback served this turn
+  reason?: string | null;            // availability reason when fellBack; else null
 }
 
 export interface LLMProvider {

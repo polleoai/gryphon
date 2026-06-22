@@ -29,9 +29,16 @@
  *   { type: "turn.completed", usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_MODEL = exports.SESSION_PREFIX = exports.CodexProvider = void 0;
+exports._mapPermissionToSandbox = _mapPermissionToSandbox;
+exports._supportsLandlockSandbox = _supportsLandlockSandbox;
+exports._wrapSession = _wrapSession;
+exports._unwrapSession = _unwrapSession;
+exports._scrubInternalLeaks = _scrubInternalLeaks;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const { computeCost, coerceToVendorModel, coerceToCodexCliModel, CODEX_CLI_DEFAULT_MODEL, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.openai;
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 const { hookDispatcher: dispatcher } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
 /**
@@ -133,6 +140,7 @@ let _landlockWarningEmitted = false;
 // filterMessagesForSave (which uses prefix matching to decide whether
 // to drop on save). Strip before passing to the CLI on --resume.
 const SESSION_PREFIX = "codex-cli-";
+exports.SESSION_PREFIX = SESSION_PREFIX;
 // Known prefixes from OTHER providers. If chat-view's persisted
 // `lastSessionId` carries one of these (user just switched providers
 // without clearing the id, or two open chat views raced), treating it
@@ -1068,6 +1076,7 @@ class CodexProvider {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             setTimeout(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
@@ -1096,13 +1105,4 @@ class CodexProvider {
     // path; the API path would be different), so the figure is an estimate.
     get costIsEstimate() { return true; }
 }
-module.exports = {
-    CodexProvider,
-    _mapPermissionToSandbox,
-    _supportsLandlockSandbox,
-    _wrapSession,
-    _unwrapSession,
-    _scrubInternalLeaks,
-    SESSION_PREFIX,
-    DEFAULT_MODEL,
-};
+exports.CodexProvider = CodexProvider;

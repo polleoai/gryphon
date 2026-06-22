@@ -9,4 +9,37 @@
  * For complex patterns we'd want picomatch, but the common cases
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            pattern: {
+                type: string;
+                description: string;
+            };
+            path: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+/**
+ * Convert a glob pattern to a RegExp.
+ * Handles: **, *, ?, character classes [abc], braces {a,b,c}.
+ *
+ * Anchored to full-string match.
+ */
+declare function _globToRegex(glob: any): RegExp;
+declare function _expandBraces(glob: any): string[];
+export { SCHEMA, execute, _globToRegex, _expandBraces };

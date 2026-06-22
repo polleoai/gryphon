@@ -16,6 +16,8 @@
  * returned object without affecting the source registry.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.translateSchemaToOpenAI = translateSchemaToOpenAI;
+exports.translateSchemasToOpenAI = translateSchemasToOpenAI;
 function translateSchemaToOpenAI(schema) {
     if (!schema || typeof schema !== "object") {
         throw new Error("translateSchemaToOpenAI: SCHEMA must be an object");
@@ -48,4 +50,3 @@ function deepClone(value) {
         return structuredClone(value);
     return JSON.parse(JSON.stringify(value));
 }
-module.exports = { translateSchemaToOpenAI, translateSchemasToOpenAI };

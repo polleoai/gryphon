@@ -7,10 +7,10 @@
 //
 // Newline-delimited JSON framing both directions. See design spec §6 + §12.
 
-const net = require("net");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const net = require("net") as typeof import("net");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const path = require("path") as typeof import("path");
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -94,4 +94,4 @@ function createBridge(): Promise<any> {
   });
 }
 
-module.exports = { createBridge };
+export { createBridge };

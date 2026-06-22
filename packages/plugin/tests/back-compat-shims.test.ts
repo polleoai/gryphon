@@ -40,6 +40,10 @@ const CONTRACT = [
     symbols: ["GryphonChatView"],
   },
   {
+    legacy: "src/settings-view",
+    symbols: ["renderGryphonSettings"],
+  },
+  {
     legacy: "src/constants",
     symbols: [
       "DEFAULT_SETTINGS",

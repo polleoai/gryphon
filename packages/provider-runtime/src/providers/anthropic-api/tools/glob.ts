@@ -10,8 +10,8 @@
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
 
 const SCHEMA = {
@@ -110,6 +110,7 @@ async function execute(input: any, ctx: any) {
 }
 
 const IGNORED_DIRS = new Set([
+  // eslint-disable-next-line obsidianmd/hardcoded-config-path -- directory skip-list entry matching the default config folder name
   ".git", ".obsidian", "node_modules", ".venv", "venv",
   "__pycache__", ".pytest_cache", "dist", "build", ".next",
   ".kb-trash",
@@ -199,4 +200,4 @@ function _error(text: any) {
 // Internal helpers exported for testing. Not part of the public tool
 // API — direct callers should use execute() which orchestrates path
 // validation, walking, and result formatting.
-module.exports = { SCHEMA, execute, _globToRegex, _expandBraces };
+export { SCHEMA, execute, _globToRegex, _expandBraces };

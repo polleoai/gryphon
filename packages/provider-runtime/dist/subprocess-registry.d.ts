@@ -32,4 +32,60 @@
  * Obsidian dependency, so a non-Obsidian consumer of @gryphon/provider-runtime
  * gets the same leak-free guarantee.
  */
-export {};
+type SpawnOptions = Record<string, unknown>;
+interface RegistryEntry {
+    child: any;
+    label: string;
+    pgid: number | null;
+    startedAt: number;
+}
+declare const _registry: Map<number, RegistryEntry>;
+/**
+ * Soft diagnostic threshold. Normal operation keeps ≤ a couple of live
+ * children (claude-code reuses one persistent process; codex/gemini are
+ * one-shot and exit at turn end). Crossing this almost certainly means a
+ * leak regression, so we log — but we do NOT kill live requests to honor
+ * a synthetic cap (correctness over a count). The real bound comes from
+ * terminate-on-request-end + reuse + shutdown reaping.
+ */
+declare const LIVE_COUNT_WARN_THRESHOLD = 16;
+/**
+ * Kill a child process and its entire descendant tree. Idempotent: a
+ * double-kill (or a kill of an already-exited child) is a no-op and never
+ * throws.
+ *
+ *   POSIX: signal the process GROUP via the negative pid. With detached
+ *          spawn the group leader's pgid == pid, so `-pid` reaches the
+ *          child and every grandchild it started. ESRCH (group already
+ *          gone) is swallowed; other errors fall back to a direct child
+ *          kill so we at least take down the immediate process.
+ *   Windows: `taskkill /T /F /PID <pid>` terminates the pid and all of
+ *          its children. Best-effort; we also call child.kill() as a
+ *          backstop.
+ */
+declare function killProcessTree(child: any, signal?: NodeJS.Signals | number): void;
+/**
+ * Kill every tracked child tree. Used by the host's onunload and by the
+ * process-shutdown handlers. Idempotent and never throws.
+ */
+declare function killAll(signal?: NodeJS.Signals): number;
+/**
+ * Spawn a child process that is tracked and reapable. Drop-in for
+ * `child_process.spawn(command, args, options)` — same return value (a
+ * ChildProcess) — with two additions:
+ *
+ *   - POSIX: `detached: true` is set by default (unless the caller already
+ *     specified `detached`, or the options look like a Windows cmd-shim
+ *     wrap with `windowsVerbatimArguments`). We deliberately do NOT
+ *     `unref()` — the runtime OWNS these children and must keep them
+ *     tracked.
+ *   - The child is registered and auto-deregistered on exit.
+ *
+ * @param meta.label  short tag for diagnostics (e.g. "claude-code")
+ */
+declare function managedSpawn(command: string, args: string[], options?: SpawnOptions, meta?: {
+    label?: string;
+}): any;
+/** Number of currently-tracked (presumed-live) children. For tests/diagnostics. */
+declare function liveCount(): number;
+export { managedSpawn, killProcessTree, killAll, liveCount, _registry, LIVE_COUNT_WARN_THRESHOLD, };

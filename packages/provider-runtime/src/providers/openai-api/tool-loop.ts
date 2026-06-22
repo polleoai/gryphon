@@ -21,11 +21,11 @@
  * checkpoint on thrown error. Do not clone the array internally.
  */
 
-const { translateSchemasToOpenAI } = require("./tool-schema-translator");
+const { translateSchemasToOpenAI } = require("./tool-schema-translator") as typeof import("./tool-schema-translator");
 const {
   getActiveTools,
   executeTool,
-} = require("../anthropic-api/tools/tool-registry");
+} = require("../anthropic-api/tools/tool-registry") as typeof import("../anthropic-api/tools/tool-registry");
 
 const MAX_ITERATIONS = 25;
 
@@ -157,7 +157,7 @@ async function runOpenAIToolLoop({
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
       if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error");
+        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
         throw new BudgetExceededError({
           budget: ctx.maxUsdBudget,
           spent: callCumulative,
@@ -269,7 +269,7 @@ function serializeToolResultContent(result: any) {
   return body;
 }
 
-module.exports = {
+export {
   runOpenAIToolLoop,
   MAX_ITERATIONS,
   // exported for unit tests

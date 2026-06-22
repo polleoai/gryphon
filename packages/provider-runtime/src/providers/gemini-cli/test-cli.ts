@@ -6,7 +6,7 @@
  * Returns { ok, message } with a user-facing message either way.
  */
 
-const { spawn } = require("child_process");
+const { spawn } = require("child_process") as typeof import("child_process");
 const { buildEnhancedPath } = require("../../utils");
 
 function testCli(geminiPath: any) {
@@ -61,8 +61,9 @@ function testCli(geminiPath: any) {
       }
     });
 
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
     setTimeout(() => finish({ ok: false, message: "Gemini CLI timed out (5s)." }), 5000);
   });
 }
 
-module.exports = { testCli };
+export { testCli };

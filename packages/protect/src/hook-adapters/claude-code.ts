@@ -9,7 +9,7 @@
  * into the HookDispatcher's contract.
  */
 
-const fs = require("fs");
+const fs = require("fs") as typeof import("fs");
 const {
   buildHookSettings,
   buildPermissionsOnlySettings,

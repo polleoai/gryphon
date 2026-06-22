@@ -27,4 +27,34 @@
  * to USD. Cached tokens are billed at full input rate per the v1.2 design
  * decision (track-but-don't-discount until OpenAI's pricing stabilizes).
  */
-export {};
+declare const resolveModel: any, DEFAULT_MODEL: any;
+declare class OpenAIProvider {
+    [key: string]: any;
+    constructor(apiKey: any, cwd: any, options?: Record<string, any>);
+    isAlive(): boolean;
+    get costIsEstimate(): boolean;
+    abort(): void;
+    /**
+     * **Concurrency invariant** (BT-6 Round 18): callers MUST serialize
+     * `send()` invocations against the SAME provider instance. The chat-view
+     * does this via the `isStreaming` enqueue gate (chat-view.js:3653 —
+     * pending prompts queue while a turn is in flight). Without that gate,
+     * a second `send()` while the first is awaiting would clobber `pending`,
+     * `activeStream`, and most catastrophically `historyCheckpoint` — the
+     * second send's user message could be truncated by the first send's
+     * error rollback. This pattern is inherited from anthropic-api; the
+     * fix path (if needed) is to convert the in-flight tracking to a queue
+     * so the `pending` reset only fires for the matching turn.
+     */
+    send(prompt: any, options?: Record<string, any>): Promise<Record<string, any>>;
+    _formatError(err: any): string;
+}
+/**
+ * Validate an API key by making a trivial chat.completions call.
+ * Used by the "Test key" button in settings.
+ */
+declare function testApiKey(apiKey: any): Promise<{
+    ok: boolean;
+    message: string;
+}>;
+export { OpenAIProvider, testApiKey, resolveModel, DEFAULT_MODEL };

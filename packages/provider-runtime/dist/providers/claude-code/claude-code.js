@@ -11,6 +11,7 @@
  * callers can supply plugin-specific flags without modifying this module.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ClaudeCodeProvider = void 0;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const fs = require("fs");
 const os = require("os");
@@ -244,7 +245,7 @@ class ClaudeCodeProvider {
                 const hookDir = path.join(plugin.absolutePluginDir(), "hooks");
                 const missing = [];
                 for (const scriptName of Object.values(HOOK_FILES)) {
-                    const p = path.join(hookDir, scriptName);
+                    const p = path.join(hookDir, String(scriptName));
                     if (!fs.existsSync(p))
                         missing.push(p);
                 }
@@ -1200,6 +1201,7 @@ class ClaudeCodeProvider {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             setTimeout(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
@@ -1226,4 +1228,4 @@ class ClaudeCodeProvider {
     // Anthropic computes server-side. Authoritative.
     get costIsEstimate() { return false; }
 }
-module.exports = { ClaudeCodeProvider };
+exports.ClaudeCodeProvider = ClaudeCodeProvider;

@@ -20,6 +20,9 @@
  * call sites.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.CliStructuredOutputError = void 0;
+exports.injectSchemaHint = injectSchemaHint;
+exports.parseAndValidate = parseAndValidate;
 class CliStructuredOutputError extends Error {
     constructor(message, { reason, attempts, lastOutput } = {}) {
         super(message);
@@ -29,6 +32,7 @@ class CliStructuredOutputError extends Error {
         this.lastOutput = lastOutput;
     }
 }
+exports.CliStructuredOutputError = CliStructuredOutputError;
 function injectSchemaHint(basePrompt, structuredOutput) {
     const schemaJson = JSON.stringify({ name: structuredOutput.name, schema: structuredOutput.schema }, null, 2);
     return `${basePrompt}\n\n---\n\nYou must respond with a single JSON object matching this JSON Schema. Return ONLY the JSON, no prose, no markdown fence, no commentary:\n\n${schemaJson}`;
@@ -101,8 +105,3 @@ function validate(value, schema, path) {
     }
     return errors;
 }
-module.exports = {
-    injectSchemaHint,
-    parseAndValidate,
-    CliStructuredOutputError,
-};

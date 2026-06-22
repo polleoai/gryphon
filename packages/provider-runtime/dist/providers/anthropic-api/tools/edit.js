@@ -16,6 +16,8 @@
  * Permission-gated like Write.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const fs = require("fs");
 const path = require("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
@@ -75,6 +77,7 @@ const SCHEMA = {
         required: ["file_path", "old_string", "new_string"],
     },
 };
+exports.SCHEMA = SCHEMA;
 // Maximum chars streamed into the diff preview. The modal's <pre> already
 // has max-height + overflow: auto, so long diffs scroll — but multi-MB
 // content would lag the render. 64 KB keeps any realistic edit visible in
@@ -254,4 +257,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

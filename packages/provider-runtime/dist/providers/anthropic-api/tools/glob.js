@@ -11,6 +11,10 @@
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
+exports._globToRegex = _globToRegex;
+exports._expandBraces = _expandBraces;
 const fs = require("fs");
 const path = require("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
@@ -34,6 +38,7 @@ const SCHEMA = {
         required: ["pattern"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const DEFAULT_LIMIT = 250;
 const MAX_DESCEND_ENTRIES = 50000; // safety cap on directory walk
 async function execute(input, ctx) {
@@ -109,6 +114,7 @@ async function execute(input, ctx) {
     return _ok(text);
 }
 const IGNORED_DIRS = new Set([
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- directory skip-list entry matching the default config folder name
     ".git", ".obsidian", "node_modules", ".venv", "venv",
     "__pycache__", ".pytest_cache", "dist", "build", ".next",
     ".kb-trash",
@@ -196,7 +202,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-// Internal helpers exported for testing. Not part of the public tool
-// API — direct callers should use execute() which orchestrates path
-// validation, walking, and result formatting.
-module.exports = { SCHEMA, execute, _globToRegex, _expandBraces };

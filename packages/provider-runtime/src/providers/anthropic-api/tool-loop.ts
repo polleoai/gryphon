@@ -19,7 +19,7 @@
  *     any iteration boundary
  */
 
-const { getToolSchemas, executeTool } = require("./tools/tool-registry");
+const { getToolSchemas, executeTool } = require("./tools/tool-registry") as typeof import("./tools/tool-registry");
 
 const MAX_ITERATIONS = 25;
 
@@ -232,7 +232,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
       if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error");
+        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
         throw new BudgetExceededError({
           budget: ctx.maxUsdBudget,
           spent: callCumulative,
@@ -294,4 +294,4 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
   return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
 }
 
-module.exports = { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };
+export { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };

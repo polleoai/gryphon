@@ -49,4 +49,4 @@ function deepClone(value: any) {
   return JSON.parse(JSON.stringify(value));
 }
 
-module.exports = { translateSchemaToOpenAI, translateSchemasToOpenAI };
+export { translateSchemaToOpenAI, translateSchemasToOpenAI };

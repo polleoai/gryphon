@@ -6,4 +6,33 @@
  * (line-numbered with `cat -n` style) — the model has been trained on
  * this format, so reproducing it gives better tool-use behavior.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            file_path: {
+                type: string;
+                description: string;
+            };
+            offset: {
+                type: string;
+                description: string;
+            };
+            limit: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+export { SCHEMA, execute };

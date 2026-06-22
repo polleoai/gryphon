@@ -14,6 +14,8 @@
 // their own context.
 Object.defineProperty(exports, "__esModule", { value: true });
 const factory = require("./factory");
+const failover = require("./failover");
+const readiness = require("./readiness");
 const utils = require("./utils");
 const subprocessRegistry = require("./subprocess-registry");
 const passive = require("./passive");
@@ -31,6 +33,20 @@ module.exports = {
     detectAvailable: factory.detectAvailable,
     getActiveProviderKind: factory.getActiveProviderKind,
     factory,
+    // Failover kernel (issue #15) — the reusable, host-agnostic decision layer.
+    // classifyProviderFailure + resolveFallback + createProviderForKind let any
+    // consumer (the chat-view orchestrator, or Athena's synthesis path) build a
+    // one-hop availability failover without reaching into the chat view.
+    classifyProviderFailure: failover.classifyProviderFailure,
+    resolveFallback: factory.resolveFallback,
+    createProviderForKind: factory.createProviderForKind,
+    // Readiness kernel (issue #16) — the proactive, before-send companion to
+    // the #15 failover signal. describeProviderReadiness answers "is the
+    // selected provider usable, and if not why" from presence alone (no
+    // network); the two humanizers give both UI surfaces one shared vocabulary.
+    describeProviderReadiness: readiness.describeProviderReadiness,
+    humanizeFailureReason: readiness.humanizeFailureReason,
+    friendlyProviderLabel: readiness.friendlyProviderLabel,
     // Binary discovery + path helpers (formerly plugin/src/utils.js)
     findClaudeBinary: utils.findClaudeBinary,
     findCodexBinary: utils.findCodexBinary,

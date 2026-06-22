@@ -41,11 +41,11 @@
  * behavior via autocompleteSources, stopStreamingHooks, onBeforeSend.
  */
 
-const { ItemView, MarkdownRenderer, Menu, MarkdownView, setTooltip } = require("obsidian");
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const { createProvider, explainUnavailable, detectAvailable } = require("@gryphon/provider-runtime");
+const { ItemView, MarkdownRenderer, Menu, MarkdownView, setTooltip, requestUrl } = require("obsidian") as typeof import("obsidian");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const { createProvider, createProviderForKind, explainUnavailable, detectAvailable } = require("@gryphon/provider-runtime");
 const {
   TOOL_STATUS_CORE, MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON,
@@ -517,17 +517,18 @@ function _replaceNoResponsePlaceholder(text) {
   );
 }
 
+// Thin delegate to the provider-runtime kernel's friendlyProviderLabel
+// (issue #16 promoted the per-kind map there so the Settings chip + the chat
+// attribution share one mapping). The two preference-only values "auto" and
+// the unknown-preference fallback are kept here — they're a settings concept,
+// not a resolved ProviderKind the kernel maps.
 function _providerLabelFor(preference) {
-  switch (preference) {
-    case "anthropic-api":  return "Anthropic API";
-    case "claude-code":    return "Claude Code CLI";
-    case "openai-api":     return "OpenAI API";
-    case "google-api":     return "Google Gemini API";
-    case "codex-cli":      return "Codex CLI";
-    case "gemini-cli":     return "Gemini CLI";
-    case "auto":           return "Auto-selected provider";
-    default:               return preference || "the new provider";
+  if (preference === "auto") return "Auto-selected provider";
+  const known = ["anthropic-api", "claude-code", "openai-api", "google-api", "codex-cli", "gemini-cli"];
+  if (known.includes(preference)) {
+    return require("@gryphon/provider-runtime").friendlyProviderLabel(preference);
   }
+  return preference || "the new provider";
 }
 
 function filterMessagesForSave(messages, currentSessionId) {
@@ -721,6 +722,84 @@ const CARET_KEYS = new Set([
 ]);
 
 class GryphonChatView extends ItemView {
+  // Instance field type declarations. `declare` = type-only (no runtime emit,
+  // no strict-init check) — the JS assigns these in the constructor/onOpen;
+  // this just types them so the Obsidian base class (ItemView) stops cascading
+  // `any` through every `this.*` access.
+  declare plugin: any;
+  declare messages: any[];
+  declare isStreaming: boolean;
+  declare streamingText: string;
+  declare streamingEl: HTMLElement | null;
+  declare streamingBubble: HTMLElement | null;
+  declare claudeProcess: any;
+  declare _providerSpawnSignature: any;
+  declare cumulativeCost: number;
+  declare _priorTurnHadProtectedDeny: boolean;
+  declare _refusalInCurrentTurn: boolean;
+  declare _lastRefusalText: string;
+  declare _lastRefusalTs: number;
+  declare _queuedPrompts: any[];
+  declare _pendingQueuedTexts: string[];
+  declare toolStatusMap: any;
+  declare extraProcessArgs: string[];
+  declare extraProcessArgsByProvider: any;
+  declare onBeforeSend: any;
+  declare viewType: string;
+  declare viewDisplayText: string;
+  declare viewIcon: string;
+  declare autocompleteSources: any[];
+  declare stopStreamingHooks: any;
+  declare inputEl: HTMLTextAreaElement;
+  declare messagesEl: HTMLElement;
+  declare toolbarStatus: HTMLElement;
+  declare sendBtn: HTMLElement;
+  declare stopBtn: HTMLElement;
+  declare modelBtn: HTMLElement;
+  declare effortBtn: HTMLElement;
+  declare permBtn: HTMLElement;
+  declare contextBtn: HTMLElement;
+  declare projectionBtn: HTMLElement;
+  declare restApiBtn: HTMLElement;
+  declare autocompleteEl: HTMLElement | null;
+  declare _welcomePanelEl: HTMLElement | null;
+  declare _loadMoreHint: HTMLElement | null;
+  declare autocompleteIdx: number;
+  declare _userInitiatedAbort: boolean;
+  declare _sendErroredThisTurn: boolean;
+  declare _contextWarningShown: boolean;
+  declare _projectionWarningShown: boolean;
+  declare _calibrationMissingWarned: boolean;
+  declare _compactionInProgress: boolean;
+  declare _compactionPending: boolean;
+  declare _compactSummaryPending: boolean;
+  declare _autoCompactInProgress: boolean;
+  declare _autoRetryFired: boolean;
+  declare _pendingLoadWarning: string | null;
+  declare _autoCompactRetryText: string;
+  declare _statusBeforeAutocomplete: string;
+  declare _preHistoryInput: string;
+  declare _promptHistoryIdx: number;
+  declare _historyLoadedUpTo: number;
+  declare _lastCalibratedTokens: number;
+  declare _lastMeasuredTokens: number;
+  declare _calibrationDelta: number;
+  declare _fullHistory: any[];
+  declare _cachedPromptHistory: any[];
+  declare _cachedSelection: any;
+  declare _saveQueue: any;
+  declare _chatHistorySaveError: any;
+  declare _lastSeedStats: any;
+  declare _pendingSdkHistory: any;
+  declare _projectionLastResult: any;
+  declare _projectionSources: any;
+  declare _triggerKwCache: any;
+  declare _triggerKwSnapshot: any;
+  declare _connTimeout: any;
+  declare _stallTimeout: any;
+  declare _autoRetryTimeout: any;
+  declare _projectionDebounceTimer: any;
+
   constructor(leaf: any, plugin: any, options: GryphonChatViewOptions = {}) {
     super(leaf);
     this.plugin = plugin;
@@ -856,7 +935,7 @@ class GryphonChatView extends ItemView {
 
     // Handle clicks on internal links (wikilinks rendered by MarkdownRenderer)
     this.messagesEl.addEventListener("click", (e) => {
-      const link = e.target.closest("a.internal-link");
+      const link = (e.target as HTMLElement).closest("a.internal-link");
       if (link) {
         e.preventDefault();
         const href = link.getAttribute("data-href") || link.getAttribute("href");
@@ -908,8 +987,8 @@ class GryphonChatView extends ItemView {
     // copy from before the focus change. `ignoreChat` prevents echoing
     // the user's own selection within the chat bubble area.
     this._cachedSelection = null;
-    this.registerDomEvent(document, "selectionchange", () => {
-      const sel = document.getSelection();
+    this.registerDomEvent(activeDocument, "selectionchange", () => {
+      const sel = activeDocument.getSelection();
       if (!sel || sel.isCollapsed) return;
       const text = sel.toString();
       if (!text) return;
@@ -1051,7 +1130,7 @@ class GryphonChatView extends ItemView {
       cls: "gryphon-toolbar-btn gryphon-rest-api-toggle",
     });
     this._updateRestApiChip();
-    this.restApiBtn.addEventListener("click", async () => {
+    (this.restApiBtn as any).addEventListener("click", async () => {
       const previous = this.plugin.settings.obsidianRestApiPolicy || "blocked";
       this.plugin.settings.obsidianRestApiPolicy = previous === "blocked" ? "allowed" : "blocked";
       try {
@@ -1124,14 +1203,14 @@ class GryphonChatView extends ItemView {
         if ((e.key === "Enter" || e.key === "Tab") && this.autocompleteIdx >= 0) {
           e.preventDefault();
           const selected = items[this.autocompleteIdx];
-          if (selected) this._selectAcItem(selected.dataset.cmd);
+          if (selected) this._selectAcItem((selected as HTMLElement).dataset.cmd);
           return;
         }
         // Tab with no selection → complete to the first match. Common
         // shell/editor convention; also saves users from having to arrow.
         if (e.key === "Tab" && items.length > 0) {
           e.preventDefault();
-          this._selectAcItem(items[0].dataset.cmd);
+          this._selectAcItem((items[0] as HTMLElement).dataset.cmd);
           return;
         }
         // Enter with autocomplete open but no selection → the user is
@@ -1141,7 +1220,7 @@ class GryphonChatView extends ItemView {
         // the LLM for a lookup we already have the answer to.
         if (e.key === "Enter" && !e.shiftKey && items.length > 0) {
           e.preventDefault();
-          const candidates = [...items].map((el) => el.dataset.cmd).join(", ");
+          const candidates = Array.from(items).map((el) => (el as HTMLElement).dataset.cmd).join(", ");
           this._hideAutocomplete();
           this._flashStatus(`Ambiguous command \u2014 did you mean: ${candidates}?`);
           return;
@@ -1187,7 +1266,7 @@ class GryphonChatView extends ItemView {
         const beforeText = this.inputEl.value;
         // Don't preventDefault. Let the browser try to move the caret.
         // We check on the next frame whether it actually did.
-        requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           // The textarea must still be focused and untouched; if the
           // user pressed something else in the meantime, bail.
           if (this.inputEl.value !== beforeText) return;
@@ -1229,7 +1308,7 @@ class GryphonChatView extends ItemView {
     });
 
     this.sendBtn = inputArea.createEl("button", { text: "Send", cls: "gryphon-btn-send" });
-    this.sendBtn.addEventListener("click", () => this.sendMessage());
+    this.sendBtn.addEventListener("click", () => { void this.sendMessage(); });
 
     // Issue #40: refresh toolbar badges when settings change. Fires
     // when the user (or a consumer plugin's settings tab) changes any
@@ -1239,7 +1318,7 @@ class GryphonChatView extends ItemView {
     // until the plugin is reloaded.
     if (this.app && this.app.workspace && typeof this.app.workspace.on === "function") {
       this.registerEvent(
-        this.app.workspace.on("gryphon:settings-changed", () => {
+        (this.app.workspace as any).on("gryphon:settings-changed", () => {
           // Subprocess ownership lives behind this event.
           // A consumer that changes a spawn-time setting through its own
           // settings tab fires gryphon:settings-changed but never calls
@@ -1376,7 +1455,7 @@ class GryphonChatView extends ItemView {
     const cs = getComputedStyle(el);
     const lineHeight = parseFloat(cs.lineHeight) ||
                        (parseFloat(cs.fontSize) || 13) * 1.5;
-    const mirror = document.createElement("div");
+    const mirror = activeDocument.createElement("div");
     const props = [
       "boxSizing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
       "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
@@ -1397,16 +1476,16 @@ class GryphonChatView extends ItemView {
     mirror.style.width = el.clientWidth + "px";
     const caretPos = el.selectionEnd;
     mirror.textContent = el.value.substring(0, caretPos);
-    const marker = document.createElement("span");
+    const marker = activeDocument.createElement("span");
     // Marker needs measurable layout. A trailing newline produces a
     // zero-width final span — use a period as fallback so offsetTop is
     // computed relative to the new visual line rather than the previous one.
     marker.textContent = el.value.substring(caretPos, caretPos + 1) || ".";
     mirror.appendChild(marker);
-    document.body.appendChild(mirror);
+    activeDocument.body.appendChild(mirror);
     const caretTop = marker.offsetTop;
     const totalHeight = mirror.offsetHeight;
-    document.body.removeChild(mirror);
+    activeDocument.body.removeChild(mirror);
     return {
       caretTop,
       totalHeight,
@@ -1481,22 +1560,22 @@ class GryphonChatView extends ItemView {
   }
 
   async onClose() {
-    if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
-    if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+    if (this._connTimeout) { window.clearTimeout(this._connTimeout); this._connTimeout = null; }
+    if (this._stallTimeout) { window.clearTimeout(this._stallTimeout); this._stallTimeout = null; }
     // F1 (v2.0) — projection debounce can outlive the view by up to
     // 300ms after the last keystroke. If we don't clear it here, the
     // pending refresh fires against a detached DOM (inputEl /
     // projectionBtn already removed by Obsidian) and the inner
     // try/catch logs a benign-but-noisy console error per closed view.
     if (this._projectionDebounceTimer) {
-      clearTimeout(this._projectionDebounceTimer);
+      window.clearTimeout(this._projectionDebounceTimer);
       this._projectionDebounceTimer = null;
     }
     // Issue #34 deferred: cancel any pending rate-limit auto-retry so a
     // closed view doesn't fire a phantom resubmit after the user moved
     // on (or closed Obsidian).
     if (this._autoRetryTimeout) {
-      clearTimeout(this._autoRetryTimeout);
+      window.clearTimeout(this._autoRetryTimeout);
       this._autoRetryTimeout = null;
       this._autoRetryFired = false;
     }
@@ -1850,9 +1929,9 @@ class GryphonChatView extends ItemView {
    */
   _refreshContextProjectionDebounced() {
     if (this._projectionDebounceTimer) {
-      clearTimeout(this._projectionDebounceTimer);
+      window.clearTimeout(this._projectionDebounceTimer);
     }
-    this._projectionDebounceTimer = setTimeout(() => {
+    this._projectionDebounceTimer = window.setTimeout(() => {
       this._projectionDebounceTimer = null;
       this._refreshContextProjection();
     }, PROJECTION_DEBOUNCE_MS);
@@ -2398,7 +2477,7 @@ class GryphonChatView extends ItemView {
     // is resetting the session deliberately, and firing a stale retry
     // would resubmit a prompt against a now-empty conversation.
     if (this._autoRetryTimeout) {
-      clearTimeout(this._autoRetryTimeout);
+      window.clearTimeout(this._autoRetryTimeout);
       this._autoRetryTimeout = null;
       this._autoRetryFired = false;
     }
@@ -2636,7 +2715,7 @@ class GryphonChatView extends ItemView {
         // Retry the user's pre-compact text first (lag-failsafe path),
         // otherwise drain queued prompts in normal order.
         if (retryText) {
-          setTimeout(() => {
+          window.setTimeout(() => {
             this.inputEl.value = retryText;
             this.sendMessage();
           }, 0);
@@ -2662,7 +2741,7 @@ class GryphonChatView extends ItemView {
       this._compactionPending = false;
     };
 
-    commitBtn.addEventListener("click", async () => {
+    (commitBtn as any).addEventListener("click", async () => {
       commitBtn.disabled = true;
       cancelBtn.disabled = true;
       await this._commitCompaction(summaryText);
@@ -2719,10 +2798,10 @@ class GryphonChatView extends ItemView {
   }
 
   _cmdOpenSettings() {
-    if (this.app.setting && typeof this.app.setting.open === "function") {
-      this.app.setting.open();
-      if (typeof this.app.setting.openTabById === "function") {
-        this.app.setting.openTabById(this.plugin.manifest.id);
+    if ((this.app as any).setting && typeof (this.app as any).setting.open === "function") {
+      (this.app as any).setting.open();
+      if (typeof (this.app as any).setting.openTabById === "function") {
+        (this.app as any).setting.openTabById(this.plugin.manifest.id);
       }
     } else {
       this._flashStatus("Settings unavailable in this Obsidian version");
@@ -2752,8 +2831,8 @@ class GryphonChatView extends ItemView {
     const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
     let obsidianVersion = "unknown";
     try {
-      if (this.app && this.app.appInfo && this.app.appInfo.appVersion) {
-        obsidianVersion = String(this.app.appInfo.appVersion);
+      if (this.app && (this.app as any).appInfo && (this.app as any).appInfo.appVersion) {
+        obsidianVersion = String((this.app as any).appInfo.appVersion);
       } else if (typeof require === "function") {
         // Electron renderer exposes process.versions
         if (typeof process !== "undefined" && process.versions && process.versions.electron) {
@@ -2763,7 +2842,7 @@ class GryphonChatView extends ItemView {
     } catch {}
     let osDesc = "unknown";
     try {
-      const os = require("os");
+      const os = require("os") as typeof import("os");
       osDesc = `${os.platform()} ${os.release()}`;
     } catch {}
     return {
@@ -2828,13 +2907,13 @@ class GryphonChatView extends ItemView {
     this._flashStatus("Running diagnostics …");
     const d = this._buildDiagnosticContext();
     const settings = this.plugin.settings || {};
-    const path = require("path");
-    const fs = require("fs");
+    const path = require("path") as typeof import("path");
+    const fs = require("fs") as typeof import("fs");
     let pluginDir = null;
     try {
       pluginDir = path.join(
-        this.app.vault.adapter.basePath,
-        ".obsidian", "plugins", this.plugin.manifest.id
+        (this.app.vault.adapter as any).basePath,
+        this.app.vault.configDir, "plugins", this.plugin.manifest.id
       );
     } catch {}
     const expectHooks = [
@@ -2853,13 +2932,16 @@ class GryphonChatView extends ItemView {
     });
     let networkLine = "Network: not tested";
     try {
-      const ctrl = new AbortController();
-      const timeout = setTimeout(() => ctrl.abort(), 5000);
-      const resp = await fetch("https://api.anthropic.com/v1/", {
-        method: "HEAD",
-        signal: ctrl.signal,
-      });
-      clearTimeout(timeout);
+      // Use Obsidian's requestUrl (CORS-free) so this reachability probe
+      // reflects true network state rather than a renderer CORS block.
+      // requestUrl has no abort signal, so bound the wait with a timeout race;
+      // throw:false keeps a 401/403/404 counting as "reachable".
+      const resp = await Promise.race([
+        requestUrl({ url: "https://api.anthropic.com/v1/", method: "HEAD", throw: false }),
+        new Promise<never>((_resolve, reject) =>
+          window.setTimeout(() => reject(new Error("timed out after 5s")), 5000)
+        ),
+      ]);
       networkLine = `Network: api.anthropic.com reachable (HTTP ${resp.status})`;
     } catch (e) {
       networkLine = `Network: api.anthropic.com unreachable — ${(e && e.message) || e}`;
@@ -2924,9 +3006,9 @@ class GryphonChatView extends ItemView {
    * it was created.
    */
   async _cmdInitManual() {
-    const path = require("path");
-    const fs = require("fs");
-    const vaultPath = this.app.vault.adapter.basePath;
+    const path = require("path") as typeof import("path");
+    const fs = require("fs") as typeof import("fs");
+    const vaultPath = (this.app.vault.adapter as any).basePath;
     const manualRel = "Gryphon/MANUAL.md";
     const manualAbs = path.join(vaultPath, manualRel);
     if (fs.existsSync(manualAbs)) {
@@ -3146,9 +3228,9 @@ class GryphonChatView extends ItemView {
   async _cmdMemoryAudit() {
     const { Modal, Notice } = require("obsidian");
     const audit = require("./memory-audit");
-    const os = require("os");
+    const os = require("os") as typeof import("os");
 
-    const vaultPath = this.app && this.app.vault && this.app.vault.adapter && this.app.vault.adapter.basePath;
+    const vaultPath = this.app && this.app.vault && this.app.vault.adapter && (this.app.vault.adapter as any).basePath;
     const homeDir = os.homedir();
     const memoryDir = audit.findMemoryDir({ vaultPath, homeDir });
 
@@ -3169,7 +3251,7 @@ class GryphonChatView extends ItemView {
       // without having to grep source.
       if (vaultPath && homeDir) {
         const { escapeVaultPath } = require("./context-budget");
-        const expected = require("path").join(
+        const expected = (require("path") as typeof import("path")).join(
           homeDir, ".claude", "projects",
           escapeVaultPath(vaultPath), "memory",
         );
@@ -3524,7 +3606,7 @@ class GryphonChatView extends ItemView {
     // settles first. Restore the prompt text into the input on the same
     // tick we call sendMessage so the user never sees the queued text
     // flash in the textarea — sendMessage clears it on entry.
-    setTimeout(() => {
+    window.setTimeout(() => {
       this.inputEl.value = next.text;
       this.sendMessage();
     }, 0);
@@ -3595,7 +3677,7 @@ class GryphonChatView extends ItemView {
       // overflow — but that surfaces as a normal error rather than a
       // silent drop).
       if (retryText) {
-        setTimeout(() => {
+        window.setTimeout(() => {
           this.inputEl.value = retryText;
           this.sendMessage();
         }, 0);
@@ -4263,8 +4345,8 @@ class GryphonChatView extends ItemView {
 
   _chatHistoryPath() {
     return path.join(
-      this.app.vault.adapter.basePath,
-      ".obsidian", "plugins", this.plugin.manifest.id, "chat-history.json"
+      (this.app.vault.adapter as any).basePath,
+      this.app.vault.configDir, "plugins", this.plugin.manifest.id, "chat-history.json"
     );
   }
 
@@ -4459,7 +4541,7 @@ class GryphonChatView extends ItemView {
     const sessionIsSdkShaped = sessionId && String(sessionId).startsWith("sdk-");
     if (sessionId && cliProviderActive && !sessionIsSdkShaped) {
       try {
-        const cwd = this.app.vault.adapter.basePath;
+        const cwd = (this.app.vault.adapter as any).basePath;
         // CC escapes path separators and Windows drive-colons to `-`
         // when computing the per-project subdir name. On POSIX only `/`
         // matters. On Windows `C:\Users\User\vault` becomes
@@ -4579,19 +4661,19 @@ class GryphonChatView extends ItemView {
    *                                       block sits ABOVE the response text)
    */
   _renderThinkingBlock(bubbleEl, thinking, insertBefore = null) {
-    const details = document.createElement("details");
+    const details = activeDocument.createElement("details");
     details.className = "gryphon-thinking";
-    const summary = document.createElement("summary");
+    const summary = activeDocument.createElement("summary");
     summary.className = "gryphon-thinking-summary";
     summary.textContent = thinking.length > 1
       ? `\u{1F4AD} Thinking (${thinking.length} blocks)`
       : "\u{1F4AD} Thinking";
     details.appendChild(summary);
-    const body = document.createElement("div");
+    const body = activeDocument.createElement("div");
     body.className = "gryphon-thinking-body";
     for (let i = 0; i < thinking.length; i++) {
-      if (i > 0) body.appendChild(document.createElement("hr"));
-      const pre = document.createElement("pre");
+      if (i > 0) body.appendChild(activeDocument.createElement("hr"));
+      const pre = activeDocument.createElement("pre");
       pre.className = "gryphon-thinking-text";
       pre.textContent = thinking[i];
       body.appendChild(pre);
@@ -4606,7 +4688,7 @@ class GryphonChatView extends ItemView {
 
   _renderMessage(msg) {
     if (msg.role === "user") {
-      const msgEl = document.createElement("div") as any;
+      const msgEl = activeDocument.createElement("div") as any;
       msgEl.className = msg.sideNote
         ? "gryphon-message gryphon-user gryphon-sidenote"
         : "gryphon-message gryphon-user";
@@ -4638,7 +4720,7 @@ class GryphonChatView extends ItemView {
       }
       return msgEl;
     } else if (msg.role === "assistant") {
-      const msgEl = document.createElement("div") as any;
+      const msgEl = activeDocument.createElement("div") as any;
       msgEl.className = "gryphon-message gryphon-assistant";
       const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-assistant");
       // Issue #4: render persisted thinking blocks above the assistant
@@ -4651,7 +4733,7 @@ class GryphonChatView extends ItemView {
       MarkdownRenderer.render(this.app, msg.text, contentEl, "", this.plugin);
       return msgEl;
     } else if (msg.role === "system") {
-      const msgEl = document.createElement("div") as any;
+      const msgEl = activeDocument.createElement("div") as any;
       // Issue #28: context-reset markers render as a thin divider, not
       // a system notice card. Distinguished by the source field so the
       // CSS class can style them as a horizontal separator.
@@ -4720,9 +4802,9 @@ class GryphonChatView extends ItemView {
       this._loadMoreHint = null;
     }
     if (!this._historyLoadedUpTo || this._historyLoadedUpTo <= 0) return;
-    this._loadMoreHint = document.createElement("div");
+    this._loadMoreHint = activeDocument.createElement("div");
     this._loadMoreHint.className = "gryphon-system";
-    const span = document.createElement("span");
+    const span = activeDocument.createElement("span");
     span.className = "gryphon-system-text";
     span.textContent = `\u2191 scroll up for ${this._historyLoadedUpTo} earlier messages`;
     this._loadMoreHint.appendChild(span);
@@ -4816,7 +4898,7 @@ class GryphonChatView extends ItemView {
   _renderWelcomePanelIfNeeded() {
     const provider = createProvider(
       this.plugin,
-      this.app.vault.adapter.basePath,
+      (this.app.vault.adapter as any).basePath,
       { hostAdapter: this.plugin.hostAdapter }
     );
     if (provider) return;  // a provider can resolve — nothing to show
@@ -4851,6 +4933,7 @@ class GryphonChatView extends ItemView {
     const secLine = panel.createEl("p", { cls: "gryphon-welcome-security" });
     secLine.createSpan({
       text: "Built-in security: dangerous file paths and shell commands " +
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- user-facing help copy mentioning the default config folder, not a filesystem path
         "(rm -rf, writes into .obsidian/, curl | bash, etc.) always prompt " +
         "before running — even in YOLO mode. ",
     });
@@ -4958,7 +5041,7 @@ class GryphonChatView extends ItemView {
         cls: "mod-cta",
       });
       btn.addEventListener("click", () => {
-        const setting = this.app.setting;
+        const setting = (this.app as any).setting;
         if (setting && setting.open && setting.openTabById) {
           setting.open();
           setting.openTabById(this.plugin.manifest.id);
@@ -5051,7 +5134,7 @@ class GryphonChatView extends ItemView {
     }
     const provider = createProvider(
       this.plugin,
-      this.app.vault.adapter.basePath,
+      (this.app.vault.adapter as any).basePath,
       { hostAdapter: this.plugin.hostAdapter }
     );
     if (provider) {
@@ -5110,7 +5193,7 @@ class GryphonChatView extends ItemView {
     // window between refusal emit and assistant finalize.
     this._refusalInCurrentTurn = true;
 
-    const msgEl = document.createElement("div") as any;
+    const msgEl = activeDocument.createElement("div") as any;
     msgEl.className = "gryphon-message gryphon-refusal";
     const bubble = msgEl.createEl("div", { cls: "gryphon-bubble gryphon-bubble-refusal" });
     // Markdown render so the bullet list becomes actual bullets; the
@@ -5331,7 +5414,7 @@ class GryphonChatView extends ItemView {
 
     // 2. Check current window DOM selection.
     try {
-      const winSel = document.getSelection();
+      const winSel = activeDocument.getSelection();
       if (winSel && !winSel.isCollapsed) {
         const text = winSel.toString();
         if (text) {
@@ -5454,7 +5537,7 @@ class GryphonChatView extends ItemView {
     for (const part of parts) {
       cur = cur ? `${cur}/${part}` : part;
       if (!this.app.vault.getAbstractFileByPath(cur)) {
-        await this.app.vault.createFolder(cur);
+        await (this.app.vault as any).createFolder(cur);
       }
     }
   }
@@ -5606,7 +5689,7 @@ class GryphonChatView extends ItemView {
   }
 
   scrollToBottom() {
-    requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
       this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     });
   }
@@ -5736,6 +5819,126 @@ class GryphonChatView extends ItemView {
 
   // ── Send ──
 
+  /**
+   * One-hop availability failover (issue #15). Thin orchestration on top of
+   * the provider-runtime kernel (classifyProviderFailure / resolveFallback).
+   *
+   * `attempt(kind, modelOverride)` is the re-runnable construct+wire+send unit
+   * supplied by sendMessage. It resolves to one of:
+   *   { ok: true,  provider, result }            — sent successfully
+   *   { ok: false, provider, error }             — constructed, send threw
+   *   { ok: false, provider: null, error: null } — construct returned null
+   *
+   * Returns a decision:
+   *   { outcome: "served", result, requestedProvider, servedBy, fellBack, reason }
+   *   { outcome: "unavailable", result: null, ... }  — no provider, no fallback
+   *                                                     (sendMessage shows
+   *                                                      explainUnavailable())
+   * Throws when the active failure is a genuine content/runtime error (the
+   * original error, unchanged — its UX is owned by sendMessage's catch), or
+   * when a fallback was attempted and also failed (one combined error).
+   *
+   * Only AVAILABILITY failures fail over: every such class fails BEFORE any
+   * assistant content streams, so re-attempting on the fallback never
+   * discards partial good output.
+   */
+  async _runFailover(activeKind, attempt) {
+    const { classifyProviderFailure, resolveFallback } = require("@gryphon/provider-runtime");
+
+    // Attempt 1: the active provider, at the user's configured model.
+    const a = await attempt(activeKind, undefined);
+    if (a && a.ok) {
+      return this._stampFailoverResult(a.result, {
+        requestedProvider: activeKind, servedBy: activeKind, fellBack: false, reason: null,
+      });
+    }
+
+    // Classify the active failure (a.error == null ⇒ construct-null).
+    const cls = classifyProviderFailure(a ? a.error : null);
+
+    // Genuine content/runtime error from a working provider: never fail over.
+    // Re-surface the original error unchanged.
+    if (cls.kind !== "availability") {
+      throw a.error;
+    }
+
+    const fb = resolveFallback(this.plugin);
+
+    // Refine the construct-null reason so the reported signal names WHY the
+    // active provider couldn't be built (e.g. an API kind with no key).
+    const reason = cls.reason === "construct-null"
+      ? this._refineConstructNullReason(activeKind)
+      : cls.reason;
+
+    // No fallback configured, or the fallback resolves to the (already-dead)
+    // active kind — retrying the same provider is pointless. Surface the
+    // active failure exactly as before failover existed.
+    if (!fb || fb.kind === activeKind) {
+      if (a && a.error) throw a.error;
+      return {
+        outcome: "unavailable", result: null,
+        requestedProvider: activeKind, servedBy: null, fellBack: false, reason,
+      };
+    }
+
+    // Attempt 2 — the single hop. Construct + send via the fallback once.
+    const b = await attempt(fb.kind, fb.model);
+    if (b && b.ok) {
+      return this._stampFailoverResult(b.result, {
+        requestedProvider: activeKind, servedBy: fb.kind, fellBack: true, reason,
+      });
+    }
+
+    // Fallback also failed → one combined, actionable error. No further hops.
+    const fbErr = b && b.error ? (b.error.message || String(b.error)) : "could not be constructed";
+    throw new Error(
+      `${activeKind} unavailable (${reason}); fallback ${fb.kind} also failed: ${fbErr}`,
+    );
+  }
+
+  /**
+   * Humanized fallback attribution (issue #16). #15's signal carries raw kind
+   * ids + a raw reason; here we render the user-facing message via the
+   * provider-runtime kernel humanizers so the chat surface and the Settings
+   * chip speak identically. Shape:
+   *   "Selected: {label} (unavailable: {reason}) · Answered by: {label}"
+   */
+  _formatFallbackNotice(decision) {
+    const { friendlyProviderLabel, humanizeFailureReason } = require("@gryphon/provider-runtime");
+    return (
+      `Selected: ${friendlyProviderLabel(decision.requestedProvider)} ` +
+      `(unavailable: ${humanizeFailureReason(decision.reason)}) · ` +
+      `Answered by: ${friendlyProviderLabel(decision.servedBy)}`
+    );
+  }
+
+  /** Stamp the transparency signal onto the Result + build the served decision. */
+  _stampFailoverResult(result, fields) {
+    if (result && typeof result === "object") {
+      result.requestedProvider = fields.requestedProvider;
+      result.servedBy = fields.servedBy;
+      result.fellBack = fields.fellBack;
+      result.reason = fields.reason;
+    }
+    return { outcome: "served", result, ...fields };
+  }
+
+  /**
+   * Why did createProvider return null for `kind`? For an API kind it is
+   * almost always a missing key — report that ("no-api-key") rather than the
+   * generic "construct-null". CLI kinds construct-null on a missing binary,
+   * which is not a key issue, so they keep "construct-null".
+   */
+  _refineConstructNullReason(kind) {
+    const s = (this.plugin && this.plugin.settings) || {};
+    const hasKey =
+      kind === "anthropic-api" ? !!(s.anthropicApiKey || process.env.ANTHROPIC_API_KEY) :
+      kind === "openai-api"    ? !!(s.openaiApiKey || process.env.OPENAI_API_KEY) :
+      kind === "google-api"    ? !!(s.googleApiKey || process.env.GOOGLE_API_KEY) :
+      true; // CLI kinds: construct-null = missing binary, not a key
+    return hasKey ? "construct-null" : "no-api-key";
+  }
+
   async sendMessage() {
     this._userInitiatedAbort = false;
     // Cancel any pending rate-limit auto-retry — a fresh send (manual or
@@ -5747,7 +5950,7 @@ class GryphonChatView extends ItemView {
     // session after the first manual override of a scheduled retry. /clear
     // and onClose already reset both; sendMessage entry must do the same.
     if (this._autoRetryTimeout) {
-      clearTimeout(this._autoRetryTimeout);
+      window.clearTimeout(this._autoRetryTimeout);
       this._autoRetryTimeout = null;
     }
     this._autoRetryFired = false;
@@ -5867,7 +6070,7 @@ class GryphonChatView extends ItemView {
     this.isStreaming = true;
     this.startStreamingMessage();
 
-    const vaultPath = this.app.vault.adapter.basePath;
+    const vaultPath = (this.app.vault.adapter as any).basePath;
     // Harden the reuse guard so a still-alive process whose
     // spawn-time identity (provider/model/effort/permission) no longer
     // matches settings is also treated as "new". This is the belt to the
@@ -5881,6 +6084,12 @@ class GryphonChatView extends ItemView {
       this._providerSpawnSignature = null;
     }
     const isNewProcess = !this.claudeProcess || !this.claudeProcess.isAlive();
+    // Construction inputs for a fresh provider, assembled in the
+    // isNewProcess block and consumed by the failover loop's `attempt`
+    // closure below. Stays null on the reuse path (the alive process is
+    // reused for the active attempt; a fallback, if needed, builds with a
+    // minimal options bag — see `creationOptions`).
+    let baseOptions = null;
     if (isNewProcess) {
       // v0.5.13: pass any pending compaction summary as a dedicated
       // `compactionSummary` option so the CLI provider can merge it
@@ -5940,7 +6149,11 @@ class GryphonChatView extends ItemView {
           );
         } catch (_) { /* obsidian not available in tests */ }
       }
-      this.claudeProcess = createProvider(this.plugin, vaultPath, {
+      // Construction options for a fresh provider. The actual createProvider
+      // call (plus the construct-null / bug-#23 handling) now lives in the
+      // failover loop below so the active provider AND a fallback can both be
+      // built + sent through one re-runnable path (issue #15).
+      baseOptions = {
         model: this.plugin.settings.model || undefined,
         effort: this.plugin.settings.effort || undefined,
         permissionMode: this.plugin.settings.permissionMode || undefined,
@@ -5950,45 +6163,7 @@ class GryphonChatView extends ItemView {
         extraArgsByProvider: this.extraProcessArgsByProvider,
         initialHistory: sdkInitialHistory,
         hostAdapter: this.plugin.hostAdapter,
-      });
-      // Record the spawn-time identity so a later
-      // gryphon:settings-changed (or the reuse guard above) can detect
-      // when this process no longer matches settings. Cleared on a failed
-      // spawn so a null process never carries a stale stamp.
-      this._providerSpawnSignature = this.claudeProcess
-        ? this._computeProviderSignature()
-        : null;
-      if (!this.claudeProcess) {
-        // Bug #23: failed sends (no provider could be constructed) used
-        // to lose both the user message AND the error bubble across
-        // plugin disable+enable. Two issues conspired:
-        //   1. addUserMessage() tagged the just-typed prompt with the
-        //      current lastSessionId. If that ID looked like a CLI
-        //      session, filterMessagesForSave() dropped the message
-        //      on the assumption Claude Code's jsonl would re-supply
-        //      it — but no CLI session ran, no jsonl was written,
-        //      and the message vanished on reload.
-        //   2. Save was fire-and-forget; a quick disable could
-        //      interrupt the rename step before the new content
-        //      committed to disk.
-        // Fix: clear sessionId on the just-recorded user message so
-        // the save filter can't drop it, then AWAIT the save before
-        // returning so the user message + the error bubble (added by
-        // _cleanupStreamingState → finalizeStreamingMessage) are
-        // both flushed to disk before any subsequent disable.
-        const lastUserMsg = this.messages[this.messages.length - 1];
-        if (lastUserMsg && lastUserMsg.role === "user") {
-          lastUserMsg.sessionId = null;
-        }
-        this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin) });
-        // Awaited save: ensures both the user message and the error
-        // bubble (just pushed by finalizeStreamingMessage inside
-        // _cleanupStreamingState) hit disk before sendMessage returns
-        // to the user, who is likely about to fix their config and
-        // re-enable the plugin.
-        await this._saveChatHistory();
-        return;
-      }
+      };
     }
 
     if (isNewProcess && this.streamingEl) {
@@ -6006,103 +6181,103 @@ class GryphonChatView extends ItemView {
     }
 
     let stderrLog = "";
-    this.claudeProcess.onMessage = (text, type) => {
-      // Any signal of life clears the stall indicator — text deltas, init,
-      // tool invocations all count.
-      if (this._stallTimeout) {
-        clearTimeout(this._stallTimeout);
-        this._stallTimeout = null;
-      }
-      if (type === "init") {
-        if (this.streamingEl) this.updateStatus("Thinking...");
-        this._refreshModelTooltip();
-      } else if (type === "replace") {
-        this.clearStatus();
-        // Universal smush-fix: insert a paragraph break before
-        // canonical Gryphon-emitted blocks if they land on the same
-        // line as the model's prior text. SDK deltas + CLI stream
-        // events accumulate text by `+=` per provider; when the
-        // model emits "narration." then a tool call then "This
-        // operation matches..." in the same iteration, the result
-        // is "...narration.This operation matches..." with no
-        // separator. Each provider could fix this in its own
-        // accumulator (CC's content_block_start handler does), but
-        // multiple providers share the same model behavior — a
-        // single normalization here covers all six provider modes
-        // in one place. User report 2026-05-04.
-        this.replaceStreamingContent(
-          _collapseSummaryDrafts(
-            _separateCanonicalBlocks(
-              _dedupeConsecutiveParagraphs(
-                _replaceNoResponsePlaceholder(text),
-              ),
-            ),
-          ),
-        );
-      } else if (type === "tool") {
-        this.updateStatus(text);
-      }
-    };
-    this.claudeProcess.onError = (text) => {
-      console.warn(`[${this.viewDisplayText}] stderr:`, text);
-      stderrLog += text + "\n";
-    };
-    // CLI provider fires this when it detects "No conversation found
-    // with session ID" in CC's stderr and decides to respawn without
-    // --resume. Wipe our persisted session ID so the NEXT provider
-    // construction doesn't re-pass the same stale value, and surface a
-    // one-line system message so the user understands why their chat
-    // didn't resume.
-    this.claudeProcess.onSessionExpired = () => {
-      if (this.plugin.settings.lastSessionId) {
-        this.plugin.settings.lastSessionId = null;
-        this.plugin.saveSettings().catch(() => {});
-      }
-      this.addSystemMessage(
-        "Your previous CLI session wasn't found (it may have been compacted or rotated). Starting a fresh session and re-sending your message.",
-      );
-    };
-
-    // Stall timeout — if NO text/init/tool event in 10s, surface a soft
-    // "still waiting" status. Doesn't abort (the 60s conn-timeout handles
-    // that); just tells the user something is happening so a silently
-    // retrying SDK call doesn't look like the chat is frozen. The SDK
-    // retries 4xx-class rate-limit errors silently with backoff (Phase 6),
-    // so a stall during heavy load is normal but invisible without this.
-    this._stallTimeout = setTimeout(() => {
-      if (this.isStreaming && this.streamingEl && !this.streamingText) {
-        this.updateStatus("Still waiting (possibly rate-limited, retrying)...");
-      }
-    }, 10000);
-
-    // Connection timeout — if no response within the model-adaptive
-    // budget (issue #38), abort the stuck process and tear down
-    // streaming state through the same shared helper that stopStreaming
-    // uses. This is how R3-1 is prevented from regressing: there's only
-    // one cleanup code path, no room for partial cleanup.
-    //
-    // Budget defaults to a per-model value (Haiku 30s, Sonnet 60s,
-    // Opus 120s, Opus 1M 180s; non-Anthropic providers fall back to 60s)
-    // so cold-start of large models has room to allocate KV-cache before
-    // we declare the call hung. The user can override via Settings →
-    // Gryphon → Connection timeout if their network is slow or their
-    // prompts trigger unusually long warm-ups.
+    // Connection-timeout budget (issue #38), per active model. Computed once;
+    // each attempt re-arms the timers via wireAndArm.
     const connBudgetMs = resolveConnectionTimeoutMs({
       override: this.plugin.settings.connectionTimeoutMs,
       model: this.plugin.settings.model,
     });
-    this._connTimeout = setTimeout(() => {
-      if (this.isStreaming && this.streamingEl && !this.streamingText) {
-        const seconds = Math.round(connBudgetMs / 1000);
-        const detail = stderrLog
-          ? `**Debug:**\n\`\`\`\n${stderrLog.substring(0, 500)}\n\`\`\``
-          : "Try again, switch to a faster model, or raise the timeout in Settings → Gryphon → Connection timeout.";
-        this._cleanupStreamingState({
-          bubbleText: `Connection timed out after ${seconds}s — no response from the model.\n\n${detail}`,
-          doneStatus: "Timed out",
-        });
-      }
-    }, connBudgetMs);
+    // Wire the streaming callbacks + arm the stall/connection timeouts on a
+    // provider. Extracted (issue #15) so it can run against the active
+    // provider AND, on failover, a freshly-constructed fallback. Re-arming
+    // first clears any timers left by a prior attempt.
+    const wireAndArm = (provider) => {
+      if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+      if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
+      provider.onMessage = (text, type) => {
+        // Any signal of life clears the stall indicator — text deltas, init,
+        // tool invocations all count.
+        if (this._stallTimeout) {
+          clearTimeout(this._stallTimeout);
+          this._stallTimeout = null;
+        }
+        if (type === "init") {
+          if (this.streamingEl) this.updateStatus("Thinking...");
+          this._refreshModelTooltip();
+        } else if (type === "replace") {
+          this.clearStatus();
+          // Universal smush-fix: insert a paragraph break before
+          // canonical Gryphon-emitted blocks if they land on the same
+          // line as the model's prior text. SDK deltas + CLI stream
+          // events accumulate text by `+=` per provider; when the
+          // model emits "narration." then a tool call then "This
+          // operation matches..." in the same iteration, the result
+          // is "...narration.This operation matches..." with no
+          // separator. Each provider could fix this in its own
+          // accumulator (CC's content_block_start handler does), but
+          // multiple providers share the same model behavior — a
+          // single normalization here covers all six provider modes
+          // in one place. User report 2026-05-04.
+          this.replaceStreamingContent(
+            _collapseSummaryDrafts(
+              _separateCanonicalBlocks(
+                _dedupeConsecutiveParagraphs(
+                  _replaceNoResponsePlaceholder(text),
+                ),
+              ),
+            ),
+          );
+        } else if (type === "tool") {
+          this.updateStatus(text);
+        }
+      };
+      provider.onError = (text) => {
+        console.warn(`[${this.viewDisplayText}] stderr:`, text);
+        stderrLog += text + "\n";
+      };
+      // CLI provider fires this when it detects "No conversation found
+      // with session ID" in CC's stderr and decides to respawn without
+      // --resume. Wipe our persisted session ID so the NEXT provider
+      // construction doesn't re-pass the same stale value, and surface a
+      // one-line system message so the user understands why their chat
+      // didn't resume.
+      provider.onSessionExpired = () => {
+        if (this.plugin.settings.lastSessionId) {
+          this.plugin.settings.lastSessionId = null;
+          this.plugin.saveSettings().catch(() => {});
+        }
+        this.addSystemMessage(
+          "Your previous CLI session wasn't found (it may have been compacted or rotated). Starting a fresh session and re-sending your message.",
+        );
+      };
+
+      // Stall timeout — if NO text/init/tool event in 10s, surface a soft
+      // "still waiting" status. Doesn't abort (the conn-timeout handles
+      // that); just tells the user something is happening so a silently
+      // retrying SDK call doesn't look like the chat is frozen.
+      this._stallTimeout = setTimeout(() => {
+        if (this.isStreaming && this.streamingEl && !this.streamingText) {
+          this.updateStatus("Still waiting (possibly rate-limited, retrying)...");
+        }
+      }, 10000);
+
+      // Connection timeout — if no response within the model-adaptive budget
+      // (issue #38), abort the stuck process and tear down streaming state
+      // through the same shared helper that stopStreaming uses. Single
+      // cleanup code path (R3-1).
+      this._connTimeout = setTimeout(() => {
+        if (this.isStreaming && this.streamingEl && !this.streamingText) {
+          const seconds = Math.round(connBudgetMs / 1000);
+          const detail = stderrLog
+            ? `**Debug:**\n\`\`\`\n${stderrLog.substring(0, 500)}\n\`\`\``
+            : "Try again, switch to a faster model, or raise the timeout in Settings → Gryphon → Connection timeout.";
+          this._cleanupStreamingState({
+            bubbleText: `Connection timed out after ${seconds}s — no response from the model.\n\n${detail}`,
+            doneStatus: "Timed out",
+          });
+        }
+      }, connBudgetMs);
+    };
 
     try {
       // Auto-context: prepend active file path so "this note" references
@@ -6179,9 +6354,97 @@ class GryphonChatView extends ItemView {
       const effectiveReminder = postDenyClarifier ? "" : reminder;
       const effectiveCompound = postDenyClarifier ? "" : compoundReminder;
       const augmentedText = this._buildContextPrefix() + effectiveReminder + effectiveCompound + postDenyClarifier + sideNotePrefix + safeText;
-      const result = await this.claudeProcess.send(augmentedText);
+
+      // Construction options for any provider built inside the loop. On a
+      // fresh process this is the full baseOptions; on the reuse path it's a
+      // minimal bag (only a fallback would be constructed there) carrying the
+      // host adapter + per-provider extraArgs so protection still wires up.
+      const creationOptions = baseOptions || {
+        model: this.plugin.settings.model || undefined,
+        effort: this.plugin.settings.effort || undefined,
+        permissionMode: this.plugin.settings.permissionMode || undefined,
+        extraArgsByProvider: this.extraProcessArgsByProvider,
+        hostAdapter: this.plugin.hostAdapter,
+      };
+
+      // The re-runnable construct+wire+send unit driven by _runFailover.
+      // `modelOverride === undefined` ⇒ the active attempt (settings-driven,
+      // reuses an alive matching process); a defined override ⇒ the fallback.
+      const attempt = async (kind, modelOverride) => {
+        const isActive = modelOverride === undefined;
+        let provider;
+        if (isActive && !isNewProcess && this.claudeProcess && this.claudeProcess.isAlive()) {
+          provider = this.claudeProcess; // reuse the still-valid live process
+        } else {
+          // ensureIpcListening was already awaited in the isNewProcess block
+          // above, so the IPC guardrail server is up before this spawn. The
+          // active branch keeps the literal `this.claudeProcess = createProvider(`
+          // intact so the protect IPC-ordering contract test stays meaningful.
+          if (isActive) {
+            provider = this.claudeProcess = createProvider(this.plugin, vaultPath, creationOptions);
+          } else {
+            provider = this.claudeProcess = createProviderForKind(this.plugin, kind, vaultPath, creationOptions, modelOverride);
+          }
+          // Stamp the spawn signature. The active provider stamps the live
+          // settings signature (so the reuse guard keeps reusing it while
+          // settings are unchanged). A fallback stamps the fallback's own
+          // identity — which DIFFERS from the active settings — so the NEXT
+          // turn's reuse guard tears it down and re-attempts the user's
+          // chosen provider rather than silently sticking on the fallback.
+          this._providerSpawnSignature = !provider
+            ? null
+            : isActive
+              ? this._computeProviderSignature()
+              : {
+                  kind,
+                  model: modelOverride || null,
+                  effort: this.plugin.settings.effort || null,
+                  permissionMode: this.plugin.settings.permissionMode || null,
+                };
+          if (!provider) return { ok: false, provider: null, error: null };
+        }
+        wireAndArm(provider);
+        try {
+          const result = await provider.send(augmentedText);
+          return { ok: true, provider, result };
+        } catch (error) {
+          return { ok: false, provider, error };
+        }
+      };
+
+      // Resolve the active kind exactly as the spawn path does so the
+      // same-kind failover guard reasons about the concrete provider.
+      const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+      const activeKind = getActiveProviderKind(this.plugin) ||
+                         this.plugin.settings.providerPreference;
+
+      const decision = await this._runFailover(activeKind, attempt);
       if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
       if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+
+      // No provider could serve and no fallback was available — preserve the
+      // pre-failover construct-null UX (bug #23): explainUnavailable() + an
+      // awaited save so the user message and the error bubble both reach disk
+      // before the user fixes their config and re-enables the plugin.
+      if (decision.outcome === "unavailable") {
+        const lastUserMsg = this.messages[this.messages.length - 1];
+        if (lastUserMsg && lastUserMsg.role === "user") {
+          lastUserMsg.sessionId = null;
+        }
+        this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin) });
+        // Mirror the pre-failover early-return: this turn failed, so the
+        // finally block must NOT auto-drain queued prompts (issue #7).
+        this._sendErroredThisTurn = true;
+        await this._saveChatHistory();
+        return;
+      }
+
+      const result = decision.result;
+      // When a fallback served, tell the user which provider answered so the
+      // switch is never silent (the issue's core requirement).
+      if (decision.fellBack) {
+        this.addSystemMessage(this._formatFallbackNotice(decision));
+      }
 
       const rawResponseText = (result && result.text) ? result.text : (this.streamingText || "(No response)");
       // Apply the same normalizers we apply to live streaming text
@@ -6255,8 +6518,8 @@ class GryphonChatView extends ItemView {
         if (result.contextTokens) this.updateContextMeter(result.contextTokens);
       }
     } catch (err) {
-      if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
-      if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+      if (this._connTimeout) { window.clearTimeout(this._connTimeout); this._connTimeout = null; }
+      if (this._stallTimeout) { window.clearTimeout(this._stallTimeout); this._stallTimeout = null; }
 
       // Lag-failsafe (issue #5 / v1.1.0): SDK reported the prompt
       // overflowed despite our last reading being below the 95%
@@ -6289,7 +6552,7 @@ class GryphonChatView extends ItemView {
           // Re-fire the summary prompt through sendMessage. The
           // _compactSummaryPending flag is still set, so the finalize
           // path will route to _onCompactSummaryReady as expected.
-          setTimeout(() => {
+          window.setTimeout(() => {
             this.inputEl.value = text;
             this.sendMessage();
           }, 0);
@@ -6410,7 +6673,7 @@ class GryphonChatView extends ItemView {
             `Rate limited — auto-retrying in ${Math.ceil(retryAfter)}s (turn off in Settings → Auto-retry on rate-limit).`,
             ms + 500,
           );
-          this._autoRetryTimeout = setTimeout(() => {
+          this._autoRetryTimeout = window.setTimeout(() => {
             this._autoRetryTimeout = null;
             // Bail if the user has typed something else, /clear'd, or
             // closed the view in the meantime.

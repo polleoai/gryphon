@@ -17,8 +17,8 @@
  * valid markdown but its dead references stop loading.
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { escapeVaultPath } = require("./context-budget");
 
 const MEMORY_INDEX_NAME = "MEMORY.md";

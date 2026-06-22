@@ -4,7 +4,17 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
-## [2.4.5] — 2026-06-20
+## [2.5.0] — 2026-06-21
+
+### Added
+
+- **Set a fallback provider, and Gryphon retries automatically when your main one is unavailable.** Choose a fallback in Settings → Gryphon. If your selected provider is temporarily unreachable — rate-limited, hitting a usage limit, or briefly down — Gryphon resends your message once on the fallback instead of surfacing an error and losing your turn. It only fails over on *availability* problems: a genuine content or runtime error does not trigger a retry, so a fallback is never burned and partial output is never discarded. When a fallback answers, the chat tells you which provider responded and why, in plain language.
+- **A readiness check warns you before you send if your chosen provider can't actually run.** The selected provider now shows an at-a-glance readiness indicator in settings — so a missing API key, or a CLI that isn't installed where Gryphon looks for it, is surfaced up front rather than as a confusing failure on your first message. The check is local only: it reads your key/binary configuration and never makes a network call.
+
+### Changed
+
+- **The settings surface is now shared, so the same provider and defaults controls render consistently when the chat is embedded in another plugin.** No change for users running Gryphon as a standalone Obsidian plugin.
+- **Internal code-quality pass.** A large reduction in type-checker warnings across the codebase, with no behaviour change — purely maintainability work.
 
 ### Fixed
 

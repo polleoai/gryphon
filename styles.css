@@ -774,6 +774,16 @@
   line-height: 1.5;
 }
 
+/* Proactive provider-readiness chip (issue #16) — warns inline under the
+   Provider dropdown when the selected provider isn't usable (e.g. no key). */
+.gryphon-provider-status-chip {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.85em;
+  font-weight: 500;
+  color: var(--text-warning, var(--color-orange));
+}
+
 /* ── Help modal table ─────────────────────────────────────────────── */
 
 .gryphon-help-table {

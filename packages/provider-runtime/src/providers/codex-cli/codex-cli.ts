@@ -28,7 +28,7 @@
  *   { type: "turn.completed", usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }
  */
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const {
   computeCost,
@@ -58,7 +58,7 @@ const { winSpawn } = require("@gryphon/protect");
  * a privileged read on some distros and we can't add that dependency.
  * Version parsing is good enough — landlock has been stable in 5.13+.
  */
-const os = require("os");
+const os = require("os") as typeof import("os");
 let _landlockSupportCache: boolean | null = null;
 function _supportsLandlockSandbox() {
   if (_landlockSupportCache !== null) return _landlockSupportCache;
@@ -289,7 +289,7 @@ class CodexProvider {
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
     this.process = null;
     this.alive = false;
     // Wrap the resumed id so chat-view sees the prefixed form regardless
@@ -410,7 +410,7 @@ class CodexProvider {
         injectSchemaHint,
         parseAndValidate,
         CliStructuredOutputError,
-      } = require("../../cli-structured-output");
+      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -445,7 +445,7 @@ class CodexProvider {
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
+                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -508,7 +508,7 @@ class CodexProvider {
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
         if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error");
+          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
           throw new BudgetExceededError({
             budget: options.maxUsdBudget,
             spent: perCallSpent,
@@ -1087,6 +1087,7 @@ class CodexProvider {
       // Tree-kill: codex's child tree (incl. any MCP grandchildren) — not
       // just the direct pid. SIGKILL the group after 5s if still alive.
       try { killProcessTree(proc, "SIGTERM"); } catch {}
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
@@ -1111,7 +1112,7 @@ class CodexProvider {
   get costIsEstimate() { return true; }
 }
 
-module.exports = {
+export {
   CodexProvider,
   _mapPermissionToSandbox,
   _supportsLandlockSandbox,

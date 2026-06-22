@@ -29,9 +29,13 @@
  * decision (track-but-don't-discount until OpenAI's pricing stabilizes).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_MODEL = exports.resolveModel = exports.OpenAIProvider = void 0;
+exports.testApiKey = testApiKey;
 const OpenAI = require("openai");
 const { runOpenAIToolLoop } = require("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.openai;
+exports.resolveModel = resolveModel;
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_OPENAI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsidian plugin. The user's " +
     "own protected-pattern list inside Gryphon decides which file " +
@@ -306,6 +310,7 @@ class OpenAIProvider {
         return String((err && err.message) || err);
     }
 }
+exports.OpenAIProvider = OpenAIProvider;
 function cloneOpenAIMessage(m) {
     const copy = { role: m.role, content: m.content };
     if (m.tool_calls)
@@ -344,4 +349,3 @@ async function testApiKey(apiKey) {
         return { ok: false, message: String((err && err.message) || err) };
     }
 }
-module.exports = { OpenAIProvider, testApiKey, resolveModel, DEFAULT_MODEL };

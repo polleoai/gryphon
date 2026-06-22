@@ -28,7 +28,7 @@
  *   { type: "result",      timestamp, status, stats: { input_tokens, output_tokens, total_tokens, cached, duration_ms, ... } }
  */
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const {
   computeCost,
@@ -244,7 +244,7 @@ class GeminiCliProvider {
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
     this.process = null;
     this.alive = false;
     this.sessionId = _wrapSession(options.resumeSessionId) || null;
@@ -357,7 +357,7 @@ class GeminiCliProvider {
         injectSchemaHint,
         parseAndValidate,
         CliStructuredOutputError,
-      } = require("../../cli-structured-output");
+      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -392,7 +392,7 @@ class GeminiCliProvider {
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
+                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -455,7 +455,7 @@ class GeminiCliProvider {
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
         if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error");
+          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
           throw new BudgetExceededError({
             budget: options.maxUsdBudget,
             spent: perCallSpent,
@@ -1048,6 +1048,7 @@ class GeminiCliProvider {
       // Tree-kill: gemini's child tree (incl. any MCP grandchildren) — not
       // just the direct pid. SIGKILL the group after 5s if still alive.
       try { killProcessTree(proc, "SIGTERM"); } catch {}
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
@@ -1071,7 +1072,7 @@ class GeminiCliProvider {
   get costIsEstimate() { return true; }
 }
 
-module.exports = {
+export {
   GeminiCliProvider,
   _mapPermissionToApproval,
   _wrapSession,

@@ -20,7 +20,7 @@
  *     should see and reason about the failure, not have it suppressed)
  */
 
-const { spawn } = require("child_process");
+const { spawn } = require("child_process") as typeof import("child_process");
 const { attackDetector } = require("@gryphon/protect");
 
 const SCHEMA = {
@@ -109,9 +109,11 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
       env: process.env,
     });
 
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
     const timer = setTimeout(() => {
       killed = true;
       try { proc.kill("SIGTERM"); } catch {}
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       setTimeout(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
     }, timeoutMs);
 
@@ -140,11 +142,13 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
     });
 
     proc.on("error", (err: any) => {
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       clearTimeout(timer);
       resolve(_error(`Failed to spawn command: ${err.message}`));
     });
 
     proc.on("close", (code: any, signal: any) => {
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       clearTimeout(timer);
       const parts = [];
       if (killed) {
@@ -174,4 +178,4 @@ function _error(text: any) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
-module.exports = { SCHEMA, execute };
+export { SCHEMA, execute };

@@ -208,7 +208,7 @@ function _classifyFilePath(tool, input, ctx, settings) {
             return null;
         throw e;
     }
-    const rawRel = path.relative(vaultRoot, resolved).replace(/\\/g, "/");
+    const rawRel = path.relative(String(vaultRoot), String(resolved)).replace(/\\/g, "/");
     // Same normalization as command-path matching: NFKC + zero-width strip.
     // Closes naïve Unicode obfuscation on file paths if CC ever emits one.
     const rel = _normalizeForMatch(rawRel);

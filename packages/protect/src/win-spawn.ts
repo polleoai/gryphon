@@ -49,7 +49,7 @@
  * The caller still merges its own spawn options (cwd, env, stdio).
  */
 
-const path = require("path");
+const path = require("path") as typeof import("path");
 
 /**
  * Detect a Windows .cmd / .bat shim. Callers gate the wrap on this so

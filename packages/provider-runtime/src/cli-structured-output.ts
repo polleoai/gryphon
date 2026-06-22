@@ -112,7 +112,7 @@ function validate(value: unknown, schema: any, path: string): string[] {
   return errors;
 }
 
-module.exports = {
+export {
   injectSchemaHint,
   parseAndValidate,
   CliStructuredOutputError,

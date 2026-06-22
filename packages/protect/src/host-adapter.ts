@@ -27,6 +27,7 @@ class HeadlessHostAdapter {
 
   async fetch(url: string, opts?: RequestInit) {
     opts = opts || {};
+    // eslint-disable-next-line obsidianmd/no-global-this -- HeadlessHostAdapter runs in a Node subprocess (hooks/IPC); no window/activeWindow exists there, so globalThis.fetch is the correct global.
     return globalThis.fetch(url, opts);
   }
 }

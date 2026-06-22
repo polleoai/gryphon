@@ -19,4 +19,4 @@ class BudgetExceededError extends Error {
   }
 }
 
-module.exports = { BudgetExceededError };
+export { BudgetExceededError };

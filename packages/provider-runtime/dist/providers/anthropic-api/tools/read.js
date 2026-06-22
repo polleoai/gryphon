@@ -8,6 +8,8 @@
  * this format, so reproducing it gives better tool-use behavior.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const fs = require("fs");
 const path = require("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
@@ -35,6 +37,7 @@ const SCHEMA = {
         required: ["file_path"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const DEFAULT_LIMIT = 2000;
 const MAX_LINE_LENGTH = 2000; // truncate very long lines
 // Default upper bound when no plugin setting is available. Obsidian's
@@ -123,4 +126,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

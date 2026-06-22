@@ -19,6 +19,10 @@ export interface Result {
     contextTokens: number;
     thinking?: unknown;
     json?: unknown;
+    requestedProvider?: ProviderKind;
+    servedBy?: ProviderKind;
+    fellBack?: boolean;
+    reason?: string | null;
 }
 export interface LLMProvider {
     send(prompt: string, options?: SendOptions): Promise<Result>;

@@ -37,10 +37,10 @@
  * sidesteps the whole handoff.
  */
 
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const crypto = require("crypto");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const crypto = require("crypto") as typeof import("crypto");
 
 const DEFAULT_HOOK_TIMEOUTS = {
   PreToolUse: 300,       // user may read the modal for a while before deciding
@@ -235,7 +235,7 @@ function writeHookSettingsFile(settings: any) {
   return fullPath;
 }
 
-module.exports = {
+export {
   buildHookSettings,
   buildPermissionsOnlySettings,
   writeHookSettingsFile,

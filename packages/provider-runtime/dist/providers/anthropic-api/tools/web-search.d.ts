@@ -13,4 +13,29 @@
  *
  * Permission: read-only network. Refused only in plan mode.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            query: {
+                type: string;
+                description: string;
+            };
+            max_results: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+export { SCHEMA, execute };

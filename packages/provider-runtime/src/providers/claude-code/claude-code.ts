@@ -10,10 +10,10 @@
  * callers can supply plugin-specific flags without modifying this module.
  */
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const path = require("path") as typeof import("path");
 const { buildEnhancedPath, findNodeBinary, resolveCliBinary } = require("../../utils");
 const { buildDisallowedTools } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
@@ -22,7 +22,7 @@ const {
   buildPermissionsOnlySettings,
   writeHookSettingsFile,
   HOOK_FILES,
-} = require("./hook-settings-builder");
+} = require("./hook-settings-builder") as typeof import("./hook-settings-builder");
 
 // The system-prompt hints (anti-leak directives + fallback deny copy)
 // were promoted to src/providers/shared/system-prompt-hints.js in
@@ -78,7 +78,7 @@ class ClaudeCodeProvider {
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
     this.process = null;
     this.alive = false;
     this.sessionId = null;
@@ -271,7 +271,7 @@ class ClaudeCodeProvider {
         const hookDir = path.join(plugin.absolutePluginDir(), "hooks");
         const missing = [];
         for (const scriptName of Object.values(HOOK_FILES)) {
-          const p = path.join(hookDir, scriptName);
+          const p = path.join(hookDir, String(scriptName));
           if (!fs.existsSync(p)) missing.push(p);
         }
         const ipcHelper = path.join(hookDir, "common", "ipc-client.js");
@@ -636,7 +636,7 @@ class ClaudeCodeProvider {
         injectSchemaHint,
         parseAndValidate,
         CliStructuredOutputError,
-      } = require("../../cli-structured-output");
+      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -671,7 +671,7 @@ class ClaudeCodeProvider {
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
+                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -734,7 +734,7 @@ class ClaudeCodeProvider {
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
         if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error");
+          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
           throw new BudgetExceededError({
             budget: options.maxUsdBudget,
             spent: perCallSpent,
@@ -1250,6 +1250,7 @@ class ClaudeCodeProvider {
       // reference to (killProcessTree is internally non-throwing, but the
       // caller's best-effort catch makes this defence load-bearing).
       try { killProcessTree(proc, "SIGTERM"); } catch {}
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
@@ -1276,4 +1277,4 @@ class ClaudeCodeProvider {
   get costIsEstimate() { return false; }
 }
 
-module.exports = { ClaudeCodeProvider };
+export { ClaudeCodeProvider };

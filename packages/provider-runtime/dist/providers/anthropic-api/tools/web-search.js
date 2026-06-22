@@ -15,6 +15,8 @@
  * Permission: read-only network. Refused only in plan mode.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const SCHEMA = {
     name: "WebSearch",
     description: "Searches the web and returns ranked results with title, URL, and " +
@@ -35,6 +37,7 @@ const SCHEMA = {
         required: ["query"],
     },
 };
+exports.SCHEMA = SCHEMA;
 // Network requests are routed through ctx.hostAdapter.fetch() (same
 // reasoning as web-fetch.js — requestUrl in Obsidian, globalThis.fetch
 // in headless). The module-level lazy require is gone; the adapter is
@@ -65,6 +68,7 @@ async function execute(input, ctx) {
     // requestUrl doesn't support AbortSignal; enforce timeout via race.
     const timeoutError = new Error(`Brave Search timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
     const timeoutPromise = new Promise((_, reject) => {
+        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
         setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
     });
     const hostAdapter = ctx.hostAdapter;
@@ -129,4 +133,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

@@ -20,8 +20,11 @@
  *     any iteration boundary
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GRYPHON_SDK_SYSTEM_PROMPT = exports.MAX_ITERATIONS = void 0;
+exports.runToolLoop = runToolLoop;
 const { getToolSchemas, executeTool } = require("./tools/tool-registry");
 const MAX_ITERATIONS = 25;
+exports.MAX_ITERATIONS = MAX_ITERATIONS;
 // System prompt sent with every SDK-mode request. Covers four observed
 // model failure modes: (1) paraphrasing the deny reason instead of
 // quoting it verbatim, (2) improvising "this path is probably a typo"
@@ -71,6 +74,7 @@ const GRYPHON_SDK_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsid
 // Gryphon's permission gate never fires and the user sees no deny.
 // User report 2026-05-04 (Windows VM, openai-api mode).
 const GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
+exports.GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT;
 /**
  * @param {object} args
  *   client       — Anthropic SDK client
@@ -276,4 +280,3 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     }
     return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
 }
-module.exports = { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };

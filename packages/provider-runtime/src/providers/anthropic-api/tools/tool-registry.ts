@@ -92,4 +92,4 @@ async function executeTool(name: any, input: any, ctx: any) {
   }
 }
 
-module.exports = { getActiveTools, getToolSchemas, executeTool };
+export { getActiveTools, getToolSchemas, executeTool };

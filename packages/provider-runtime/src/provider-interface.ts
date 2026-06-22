@@ -63,4 +63,4 @@
  * the first `send()` call is allowed to perform lazy initialization.
  */
 
-module.exports = {};
+export {};

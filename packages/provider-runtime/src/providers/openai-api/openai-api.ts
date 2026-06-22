@@ -29,7 +29,7 @@
  */
 
 const OpenAI = require("openai");
-const { runOpenAIToolLoop } = require("./tool-loop");
+const { runOpenAIToolLoop } = require("./tool-loop") as typeof import("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.openai;
 
 const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
@@ -78,7 +78,7 @@ class OpenAIProvider {
     this.cwd = cwd;
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
 
     // dangerouslyAllowBrowser: same justification as anthropic-api — Obsidian
     // exposes `window`, the SDK gates browser usage by default to prevent
@@ -363,4 +363,4 @@ async function testApiKey(apiKey: any) {
   }
 }
 
-module.exports = { OpenAIProvider, testApiKey, resolveModel, DEFAULT_MODEL };
+export { OpenAIProvider, testApiKey, resolveModel, DEFAULT_MODEL };

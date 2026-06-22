@@ -93,7 +93,7 @@ function _validateGeminiSchemaDialect(node: any, toolName: any, path = "") {
   }
 }
 
-module.exports = {
+export {
   translateSchemaToGemini,
   translateSchemasToGemini,
   stripAdditionalProperties,

@@ -14,6 +14,7 @@ import type { ProtectedPath, ProtectedCommand } from "./types";
 // warning modal. See permission-gate.js `kind: "protected"`.
 const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/plugins/gryphon/",
     category: "modifies-gryphon",
     userRisk:
@@ -21,6 +22,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Gryphon's own config. Writing here can flip permission mode to YOLO, overwrite stored API keys, or replace Gryphon's bundled code — the single highest-impact escalation path.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/community-plugins.json",
     category: "modifies-editor",
     userRisk:
@@ -28,6 +30,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Enables or disables every community plugin. An attacker could silently install or remove plugins across your vaults.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/core-plugins.json",
     category: "modifies-editor",
     userRisk:
@@ -35,6 +38,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Toggles Obsidian's built-in core plugins. Modifying this can disable security-relevant features or re-enable ones you've turned off.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/workspace.json",
     category: "modifies-editor",
     userRisk:
@@ -42,6 +46,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Obsidian's workspace layout and tab state. Rarely useful to edit programmatically; prompt-injection changes here can hide panes or open surprising views.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/workspace-mobile.json",
     category: "modifies-editor",
     userRisk:
@@ -49,6 +54,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Mobile-side workspace layout; same concern as the desktop workspace file.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/hotkeys.json",
     category: "modifies-editor",
     userRisk:
@@ -56,6 +62,7 @@ const DEFAULT_PROTECTED_PATHS: ProtectedPath[] = [
     explanation: "Your keyboard shortcuts. Remapping destructive actions (like Delete note) to common keys is a subtle UX attack.",
   },
   {
+    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
     pattern: ".obsidian/app.json",
     category: "modifies-editor",
     userRisk:

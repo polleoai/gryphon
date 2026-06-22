@@ -61,9 +61,9 @@
  * mitigation already reduces race probability by ~1000x.
  */
 
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
+const crypto = require("crypto") as typeof import("crypto");
 
 const STORE_VERSION = 1;
 const FILENAME = "provenance.json";

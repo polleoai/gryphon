@@ -4,6 +4,15 @@
  * Real Obsidian provides these classes at runtime; in tests we just need
  * enough surface so that `require("obsidian")` succeeds. Tool tests run
  * in `bypassPermissions` mode so the Modal is never constructed.
+ *
+ * Recording upgrade (issue #14): `Setting` now records `setName()` plus each
+ * `addText`/`addDropdown`/`addToggle`/`addButton` component (its last
+ * `setValue` and captured `onChange`), and registers itself on the container
+ * it was constructed with. `_el()` records the `createDiv`/`createEl`/
+ * `createSpan` calls made on it. Together these let settings-rendering code
+ * be unit-tested headlessly: a test builds a recording container, calls the
+ * renderer, then enumerates `container.__settings` (the rows that were drawn)
+ * and `container.__created` (the chrome elements that were drawn).
  */
 
 class Modal {
@@ -12,12 +21,57 @@ class Modal {
   close() {}
 }
 
+// One captured component (text input / dropdown / toggle / button) inside a
+// Setting row. `value` is the last `setValue`; `changeHandler` is the last
+// `onChange` callback so a test can drive it directly.
+function _control(type) {
+  const c = {
+    type,
+    value: undefined,
+    placeholder: undefined,
+    options: [],
+    disabled: false,
+    changeHandler: null,
+    clickHandler: null,
+    inputEl: { type: "" },
+    setPlaceholder(p) { c.placeholder = p; return c; },
+    setValue(v) { c.value = v; return c; },
+    setDisabled(d) { c.disabled = d; return c; },
+    setButtonText() { return c; },
+    setTooltip() { return c; },
+    setCta() { return c; },
+    setIcon() { return c; },
+    addOption(id, label) { c.options.push({ id, label }); return c; },
+    onChange(fn) { c.changeHandler = fn; return c; },
+    onClick(fn) { c.clickHandler = fn; return c; },
+  };
+  return c;
+}
+
 class Setting {
-  constructor() { return this; }
-  setName() { return this; }
+  constructor(containerEl) {
+    this.name = "";
+    this.controls = [];
+    this.nameEl = _el();
+    this.descEl = _el();
+    this.settingEl = _el();
+    // Register on the container so tests can enumerate the rows that were
+    // drawn into it (in render order).
+    if (containerEl && Array.isArray(containerEl.__settings)) {
+      containerEl.__settings.push(this);
+    }
+  }
+  setName(name) { this.name = typeof name === "string" ? name : ""; return this; }
   setDesc() { return this; }
-  addToggle(fn) { fn({ setValue() { return this; }, onChange() { return this; } }); return this; }
-  addButton(fn) { fn({ setButtonText() { return this; }, setCta() { return this; }, onClick() { return this; } }); return this; }
+  setClass() { return this; }
+  setHeading() { return this; }
+  addText(fn) { const c = _control("text"); fn(c); this.controls.push(c); return this; }
+  addTextArea(fn) { const c = _control("textarea"); fn(c); this.controls.push(c); return this; }
+  addDropdown(fn) { const c = _control("dropdown"); fn(c); this.controls.push(c); return this; }
+  addToggle(fn) { const c = _control("toggle"); fn(c); this.controls.push(c); return this; }
+  addButton(fn) { const c = _control("button"); fn(c); this.controls.push(c); return this; }
+  addExtraButton(fn) { const c = _control("button"); fn(c); this.controls.push(c); return this; }
+  then(fn) { if (fn) fn(this); return this; }
 }
 
 class TFile {}
@@ -37,12 +91,44 @@ const MarkdownRenderer = {
 };
 function setTooltip() { /* no-op */ }
 
+// Recording element factory. Beyond the original `setText`/`createEl`/`style`
+// surface, the returned element captures the children it creates (in
+// `__created`, each `{ tag, cls, text }`) and accumulates Settings built
+// against it (in `__settings`). Sub-elements are themselves recording
+// elements, so chrome built into nested containers is still observable.
 function _el() {
-  return {
-    setText() {},
-    createEl() { return _el(); },
+  const el = {
+    __settings: [],
+    __created: [],
     style: {},
+    className: "",
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    setText() { return el; },
+    setAttr() { return el; },
+    setAttribute() { return el; },
+    empty() { el.__created.length = 0; return el; },
+    addClass() { return el; },
+    removeClass() { return el; },
+    toggleClass() { return el; },
+    addEventListener() {},
+    removeEventListener() {},
+    setCssStyles(obj) { if (obj) Object.assign(el.style, obj); return el; },
+    setTooltip() { return el; },
+    appendChild() {},
+    createEl(tag, opts) {
+      el.__created.push({ tag, cls: opts && opts.cls, text: opts && opts.text });
+      return _el();
+    },
+    createDiv(arg) {
+      el.__created.push({ tag: "div", cls: typeof arg === "string" ? arg : (arg && arg.cls) });
+      return _el();
+    },
+    createSpan(opts) {
+      el.__created.push({ tag: "span", cls: opts && opts.cls, text: opts && opts.text });
+      return _el();
+    },
   };
+  return el;
 }
 
 // requestUrl: Obsidian's CORS-bypassing HTTP client. Tests typically replace
@@ -61,7 +147,7 @@ class PluginSettingTab {
   constructor(app, plugin) {
     this.app = app;
     this.plugin = plugin;
-    this.containerEl = { empty() {}, createEl() { return {}; } };
+    this.containerEl = _el();
   }
   display() {}
   hide() {}
@@ -89,4 +175,7 @@ module.exports = {
   ItemView, MarkdownView, Menu, MarkdownRenderer,
   Plugin, PluginSettingTab,
   setTooltip, requestUrl,
+  // Test helper: the recording element factory, used by settings-view.test.ts
+  // to build a recording container.
+  _el,
 };

@@ -49,4 +49,4 @@ function buildPassiveArgs(config: any, opts: any = {}): string[] {
   return args;
 }
 
-module.exports = { buildPassiveArgs, DISALLOWED_BUILTINS };
+export { buildPassiveArgs, DISALLOWED_BUILTINS };

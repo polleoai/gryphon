@@ -33,7 +33,7 @@
  * gets the same leak-free guarantee.
  */
 
-const { spawn, spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process") as typeof import("child_process");
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -243,7 +243,7 @@ function liveCount(): number {
   return _registry.size;
 }
 
-module.exports = {
+export {
   managedSpawn,
   killProcessTree,
   killAll,

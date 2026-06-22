@@ -14,6 +14,7 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5-6, §12.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ClaudePassiveSession = void 0;
 const fs = require("fs");
 const { isDeepStrictEqual } = require("node:util");
 const { managedSpawn, killProcessTree } = require("../subprocess-registry");
@@ -261,6 +262,7 @@ class ClaudePassiveSession {
         this._stderrTail = "";
     }
     _clearTurnTimer() {
+        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
         if (this._turnTimer) {
             try {
                 clearTimeout(this._turnTimer);
@@ -351,6 +353,7 @@ class ClaudePassiveSession {
             this._pendingResolve = resolve;
             this._pendingReject = reject;
             if (this._requestTimeoutMs) {
+                // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
                 this._turnTimer = setTimeout(() => {
                     const e = new Error(`passive: send() timed out after ${this._requestTimeoutMs}ms`);
                     this._broken = e; // a timed-out turn leaves claude in an unknown state
@@ -403,6 +406,7 @@ class ClaudePassiveSession {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             const t = setTimeout(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
@@ -421,4 +425,4 @@ class ClaudePassiveSession {
             this._reject(new Error("session closed"));
     }
 }
-module.exports = { ClaudePassiveSession };
+exports.ClaudePassiveSession = ClaudePassiveSession;

@@ -30,9 +30,9 @@
  *      provenance store sweeps its own tmpdir before every load).
  */
 
-const fs = require("fs");
-const pathMod = require("path");
-const os = require("os");
+const fs = require("fs") as typeof import("fs");
+const pathMod = require("path") as typeof import("path");
+const os = require("os") as typeof import("os");
 
 const HOOK_SETTINGS_RE = /^gryphon-cc-settings-\d+-\d+-[0-9a-f]+\.json$/;
 const SOCKET_RE = /^gryphon-(\d+)-[0-9a-f]+\.sock$/;

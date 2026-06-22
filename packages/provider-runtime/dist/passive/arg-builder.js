@@ -4,12 +4,15 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DISALLOWED_BUILTINS = void 0;
+exports.buildPassiveArgs = buildPassiveArgs;
 // C6 — every built-in tool denied so the model can ONLY call caller-declared
 // tools (which live in the Phase B MCP shim). Order is stable for testability.
 const DISALLOWED_BUILTINS = [
     "Bash", "Write", "Read", "Edit", "Glob", "Grep",
     "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
 ];
+exports.DISALLOWED_BUILTINS = DISALLOWED_BUILTINS;
 function buildPassiveArgs(config, opts = {}) {
     const args = [
         // Persistent stream-json transport (D2) — NO --print. The parked-IPC
@@ -48,4 +51,3 @@ function buildPassiveArgs(config, opts = {}) {
     }
     return args;
 }
-module.exports = { buildPassiveArgs, DISALLOWED_BUILTINS };

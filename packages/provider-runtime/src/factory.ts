@@ -84,6 +84,52 @@ function createProvider(pluginOrBag: any, cwd?: string, options: Record<string, 
   const plugin = pluginOrBag;
   const settings = plugin.settings || {};
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
+
+  // Resolve the user's preference to a concrete kind, then construct via the
+  // shared per-kind table. "auto" resolves to the first available provider
+  // (claude-code → anthropic → openai → google); the CLI fallthroughs
+  // (codex-cli / gemini-cli) are NOT in the auto rotation — they have their
+  // own sandbox/approval UX that surprises users who didn't explicitly opt
+  // in, so selecting them must be intentional. An explicit kind whose
+  // key/CLI is missing yields null from _buildProvider (the caller shows
+  // setup guidance via explainUnavailable).
+  const kind = preference === "auto" ? _firstAvailableKind(settings) : preference;
+  if (!kind) return null;
+  return _buildProvider(plugin, kind, cwd, options);
+}
+
+/**
+ * Construct a provider for an EXPLICIT kind (issue #15 failover kernel).
+ *
+ * Unlike createProvider, this ignores `settings.providerPreference` — the
+ * caller (the failover orchestrator, or a headless consumer wiring its own
+ * one-hop failover) names the kind directly. It reads the same key/CLI
+ * fields createProvider does, so the fallback resolves credentials the same
+ * way, and accepts an optional `modelOverride` so the orchestrator can build
+ * the fallback at its configured model WITHOUT mutating settings.
+ *
+ * Returns null when the kind has no usable key/CLI — same soft-failure
+ * contract as createProvider.
+ */
+function createProviderForKind(
+  plugin: any, kind: ProviderKind, cwd?: string,
+  options: Record<string, any> = {}, modelOverride?: string,
+): LLMProvider | null {
+  if (!plugin || typeof kind !== "string") return null;
+  return _buildProvider(plugin, kind, cwd, options, modelOverride);
+}
+
+/**
+ * Shared per-kind construction table — the single source of truth for how a
+ * concrete provider kind maps to a constructor + the key/CLI it needs.
+ * createProvider (after resolving its preference) and createProviderForKind
+ * both route through here so the two can never drift.
+ */
+function _buildProvider(
+  plugin: any, kind: string, cwd?: string,
+  options: Record<string, any> = {}, modelOverride?: string,
+): LLMProvider | null {
+  const settings = plugin.settings || {};
   const claudePath = settings.claudePath || _detectClaudeBinary();
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
@@ -93,100 +139,133 @@ function createProvider(pluginOrBag: any, cwd?: string, options: Record<string, 
 
   // Issue #39: per-provider extraArgs targeting. `enrich(kind)` returns
   // options with extraArgs = legacy bucket + extraArgsByProvider[kind].
-  // The merged array is run through the provider's cross-provider
-  // filter (in claude-code.js / codex-cli.js / gemini-cli.js); both
-  // buckets are equally subject to it, so a misaddressed flag like
-  // extraArgsByProvider['codex-cli'] = ['--allowedTools'] still gets
-  // dropped. The filter is a safety net regardless of which bucket the
-  // flag came from. SDK providers ignore extraArgs entirely.
-  // hostAdapter: callers may supply one via options (Task 0.6 will pass
-  // ObsidianHostAdapter here). If absent, default to HeadlessHostAdapter so
-  // the provider is always adapter-safe regardless of whether we're in
-  // Obsidian or a headless test environment.
+  // The merged array is run through the provider's cross-provider filter
+  // (in claude-code.js / codex-cli.js / gemini-cli.js); both buckets are
+  // equally subject to it. SDK providers ignore extraArgs entirely.
+  // hostAdapter: callers may supply one via options (ObsidianHostAdapter in
+  // Obsidian). If absent, default to HeadlessHostAdapter so the provider is
+  // always adapter-safe regardless of host.
   const hostAdapter = options.hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
-
-  const enrich = (kind: string) => {
+  const enrich = (k: string) => {
     const legacy = Array.isArray(options.extraArgs) ? options.extraArgs : [];
-    const perKind =
-      (options.extraArgsByProvider && options.extraArgsByProvider[kind]) || [];
-    return {
+    const perKind = (options.extraArgsByProvider && options.extraArgsByProvider[k]) || [];
+    const merged: Record<string, any> = {
       ...options,
       extraArgs: [...legacy, ...perKind],
       plugin,
       hostAdapter,
     };
+    // Failover: build the fallback at its configured model without mutating
+    // settings. Only override when explicitly provided so the active path
+    // keeps options.model untouched.
+    if (modelOverride) merged.model = modelOverride;
+    return merged;
   };
 
-  // claude-code provider receives `plugin` too, so it can read the
-  // active protected-path / protected-command settings and translate
-  // them to Claude Code's `--disallowedTools` flags on spawn.
-  if (preference === "claude-code") {
+  // claude-code provider receives `plugin` too, so it can read the active
+  // protected-path / protected-command settings and translate them to Claude
+  // Code's `--disallowedTools` flags on spawn.
+  if (kind === "claude-code") {
     if (!claudePath) return null;
     const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
     return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
   }
-
-  if (preference === "anthropic-api") {
+  if (kind === "anthropic-api") {
     if (!apiKey) return null;
     const { AnthropicAPIProvider } = require("./providers/anthropic-api/anthropic-api");
     return new AnthropicAPIProvider(apiKey, cwd, enrich("anthropic-api"));
   }
-
-  // openai-api: Stage 2 (#17) shipped — real OpenAIProvider when key present.
-  if (preference === "openai-api") {
+  if (kind === "openai-api") {
     if (!openaiKey) return null;
     const { OpenAIProvider } = require("./providers/openai-api/openai-api");
     return new OpenAIProvider(openaiKey, cwd, enrich("openai-api"));
   }
-
-  // google-api: Stage 3 (#18) shipped — real GoogleProvider when key present.
-  if (preference === "google-api") {
+  if (kind === "google-api") {
     if (!googleKey) return null;
     const { GoogleProvider } = require("./providers/google-api/google-api");
     return new GoogleProvider(googleKey, cwd, enrich("google-api"));
   }
-
-  // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled
-  // by the CLI itself (`codex login`); we don't need an API key from
-  // settings. The binary must exist (settings override or autodetect).
-  if (preference === "codex-cli") {
+  // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled by the
+  // CLI itself (`codex login`); no API key from settings. Binary must exist.
+  if (kind === "codex-cli") {
     if (!codexPath) return null;
     const { CodexProvider } = require("./providers/codex-cli/codex-cli");
     return new CodexProvider(codexPath, cwd, enrich("codex-cli"));
   }
-
   // gemini-cli (v1.3): the Google Gemini CLI subprocess. Auth via
-  // settings.googleApiKey forwarded as GEMINI_API_KEY env. Binary must
-  // exist; key may also live in env (CLI handles that case itself).
-  if (preference === "gemini-cli") {
+  // settings.googleApiKey forwarded as GEMINI_API_KEY env. Binary must exist.
+  if (kind === "gemini-cli") {
     if (!geminiPath) return null;
     const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
     return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli"));
   }
-
-  // auto: claude-code wins if available (subscription path is no extra
-  // cost per prompt and has the full hook surface). Then any HTTP-API
-  // key in the order: anthropic → openai → google. The CLI fallthroughs
-  // (codex-cli / gemini-cli) are NOT in the auto rotation — they have
-  // their own sandbox/approval UX that surprises users who didn't
-  // explicitly opt in. Selecting them must be intentional.
-  if (claudePath) {
-    const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
-    return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
-  }
-  if (apiKey) {
-    const { AnthropicAPIProvider } = require("./providers/anthropic-api/anthropic-api");
-    return new AnthropicAPIProvider(apiKey, cwd, enrich("anthropic-api"));
-  }
-  if (openaiKey) {
-    const { OpenAIProvider } = require("./providers/openai-api/openai-api");
-    return new OpenAIProvider(openaiKey, cwd, enrich("openai-api"));
-  }
-  if (googleKey) {
-    const { GoogleProvider } = require("./providers/google-api/google-api");
-    return new GoogleProvider(googleKey, cwd, enrich("google-api"));
-  }
   return null;
+}
+
+/**
+ * First available provider kind in the auto-rotation order
+ * (claude-code → anthropic-api → openai-api → google-api), or null. Used by
+ * createProvider's "auto" path and resolveFallback's "auto" fallback. The
+ * CLI fallthroughs are intentionally excluded (see createProvider).
+ */
+function _firstAvailableKind(settings: any): ProviderKind | null {
+  const claudePath = settings.claudePath || _detectClaudeBinary();
+  const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
+  const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
+  const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
+  if (claudePath) return "claude-code";
+  if (apiKey) return "anthropic-api";
+  if (openaiKey) return "openai-api";
+  if (googleKey) return "google-api";
+  return null;
+}
+
+/**
+ * The registry default model id for a provider kind's vendor. Used by
+ * resolveFallback when `settings.fallbackModel` is unset.
+ */
+function defaultModelForKind(kind: string): string {
+  const vendor =
+    (kind === "anthropic-api" || kind === "claude-code") ? "anthropic" :
+    (kind === "openai-api" || kind === "codex-cli") ? "openai" :
+    (kind === "google-api" || kind === "gemini-cli") ? "google" : null;
+  if (!vendor) return "";
+  try {
+    return require("@gryphon/provider-config").registry.defaultModelFor(vendor) || "";
+  } catch (_) { return ""; }
+}
+
+/**
+ * Resolve the user-configured failover target (issue #15).
+ *
+ * Reads `settings.fallbackProviderPreference` / `settings.fallbackModel`:
+ *   - "none"            → null (failover explicitly disabled).
+ *   - unset/empty       → built-in default: claude-code IFF a `claude` binary
+ *                         is detected, else null (the witnessed-bug fix path).
+ *   - "auto"            → first available provider (same order as createProvider).
+ *   - an explicit kind  → that kind (availability is the orchestrator's job;
+ *                         an explicit user choice is taken at face value).
+ * Model defaults to the fallback provider's registry default when
+ * `fallbackModel` is unset. Pure over `plugin.settings` + binary detection —
+ * no chat-view dependency, so headless consumers can call it directly.
+ */
+function resolveFallback(plugin: any): { kind: ProviderKind; model: string } | null {
+  const settings = (plugin && plugin.settings) || {};
+  const pref = settings.fallbackProviderPreference;
+  if (pref === "none") return null;
+
+  let kind: ProviderKind | null;
+  if (!pref) {
+    const claudePath = settings.claudePath || _detectClaudeBinary();
+    kind = claudePath ? "claude-code" : null;
+  } else if (pref === "auto") {
+    kind = _firstAvailableKind(settings);
+  } else {
+    kind = pref;
+  }
+  if (!kind) return null;
+  const model = settings.fallbackModel || defaultModelForKind(kind);
+  return { kind, model };
 }
 
 /**
@@ -360,14 +439,14 @@ function _cliNotFoundMessage() {
   );
 }
 
-// Lazy-import findClaudeBinary so the factory module loads without
-// pulling in fs/path machinery for SDK-only callers.
-let _findClaudeBinary: (() => string | null) | null = null;
+// Look this up fresh on every call (like _detectCodexBinary /
+// _detectGeminiBinary below) rather than caching the function reference:
+// node's `require` already caches the module, the per-call cost is one
+// property access, and the freshness lets tests patch `utils.findClaudeBinary`
+// at runtime without invalidating a private factory cache. (The result of
+// the lookup itself is cached inside utils.findClaudeBinary.)
 function _detectClaudeBinary() {
-  if (!_findClaudeBinary) {
-    _findClaudeBinary = require("./utils").findClaudeBinary;
-  }
-  return _findClaudeBinary!();
+  return require("./utils").findClaudeBinary();
 }
 
 // Look these up fresh on every call rather than caching the function
@@ -489,4 +568,8 @@ function getActiveProviderKind(plugin: any): ProviderKind | null {
   return null;
 }
 
-module.exports = { createProvider, explainUnavailable, detectAvailable, getActiveProviderKind };
+export {
+  createProvider, explainUnavailable, detectAvailable, getActiveProviderKind,
+  // Issue #15 failover kernel
+  createProviderForKind, resolveFallback, defaultModelForKind,
+};

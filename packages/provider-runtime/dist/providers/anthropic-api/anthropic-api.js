@@ -18,6 +18,8 @@
  * `scripts/probe-model.sh anthropic <id>` for any newly-added model id.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.resolveModel = exports.AnthropicAPIProvider = void 0;
+exports.testApiKey = testApiKey;
 const Anthropic = require("@anthropic-ai/sdk").default;
 const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop");
 const { getToolSchemas } = require("./tools/tool-registry");
@@ -25,6 +27,7 @@ const { getToolSchemas } = require("./tools/tool-registry");
 // We import the helpers and re-export the names this module's consumers
 // rely on (notably `resolveModel`, which the factory imports).
 const { MODEL_PRICES, MODEL_ALIAS, DEFAULT_MODEL, resolveModel, priceFor, computeCost, } = require("@gryphon/provider-config").pricing.anthropic;
+exports.resolveModel = resolveModel;
 class AnthropicAPIProvider {
     constructor(apiKey, cwd, options = {}) {
         if (!apiKey) {
@@ -392,6 +395,7 @@ class AnthropicAPIProvider {
         return String(err?.message || err);
     }
 }
+exports.AnthropicAPIProvider = AnthropicAPIProvider;
 /**
  * Validate an API key by making a trivial /messages call. Used by the
  * "Test key" button in settings. Returns { ok, message }.
@@ -418,4 +422,3 @@ async function testApiKey(apiKey) {
         return { ok: false, message: String(err?.message || err) };
     }
 }
-module.exports = { AnthropicAPIProvider, testApiKey, resolveModel };

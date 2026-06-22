@@ -18,8 +18,8 @@
  *      fs.realpathSync where possible).
  */
 
-const path = require("path");
-const fs = require("fs");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
 
 class PathOutsideVaultError extends Error {
   requested: string;

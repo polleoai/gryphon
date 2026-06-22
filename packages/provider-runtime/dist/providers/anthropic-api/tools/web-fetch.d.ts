@@ -20,4 +20,31 @@
  *     DNS that flips from public to 127.0.0.1 between our check and
  *     undici's own resolution) can't bypass the guard.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            url: {
+                type: string;
+                description: string;
+            };
+            prompt: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+declare function _isPrivateHost(hostname: any): boolean;
+declare function _isAllowedContentType(contentType: any): boolean;
+export { SCHEMA, execute, _isPrivateHost, _isAllowedContentType };

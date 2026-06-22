@@ -77,6 +77,7 @@ async function execute(input: any, ctx: any) {
   // requestUrl doesn't support AbortSignal; enforce timeout via race.
   const timeoutError = new Error(`Brave Search timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
   const timeoutPromise = new Promise((_, reject) => {
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
     setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
@@ -146,4 +147,4 @@ function _error(text: any) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
-module.exports = { SCHEMA, execute };
+export { SCHEMA, execute };

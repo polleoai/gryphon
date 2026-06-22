@@ -19,4 +19,27 @@
  *   - non-zero exit reported with code, but is_error=false (the model
  *     should see and reason about the failure, not have it suppressed)
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            command: {
+                type: string;
+                description: string;
+            };
+            description: {
+                type: string;
+                description: string;
+            };
+            timeout: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<unknown>;
+export { SCHEMA, execute };

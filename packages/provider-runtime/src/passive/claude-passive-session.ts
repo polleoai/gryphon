@@ -13,13 +13,13 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5-6, §12.
 
-const fs = require("fs");
-const { isDeepStrictEqual } = require("node:util");
-const { managedSpawn, killProcessTree } = require("../subprocess-registry");
+const fs = require("fs") as typeof import("fs");
+const { isDeepStrictEqual } = require("node:util") as typeof import("node:util");
+const { managedSpawn, killProcessTree } = require("../subprocess-registry") as typeof import("../subprocess-registry");
 const { buildEnhancedPath, findClaudeBinary } = require("../utils");
-const { buildPassiveArgs } = require("./arg-builder");
-const { PassiveStreamParser } = require("./stream-parser");
-const { MCP_SERVER_NAME } = require("./mcp-config-builder");
+const { buildPassiveArgs } = require("./arg-builder") as typeof import("./arg-builder");
+const { PassiveStreamParser } = require("./stream-parser") as typeof import("./stream-parser");
+const { MCP_SERVER_NAME } = require("./mcp-config-builder") as typeof import("./mcp-config-builder");
 
 const NS_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
@@ -250,6 +250,7 @@ class ClaudePassiveSession {
   }
 
   _clearTurnTimer(): void {
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
     if (this._turnTimer) { try { clearTimeout(this._turnTimer); } catch {} this._turnTimer = null; }
   }
 
@@ -327,6 +328,7 @@ class ClaudePassiveSession {
       this._pendingResolve = resolve;
       this._pendingReject = reject;
       if (this._requestTimeoutMs) {
+        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
         this._turnTimer = setTimeout(() => {
           const e = new Error(`passive: send() timed out after ${this._requestTimeoutMs}ms`);
           this._broken = e; // a timed-out turn leaves claude in an unknown state
@@ -358,6 +360,7 @@ class ClaudePassiveSession {
     if (this.process) {
       const proc = this.process; this.process = null;
       try { killProcessTree(proc, "SIGTERM"); } catch {}
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
       const t = setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 2000);
       if (t && typeof t.unref === "function") t.unref(); // CR-M1: don't pin the event loop
     }
@@ -367,4 +370,4 @@ class ClaudePassiveSession {
   }
 }
 
-module.exports = { ClaudePassiveSession };
+export { ClaudePassiveSession };

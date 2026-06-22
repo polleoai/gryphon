@@ -5,4 +5,5 @@
  *
  * Returns { ok, message } with a user-facing message either way.
  */
-export {};
+declare function testCli(codexPath: any): Promise<unknown>;
+export { testCli };

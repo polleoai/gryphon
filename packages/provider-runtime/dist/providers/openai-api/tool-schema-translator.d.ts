@@ -14,4 +14,20 @@
  * The translator deep-copies the schema body so callers can mutate the
  * returned object without affecting the source registry.
  */
-export {};
+declare function translateSchemaToOpenAI(schema: any): {
+    type: string;
+    function: {
+        name: any;
+        description: any;
+        parameters: any;
+    };
+};
+declare function translateSchemasToOpenAI(schemas: any): {
+    type: string;
+    function: {
+        name: any;
+        description: any;
+        parameters: any;
+    };
+}[];
+export { translateSchemaToOpenAI, translateSchemasToOpenAI };

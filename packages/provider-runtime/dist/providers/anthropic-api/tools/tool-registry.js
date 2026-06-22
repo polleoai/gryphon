@@ -10,6 +10,9 @@
  * permissionMode in their execute() before performing the side effect.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getActiveTools = getActiveTools;
+exports.getToolSchemas = getToolSchemas;
+exports.executeTool = executeTool;
 const Read = require("./read");
 const Glob = require("./glob");
 const Grep = require("./grep");
@@ -87,4 +90,3 @@ async function executeTool(name, input, ctx) {
         };
     }
 }
-module.exports = { getActiveTools, getToolSchemas, executeTool };

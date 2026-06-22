@@ -85,7 +85,7 @@ function _verifyHookScripts(pluginDir) {
     const hookDir = path.join(pluginDir, "hooks");
     const missing = [];
     for (const scriptName of Object.values(HOOK_FILES)) {
-        const p = path.join(hookDir, scriptName);
+        const p = path.join(hookDir, String(scriptName));
         if (!fs.existsSync(p))
             missing.push(p);
     }

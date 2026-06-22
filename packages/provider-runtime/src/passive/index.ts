@@ -4,10 +4,10 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md.
 
-const path = require("path");
-const { ClaudePassiveSession } = require("./claude-passive-session");
-const { createBridge } = require("./mcp-bridge");
-const { buildMcpConfig, namespacedToolName } = require("./mcp-config-builder");
+const path = require("path") as typeof import("path");
+const { ClaudePassiveSession } = require("./claude-passive-session") as typeof import("./claude-passive-session");
+const { createBridge } = require("./mcp-bridge") as typeof import("./mcp-bridge");
+const { buildMcpConfig, namespacedToolName } = require("./mcp-config-builder") as typeof import("./mcp-config-builder");
 
 function validateDeclaredTools(tools: any): void {
   if (!Array.isArray(tools)) throw new Error("declaredTools must be an array");

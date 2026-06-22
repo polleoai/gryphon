@@ -22,9 +22,13 @@
  * error. Do not clone the array internally.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_ITERATIONS = void 0;
+exports.runGeminiToolLoop = runGeminiToolLoop;
+exports.serializeToolResultAsGeminiResponse = serializeToolResultAsGeminiResponse;
 const { translateSchemasToGemini } = require("./tool-schema-translator");
 const { getActiveTools, executeTool, } = require("../anthropic-api/tools/tool-registry");
 const MAX_ITERATIONS = 25;
+exports.MAX_ITERATIONS = MAX_ITERATIONS;
 async function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }) {
     const anthropicSchemas = getActiveTools({
         allowWrite: true,
@@ -266,8 +270,3 @@ function serializeToolResultAsGeminiResponse(result) {
         return { result: body, success: false };
     return { result: body, success: true };
 }
-module.exports = {
-    runGeminiToolLoop,
-    MAX_ITERATIONS,
-    serializeToolResultAsGeminiResponse,
-};

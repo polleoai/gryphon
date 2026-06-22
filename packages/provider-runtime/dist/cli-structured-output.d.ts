@@ -18,4 +18,17 @@
  * ajv behind the same parseAndValidate signature without changing
  * call sites.
  */
-export {};
+declare class CliStructuredOutputError extends Error {
+    [key: string]: any;
+    constructor(message: string, { reason, attempts, lastOutput }?: {
+        reason?: string;
+        attempts?: number;
+        lastOutput?: string;
+    });
+}
+declare function injectSchemaHint(basePrompt: string, structuredOutput: {
+    name: string;
+    schema: object;
+}): string;
+declare function parseAndValidate(text: string, schema: any): unknown;
+export { injectSchemaHint, parseAndValidate, CliStructuredOutputError, };

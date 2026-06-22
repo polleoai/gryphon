@@ -11,8 +11,8 @@
  *   "count"              — match count per file
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
 
 const SCHEMA = {
@@ -87,8 +87,8 @@ async function execute(input: any, ctx: any) {
   let globRegex: RegExp | null = null;
   if (input.glob) {
     try {
-      globRegex = require("./glob")._globToRegex
-        ? require("./glob")._globToRegex(input.glob)
+      globRegex = (require("./glob") as typeof import("./glob"))._globToRegex
+        ? (require("./glob") as typeof import("./glob"))._globToRegex(input.glob)
         : _simpleGlobToRegex(input.glob);
     } catch {
       globRegex = _simpleGlobToRegex(input.glob);
@@ -180,6 +180,7 @@ async function execute(input: any, ctx: any) {
 }
 
 const IGNORED_DIRS = new Set([
+  // eslint-disable-next-line obsidianmd/hardcoded-config-path -- directory skip-list entry matching the default config folder name
   ".git", ".obsidian", "node_modules", ".venv", "venv",
   "__pycache__", ".pytest_cache", "dist", "build", ".next",
   ".kb-trash",
@@ -208,4 +209,4 @@ function _error(text: any) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
-module.exports = { SCHEMA, execute };
+export { SCHEMA, execute };

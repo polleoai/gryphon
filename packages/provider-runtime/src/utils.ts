@@ -11,10 +11,10 @@
  * escape hatch for a "re-detect" button or a settings-reload flow.
  */
 
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const { execFileSync } = require("child_process");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
+const os = require("os") as typeof import("os");
+const { execFileSync } = require("child_process") as typeof import("child_process");
 
 // Module-level caches. `undefined` means "not yet probed"; a string or
 // null means "probed, got this result". Explicit-undefined sentinel lets

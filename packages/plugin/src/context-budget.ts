@@ -26,9 +26,9 @@
  * (Stage D) sharpens this over time.
  */
 
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
+const os = require("os") as typeof import("os");
 
 // 1 token ≈ 4 chars is the rough rule-of-thumb for English text against
 // the Claude tokenizer. Code and JSON are more dense (~3 chars/token);

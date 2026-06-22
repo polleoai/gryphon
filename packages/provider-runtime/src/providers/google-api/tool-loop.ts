@@ -21,11 +21,11 @@
  * error. Do not clone the array internally.
  */
 
-const { translateSchemasToGemini } = require("./tool-schema-translator");
+const { translateSchemasToGemini } = require("./tool-schema-translator") as typeof import("./tool-schema-translator");
 const {
   getActiveTools,
   executeTool,
-} = require("../anthropic-api/tools/tool-registry");
+} = require("../anthropic-api/tools/tool-registry") as typeof import("../anthropic-api/tools/tool-registry");
 
 const MAX_ITERATIONS = 25;
 
@@ -172,7 +172,7 @@ async function runGeminiToolLoop({
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
       if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error");
+        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
         throw new BudgetExceededError({
           budget: ctx.maxUsdBudget,
           spent: callCumulative,
@@ -284,7 +284,7 @@ function serializeToolResultAsGeminiResponse(result: any) {
   return { result: body, success: true };
 }
 
-module.exports = {
+export {
   runGeminiToolLoop,
   MAX_ITERATIONS,
   serializeToolResultAsGeminiResponse,

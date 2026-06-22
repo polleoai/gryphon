@@ -14,4 +14,37 @@
  *
  * Permission-gated like Write.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            file_path: {
+                type: string;
+                description: string;
+            };
+            old_string: {
+                type: string;
+                description: string;
+            };
+            new_string: {
+                type: string;
+                description: string;
+            };
+            replace_all: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+export { SCHEMA, execute };

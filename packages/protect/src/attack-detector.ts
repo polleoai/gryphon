@@ -17,7 +17,7 @@ import type { ClassifyVerdict } from "./types";
  * tool calls only; downstream threat intel is a separate concern.
  */
 
-const path = require("path");
+const path = require("path") as typeof import("path");
 const {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_PROTECTED_COMMANDS,
@@ -217,7 +217,7 @@ function _classifyFilePath(tool: string, input: Record<string, unknown>, ctx: Re
     throw e;
   }
 
-  const rawRel = path.relative(vaultRoot, resolved).replace(/\\/g, "/");
+  const rawRel = path.relative(String(vaultRoot), String(resolved)).replace(/\\/g, "/");
   // Same normalization as command-path matching: NFKC + zero-width strip.
   // Closes naïve Unicode obfuscation on file paths if CC ever emits one.
   const rel = _normalizeForMatch(rawRel);

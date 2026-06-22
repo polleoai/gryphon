@@ -35,42 +35,49 @@ const TOOL_STATUS_CORE = {
 // warning modal. See permission-gate.js `kind: "protected"`.
 const DEFAULT_PROTECTED_PATHS = [
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/plugins/gryphon/",
         category: "modifies-gryphon",
         userRisk: "This folder holds Gryphon's own settings — your permission mode, your stored API key, and the bundled plugin code. A write here can flip Gryphon's permissions, swap your API key, or replace the plugin code that runs every time Gryphon loads.",
         explanation: "Gryphon's own config. Writing here can flip permission mode to YOLO, overwrite stored API keys, or replace Gryphon's bundled code — the single highest-impact escalation path.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/community-plugins.json",
         category: "modifies-editor",
         userRisk: "This file decides which Obsidian community plugins are turned on. A change can silently disable plugins you rely on or enable ones you didn't install — including Gryphon itself.",
         explanation: "Enables or disables every community plugin. An attacker could silently install or remove plugins across your vaults.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/core-plugins.json",
         category: "modifies-editor",
         userRisk: "This file toggles Obsidian's built-in plugins. A change can silently disable features you depend on or turn off safety-relevant ones.",
         explanation: "Toggles Obsidian's built-in core plugins. Modifying this can disable security-relevant features or re-enable ones you've turned off.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/workspace.json",
         category: "modifies-editor",
         userRisk: "This file stores your window and tab layout. There's rarely a reason to change it from a chat — a write here is almost certainly not what a normal request looks like.",
         explanation: "Obsidian's workspace layout and tab state. Rarely useful to edit programmatically; prompt-injection changes here can hide panes or open surprising views.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/workspace-mobile.json",
         category: "modifies-editor",
         userRisk: "The mobile-side version of Obsidian's window/tab layout file. Same risk as the desktop workspace file.",
         explanation: "Mobile-side workspace layout; same concern as the desktop workspace file.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/hotkeys.json",
         category: "modifies-editor",
         userRisk: "This file stores your keyboard shortcuts. Remapping everyday keys to destructive actions (e.g. mapping Enter to 'Delete note') is a subtle way to cause damage during your next normal typing.",
         explanation: "Your keyboard shortcuts. Remapping destructive actions (like Delete note) to common keys is a subtle UX attack.",
     },
     {
+        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
         pattern: ".obsidian/app.json",
         category: "modifies-editor",
         userRisk: "This file stores Obsidian's app-level preferences (appearance, read-only mode, attachment folder, etc.). Usually not something that needs programmatic editing.",
@@ -743,6 +750,23 @@ const DEFAULT_SETTINGS = {
     // sourced from googleApiKey above (forwarded as GEMINI_API_KEY env)
     // — no separate field required.
     geminiCliPath: "",
+    // Fallback provider/model for automatic one-hop failover (issue #15).
+    // When the active provider can't serve a request for an AVAILABILITY
+    // reason (construct-time: no key/CLI; or a send error in the no-key /
+    // auth / insufficient-credit / quota / rate-limit class), Gryphon retries
+    // the request ONCE with this provider. Genuine content/runtime errors from
+    // a working provider never trigger failover.
+    //   "none"            — failover disabled (default; strict opt-in, zero
+    //                       behavior change until the user configures it).
+    //   ""  / unset       — built-in default: claude-code IFF a `claude` binary
+    //                       is detected, else no fallback.
+    //   "auto"            — first available provider.
+    //   an explicit kind  — that provider (credentials resolve through the same
+    //                       key fields / CLI detection as the active provider).
+    fallbackProviderPreference: "none",
+    // Model for the fallback provider. Empty → the fallback provider's registry
+    // default model.
+    fallbackModel: "",
     // Brave Search API key for SDK-mode WebSearch. Free tier: 2000
     // queries/month at https://brave.com/search/api/. Empty string means
     // WebSearch returns an instructive error telling the user how to set it.
@@ -1036,6 +1060,14 @@ const PROVIDER_PREFS = [
     { value: "gemini-cli", label: "Gemini CLI (advanced)", desc: "Spawns the Google Gemini CLI — auth via your Google API key" },
     { value: "auto", label: "Auto", desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
+// Fallback-provider dropdown (issue #15). Reuses the PROVIDER_PREFS shape
+// plus an explicit "No fallback" sentinel at the top — the default. Selecting
+// a real provider here arms one-hop availability failover (see chat-view's
+// _runFailover + provider-runtime's resolveFallback).
+const FALLBACK_PROVIDER_PREFS = [
+    { value: "none", label: "No fallback", desc: "Disabled — an unavailable provider surfaces a clear error (default)" },
+    ...PROVIDER_PREFS,
+];
 // Human-readable title shown at the top of the protected-operation modal
 // for each category key used by the default pattern lists above. Keep the
 // key set in sync with the `category:` values in DEFAULT_PROTECTED_PATHS
@@ -1058,7 +1090,7 @@ module.exports = {
     DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
     PROTECTED_CATEGORIES,
     MODELS, MODEL_ALIAS_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
-    CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS,
+    CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS,
     CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
     COLD_START_BUDGET_MS, DEFAULT_COLD_START_BUDGET_MS,
     MIN_COLD_START_BUDGET_MS, MAX_COLD_START_BUDGET_MS,

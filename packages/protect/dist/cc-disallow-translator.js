@@ -134,8 +134,10 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
             "Bash(Set-ItemProperty*HKLM:*)", "Bash(Set-ItemProperty*HKCU:*)",
         ]],
     ["(>|>>|tee)\\s+\\S*\\.(obsidian|git|claude|vscode)[/\\\\]", [
+            // eslint-disable-next-line obsidianmd/hardcoded-config-path -- shell-redirect denylist pattern targeting the default config folder; intentional
             "Bash(*>*.obsidian/*)", "Bash(*>*.git/*)",
             "Bash(*>*.claude/*)", "Bash(*>*.vscode/*)",
+            // eslint-disable-next-line obsidianmd/hardcoded-config-path -- shell-redirect denylist pattern targeting the default config folder; intentional
             "Bash(*tee*.obsidian/*)", "Bash(*tee*.git/*)",
             "Bash(*tee*.claude/*)", "Bash(*tee*.vscode/*)",
         ]],

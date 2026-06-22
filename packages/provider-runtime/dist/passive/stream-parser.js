@@ -6,6 +6,7 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PassiveStreamParser = void 0;
 const VALID_STOP = new Set(["end_turn", "tool_use", "max_tokens", "stop_sequence"]);
 function normalizeUsage(u) {
     u = u || {};
@@ -75,4 +76,4 @@ class PassiveStreamParser {
         this._lastUsage = null;
     }
 }
-module.exports = { PassiveStreamParser };
+exports.PassiveStreamParser = PassiveStreamParser;

@@ -18,6 +18,7 @@ These imports resolve through the shims here to the real package locations.
 | Old path | Forwards to |
 |---|---|
 | `src/chat-view.js` | `packages/plugin/src/chat-view.js` |
+| `src/settings-view.js` | `packages/plugin/src/settings-view.js` |
 | `src/constants.js` | `packages/plugin/src/constants.js` |
 | `src/utils.js` | `packages/provider-runtime/src/utils.js` |
 | `src/skills.js` | `packages/plugin/src/skills.js` |

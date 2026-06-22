@@ -29,9 +29,15 @@
  *   { type: "result",      timestamp, status, stats: { input_tokens, output_tokens, total_tokens, cached, duration_ms, ... } }
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_MODEL = exports.SESSION_PREFIX = exports.GeminiCliProvider = void 0;
+exports._mapPermissionToApproval = _mapPermissionToApproval;
+exports._wrapSession = _wrapSession;
+exports._unwrapSession = _unwrapSession;
+exports._scrubInternalLeaks = _scrubInternalLeaks;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const { computeCost, coerceToVendorModel, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.google;
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 const { hookDispatcher: dispatcher } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
 /**
@@ -61,6 +67,7 @@ function _mapPermissionToApproval(permissionMode) {
 // one-shot CLI session (chat-history.json is canonical) from a Claude-
 // Code-style session (history re-supplied by the CLI on resume).
 const SESSION_PREFIX = "gemini-cli-";
+exports.SESSION_PREFIX = SESSION_PREFIX;
 // Foreign provider prefixes — see codex-cli.js for the rationale.
 // QA1-2, QA1-3.
 const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli)-/;
@@ -1024,6 +1031,7 @@ class GeminiCliProvider {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
+            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
             setTimeout(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
@@ -1051,12 +1059,4 @@ class GeminiCliProvider {
     // status as openai-api / anthropic-api / google-api SDK adapters.
     get costIsEstimate() { return true; }
 }
-module.exports = {
-    GeminiCliProvider,
-    _mapPermissionToApproval,
-    _wrapSession,
-    _unwrapSession,
-    _scrubInternalLeaks,
-    SESSION_PREFIX,
-    DEFAULT_MODEL,
-};
+exports.GeminiCliProvider = GeminiCliProvider;

@@ -9,6 +9,7 @@
  * Per L5 in docs/consumer-requirements.md.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.BudgetExceededError = void 0;
 class BudgetExceededError extends Error {
     constructor({ budget, spent, lastTurnCost }) {
         super(`Per-call budget exceeded: budget=$${budget.toFixed(2)}, spent=$${spent.toFixed(2)}`);
@@ -18,4 +19,4 @@ class BudgetExceededError extends Error {
         this.lastTurnCost = lastTurnCost;
     }
 }
-module.exports = { BudgetExceededError };
+exports.BudgetExceededError = BudgetExceededError;

@@ -12,8 +12,8 @@
  * See docs/gryphon-skills-design.md for the full design and file format.
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { TFile, Notice } = require("obsidian");
 const { SLASH_COMMANDS, RESERVED_SKILL_NAMES } = require("./constants");
 const BUNDLED_SKILLS = require("./bundled-skills");

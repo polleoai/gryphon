@@ -20,9 +20,9 @@
  */
 
 const { GoogleGenAI } = require("@google/genai");
-const { runGeminiToolLoop } = require("./tool-loop");
+const { runGeminiToolLoop } = require("./tool-loop") as typeof import("./tool-loop");
 const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.google;
-const { testApiKey } = require("./test-key");
+const { testApiKey } = require("./test-key") as typeof import("./test-key");
 
 const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE =
@@ -70,7 +70,7 @@ class GoogleProvider {
     this.cwd = cwd;
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new (require("../../host-adapter").HeadlessHostAdapter)();
+      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
 
     // Test seam: callers may inject a mock client. Otherwise construct
     // the real Gemini SDK client. The API surface used here is
@@ -360,4 +360,4 @@ function _extractFinalText(finalMessage: any) {
     .join("");
 }
 
-module.exports = { GoogleProvider, testApiKey, resolveModel, DEFAULT_MODEL };
+export { GoogleProvider, testApiKey, resolveModel, DEFAULT_MODEL };

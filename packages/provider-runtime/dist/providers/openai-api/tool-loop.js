@@ -22,9 +22,13 @@
  * checkpoint on thrown error. Do not clone the array internally.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_ITERATIONS = void 0;
+exports.runOpenAIToolLoop = runOpenAIToolLoop;
+exports.serializeToolResultContent = serializeToolResultContent;
 const { translateSchemasToOpenAI } = require("./tool-schema-translator");
 const { getActiveTools, executeTool, } = require("../anthropic-api/tools/tool-registry");
 const MAX_ITERATIONS = 25;
+exports.MAX_ITERATIONS = MAX_ITERATIONS;
 async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }) {
     // ctx.responseFormat is set by the provider when the caller passes
     // { structuredOutput: { name, schema } }. It is injected into every
@@ -245,9 +249,3 @@ function serializeToolResultContent(result) {
     }
     return body;
 }
-module.exports = {
-    runOpenAIToolLoop,
-    MAX_ITERATIONS,
-    // exported for unit tests
-    serializeToolResultContent,
-};

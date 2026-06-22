@@ -10,6 +10,8 @@
  * touches files outside the vault, even with bypassPermissions.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 const fs = require("fs");
 const path = require("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
@@ -41,6 +43,7 @@ const SCHEMA = {
         required: ["file_path", "content"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const MAX_PREVIEW_LINES = 30;
 async function execute(input, ctx) {
     const filePath = input.file_path;
@@ -134,4 +137,3 @@ function _ok(text) {
 function _error(text) {
     return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
-module.exports = { SCHEMA, execute };

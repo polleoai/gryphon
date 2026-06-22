@@ -15,8 +15,8 @@
  * Permission-gated like Write.
  */
 
-const fs = require("fs");
-const path = require("path");
+const fs = require("fs") as typeof import("fs");
+const path = require("path") as typeof import("path");
 const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
 const { attackDetector } = require("@gryphon/protect");
 
@@ -285,4 +285,4 @@ function _error(text: any) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
-module.exports = { SCHEMA, execute };
+export { SCHEMA, execute };

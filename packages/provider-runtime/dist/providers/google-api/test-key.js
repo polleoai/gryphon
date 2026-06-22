@@ -18,6 +18,7 @@
  * sites don't crash before Task 0.6 lands.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.testApiKey = testApiKey;
 const GEMINI_LIST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 async function testApiKey(apiKey, hostAdapter) {
     // Default to HeadlessHostAdapter so callers that pre-date Task 0.6 still
@@ -59,4 +60,3 @@ async function testApiKey(apiKey, hostAdapter) {
         return { ok: false, message: String((err && err.message) || err) };
     }
 }
-module.exports = { testApiKey };

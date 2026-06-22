@@ -16,4 +16,8 @@
  * callers that omit it get HeadlessHostAdapter as a default so old call
  * sites don't crash before Task 0.6 lands.
  */
-export {};
+declare function testApiKey(apiKey: any, hostAdapter: any): Promise<{
+    ok: boolean;
+    message: string;
+}>;
+export { testApiKey };

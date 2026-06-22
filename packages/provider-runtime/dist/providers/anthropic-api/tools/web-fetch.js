@@ -22,6 +22,10 @@
  *     undici's own resolution) can't bypass the guard.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
+exports._isPrivateHost = _isPrivateHost;
+exports._isAllowedContentType = _isAllowedContentType;
 const dns = require("dns").promises;
 // Network requests are routed through ctx.hostAdapter.fetch(url, opts)
 // (supplied at execute() time from the provider that owns the tool loop).
@@ -65,6 +69,7 @@ const SCHEMA = {
         required: ["url"],
     },
 };
+exports.SCHEMA = SCHEMA;
 const MAX_CONTENT_BYTES = 200_000;
 const REQUEST_TIMEOUT_MS = 30_000;
 const ALLOWED_PROTOCOLS = new Set(["http:", "https:"]);
@@ -124,6 +129,7 @@ async function execute(input, ctx) {
     // Obsidian tears it down on plugin unload, but worth noting.
     const timeoutError = new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
     const timeoutPromise = new Promise((_, reject) => {
+        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
         setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
     });
     const hostAdapter = ctx.hostAdapter;
@@ -352,5 +358,3 @@ function _isAllowedContentType(contentType) {
     const ct = contentType.toLowerCase();
     return ALLOWED_CONTENT_TYPES.some((prefix) => ct.startsWith(prefix));
 }
-// Exported for unit tests; the main export remains { SCHEMA, execute }.
-module.exports = { SCHEMA, execute, _isPrivateHost, _isAllowedContentType };

@@ -32,8 +32,8 @@
  * spawn-time config surface and Gryphon's existing decision pipeline.
  */
 
-const path = require("path");
-const fs = require("fs");
+const path = require("path") as typeof import("path");
+const fs = require("fs") as typeof import("fs");
 const { findNodeBinary } = require("../../provider-runtime/src/utils");
 const { getAdapter, listSupportedKinds } = require("./hook-adapters");
 const { HOOK_FILES } = require("../../provider-runtime/src/providers/claude-code/hook-settings-builder");
@@ -89,7 +89,7 @@ function _verifyHookScripts(pluginDir: string): string[] {
   const hookDir = path.join(pluginDir, "hooks");
   const missing = [];
   for (const scriptName of Object.values(HOOK_FILES)) {
-    const p = path.join(hookDir, scriptName);
+    const p = path.join(hookDir, String(scriptName));
     if (!fs.existsSync(p)) missing.push(p);
   }
   const ipcHelper = path.join(hookDir, "common", "ipc-client.js");

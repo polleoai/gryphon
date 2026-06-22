@@ -8,4 +8,29 @@
  * Safety: path resolves through resolveVaultPath (vault-only). Never
  * touches files outside the vault, even with bypassPermissions.
  */
-export {};
+declare const SCHEMA: {
+    name: string;
+    description: string;
+    input_schema: {
+        type: string;
+        properties: {
+            file_path: {
+                type: string;
+                description: string;
+            };
+            content: {
+                type: string;
+                description: string;
+            };
+        };
+        required: string[];
+    };
+};
+declare function execute(input: any, ctx: any): Promise<{
+    content: {
+        type: string;
+        text: any;
+    }[];
+    isError: boolean;
+}>;
+export { SCHEMA, execute };

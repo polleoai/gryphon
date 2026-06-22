@@ -18,4 +18,51 @@
  *   - The activeStream reference is passed through so abort() works at
  *     any iteration boundary
  */
-export {};
+declare const MAX_ITERATIONS = 25;
+declare const GRYPHON_SDK_SYSTEM_PROMPT: string;
+/**
+ * @param {object} args
+ *   client       — Anthropic SDK client
+ *   model        — resolved model ID
+ *   history      — message array (modified in place; caller owns lifecycle)
+ *   ctx          — execution context { vaultRoot, permissionMode, plugin }
+ *   callbacks    — { onMessage(text, type), onTool(name), onError(text), onStream(stream) }
+ *
+ * @returns {Promise<{turnText, finalMessage, totalUsage, iterations}>}
+ *   totalUsage aggregates token counts across all loop iterations.
+ *
+ * CONTRACT — shared-history invariant:
+ *   `history` is mutated IN PLACE (push) by this loop. The caller
+ *   (anthropic-api.js `send`) captures `historyCheckpoint = history.length`
+ *   BEFORE calling runToolLoop so it can roll back on error via
+ *   `history.length = historyCheckpoint`. That rollback depends on this
+ *   array being the SAME reference the caller holds — if a future
+ *   refactor passes a copy here or clones internally, the caller's
+ *   history will keep partial turn content after a thrown error.
+ *   If you need to decouple: take a `pushTurn(turn)` callback argument
+ *   from the caller and let the caller own all history mutations.
+ */
+declare function runToolLoop({ client, model, history, ctx, callbacks }: {
+    client: any;
+    model: any;
+    history: any;
+    ctx: any;
+    callbacks: any;
+}): Promise<{
+    turnText: string;
+    finalMessage: any;
+    totalUsage: {
+        input_tokens: number;
+        output_tokens: number;
+        cache_creation_input_tokens: number;
+        cache_read_input_tokens: number;
+    };
+    peakUsage: {
+        input_tokens: number;
+        cache_creation_input_tokens: number;
+        cache_read_input_tokens: number;
+    };
+    iterations: number;
+    thinkingBlocks: any[];
+}>;
+export { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };

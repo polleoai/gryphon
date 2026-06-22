@@ -20,4 +20,37 @@
  * mutated IN PLACE so the caller's send() can roll back to a pre-turn
  * checkpoint on thrown error. Do not clone the array internally.
  */
-export {};
+declare const MAX_ITERATIONS = 25;
+declare function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }: {
+    client: any;
+    model: any;
+    systemPrompt: any;
+    history: any;
+    ctx: any;
+    callbacks: any;
+}): Promise<{
+    turnText: string;
+    finalMessage: {
+        role: string;
+        content: any;
+    } | null;
+    totalUsage: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        prompt_tokens_details: {
+            cached_tokens: number;
+        };
+    };
+    peakUsage: {
+        prompt_tokens: number;
+    };
+    iterations: number;
+}>;
+/**
+ * Convert the Anthropic-shape tool result `content` array into the single
+ * string OpenAI expects on `role: "tool"` messages. Any `is_error` flag is
+ * surfaced inline as a prefix so the model can still recognize errors —
+ * OpenAI's `role: "tool"` shape doesn't have a structured error field.
+ */
+declare function serializeToolResultContent(result: any): string;
+export { runOpenAIToolLoop, MAX_ITERATIONS, serializeToolResultContent, };

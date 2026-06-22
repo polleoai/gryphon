@@ -10,9 +10,9 @@
  * come from Node built-ins.
  */
 
-const net = require("net");
-const crypto = require("crypto");
-const fs = require("fs");
+const net = require("net") as typeof import("net");
+const crypto = require("crypto") as typeof import("crypto");
+const fs = require("fs") as typeof import("fs");
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const SOCKET_ENV_VAR = "GRYPHON_PERMISSION_SOCKET";
@@ -56,12 +56,14 @@ async function sendToGryphon(request: any, options: any = {}) {
     const done = (err: any, value?: any) => {
       if (settled) return;
       settled = true;
+      // eslint-disable-next-line obsidianmd/prefer-window-timers -- runs in a standalone Node hook subprocess; no window/activeWindow exists there, so the Node timer globals are correct
       clearTimeout(timer);
       try { sock.end(); } catch (_) { /* ignore */ }
       if (err) reject(err);
       else resolve(value);
     };
 
+    // eslint-disable-next-line obsidianmd/prefer-window-timers -- runs in a standalone Node hook subprocess; no window/activeWindow exists there, so the Node timer globals are correct
     const timer = setTimeout(() => {
       try { sock.destroy(); } catch (_) { /* ignore */ }
       done(new Error("ipc-timeout"));
@@ -197,6 +199,7 @@ function installHookDeadline({ deadlineMs, onTimeoutPayload, onCrashPayload }: {
     } catch (_) { /* stdout closed — nothing to do */ }
     process.exit(0);
   }
+  // eslint-disable-next-line obsidianmd/prefer-window-timers -- runs in a standalone Node hook subprocess; no window/activeWindow exists there, so the Node timer globals are correct
   const timer = setTimeout(() => { emitAndExit(onTimeoutPayload); }, deadlineMs);
   // Don't keep the event loop alive just for this timer — the hook
   // exits as soon as main() finishes, deadline timer or not.
