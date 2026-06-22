@@ -16,6 +16,8 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 - **The settings surface is now shared, so the same provider and defaults controls render consistently when the chat is embedded in another plugin.** No change for users running Gryphon as a standalone Obsidian plugin.
 - **Internal code-quality pass.** A large reduction in type-checker warnings across the codebase, with no behaviour change — purely maintainability work.
 
+## [2.4.5] — 2026-06-20
+
 ### Fixed
 
 - **Release tags now ship the compiled distribution files, so projects that build Gryphon from a pinned source tag always get the current code.** Previously a release tag carried only the TypeScript sources; the compiled output was rebuilt locally and never committed, so an integrator pinning a new tag could keep stale compiled files from the previous pin and unknowingly run older behaviour. Each release now bundles freshly-built, version-matched compiled files, and the release tooling fails fast if they are missing or out of sync — keeping the published bundle authoritative at every tag. No change to behaviour for users installing through Obsidian's Community Plugins directory.
