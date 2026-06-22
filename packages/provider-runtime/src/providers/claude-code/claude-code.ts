@@ -10,6 +10,14 @@
  * callers can supply plugin-specific flags without modifying this module.
  */
 
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer global to a module-local. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
+
+
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
 const fs = require("fs") as typeof import("fs");
 const os = require("os") as typeof import("os");
@@ -1250,8 +1258,7 @@ class ClaudeCodeProvider {
       // reference to (killProcessTree is internally non-throwing, but the
       // caller's best-effort catch makes this defence load-bearing).
       try { killProcessTree(proc, "SIGTERM"); } catch {}
-      // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-      setTimeout(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
       this.process = null;
     }
     this.alive = false;

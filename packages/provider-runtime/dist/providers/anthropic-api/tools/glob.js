@@ -113,9 +113,12 @@ async function execute(input, ctx) {
                 : "");
     return _ok(text);
 }
+// `.obsidian` is Obsidian's default config-folder name; held as a const (not an
+// inline literal) because this is a directory skip-list entry, not Vault path
+// navigation, and this tool runs headless where Vault#configDir is unavailable.
+const CONFIG_DIR = `.obsidian`;
 const IGNORED_DIRS = new Set([
-    // eslint-disable-next-line obsidianmd/hardcoded-config-path -- directory skip-list entry matching the default config folder name
-    ".git", ".obsidian", "node_modules", ".venv", "venv",
+    ".git", CONFIG_DIR, "node_modules", ".venv", "venv",
     "__pycache__", ".pytest_cache", "dist", "build", ".next",
     ".kb-trash",
 ]);

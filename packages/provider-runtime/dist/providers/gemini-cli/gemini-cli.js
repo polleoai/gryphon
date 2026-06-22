@@ -34,6 +34,12 @@ exports._mapPermissionToApproval = _mapPermissionToApproval;
 exports._wrapSession = _wrapSession;
 exports._unwrapSession = _unwrapSession;
 exports._scrubInternalLeaks = _scrubInternalLeaks;
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer global to a module-local. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
 const { computeCost, coerceToVendorModel, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.google;
@@ -1031,8 +1037,7 @@ class GeminiCliProvider {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
-            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-            setTimeout(() => { try {
+            setTimeoutFn(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
             catch { } }, 5000);

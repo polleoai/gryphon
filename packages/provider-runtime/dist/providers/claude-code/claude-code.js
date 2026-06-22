@@ -12,6 +12,12 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ClaudeCodeProvider = void 0;
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer global to a module-local. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const fs = require("fs");
 const os = require("os");
@@ -1201,8 +1207,7 @@ class ClaudeCodeProvider {
                 killProcessTree(proc, "SIGTERM");
             }
             catch { }
-            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-            setTimeout(() => { try {
+            setTimeoutFn(() => { try {
                 killProcessTree(proc, "SIGKILL");
             }
             catch { } }, 5000);

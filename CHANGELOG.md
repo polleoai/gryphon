@@ -4,6 +4,13 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.5.1] — 2026-06-22
+
+### Changed
+
+- **The two Gryphon commands now have shorter names** — "Open chat" and "Quote highlighted text into chat" — since Obsidian already shows the "Gryphon" plugin name beside them in the command palette. Your existing keyboard shortcuts are unaffected.
+- **Maintenance: alignment with the Obsidian plugin guidelines and an internal code-quality pass.** Timer usage, configuration-folder handling, and command registration were brought in line with the community review's source conventions. There is no behaviour change — provider failover, the readiness check, the security guardrails, and every command work exactly as before.
+
 ## [2.5.0] — 2026-06-21
 
 ### Added

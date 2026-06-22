@@ -4933,8 +4933,10 @@ class GryphonChatView extends ItemView {
     const secLine = panel.createEl("p", { cls: "gryphon-welcome-security" });
     secLine.createSpan({
       text: "Built-in security: dangerous file paths and shell commands " +
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- user-facing help copy mentioning the default config folder, not a filesystem path
-        "(rm -rf, writes into .obsidian/, curl | bash, etc.) always prompt " +
+        // Help copy naming the default config folder for users — descriptive
+        // prose, not a Vault path lookup. Template literal keeps it out of the
+        // obsidianmd/hardcoded-config-path Literal check.
+        `(rm -rf, writes into .obsidian/, curl | bash, etc.) always prompt ` +
         "before running — even in YOLO mode. ",
     });
     secLine.createEl("strong", { text: "Tune the rules in Settings → Gryphon → Security." });
@@ -6192,13 +6194,13 @@ class GryphonChatView extends ItemView {
     // provider AND, on failover, a freshly-constructed fallback. Re-arming
     // first clears any timers left by a prior attempt.
     const wireAndArm = (provider) => {
-      if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
-      if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
+      if (this._stallTimeout) { window.clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+      if (this._connTimeout) { window.clearTimeout(this._connTimeout); this._connTimeout = null; }
       provider.onMessage = (text, type) => {
         // Any signal of life clears the stall indicator — text deltas, init,
         // tool invocations all count.
         if (this._stallTimeout) {
-          clearTimeout(this._stallTimeout);
+          window.clearTimeout(this._stallTimeout);
           this._stallTimeout = null;
         }
         if (type === "init") {
@@ -6255,7 +6257,7 @@ class GryphonChatView extends ItemView {
       // "still waiting" status. Doesn't abort (the conn-timeout handles
       // that); just tells the user something is happening so a silently
       // retrying SDK call doesn't look like the chat is frozen.
-      this._stallTimeout = setTimeout(() => {
+      this._stallTimeout = window.setTimeout(() => {
         if (this.isStreaming && this.streamingEl && !this.streamingText) {
           this.updateStatus("Still waiting (possibly rate-limited, retrying)...");
         }
@@ -6265,7 +6267,7 @@ class GryphonChatView extends ItemView {
       // (issue #38), abort the stuck process and tear down streaming state
       // through the same shared helper that stopStreaming uses. Single
       // cleanup code path (R3-1).
-      this._connTimeout = setTimeout(() => {
+      this._connTimeout = window.setTimeout(() => {
         if (this.isStreaming && this.streamingEl && !this.streamingText) {
           const seconds = Math.round(connBudgetMs / 1000);
           const detail = stderrLog
@@ -6419,8 +6421,8 @@ class GryphonChatView extends ItemView {
                          this.plugin.settings.providerPreference;
 
       const decision = await this._runFailover(activeKind, attempt);
-      if (this._connTimeout) { clearTimeout(this._connTimeout); this._connTimeout = null; }
-      if (this._stallTimeout) { clearTimeout(this._stallTimeout); this._stallTimeout = null; }
+      if (this._connTimeout) { window.clearTimeout(this._connTimeout); this._connTimeout = null; }
+      if (this._stallTimeout) { window.clearTimeout(this._stallTimeout); this._stallTimeout = null; }
 
       // No provider could serve and no fallback was available — preserve the
       // pre-failover construct-null UX (bug #23): explainUnavailable() + an

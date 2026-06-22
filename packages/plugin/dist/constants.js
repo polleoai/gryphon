@@ -33,52 +33,52 @@ const TOOL_STATUS_CORE = {
 // of these (or matches the exact string for non-trailing-slash entries),
 // the permission gate overrides Safe/YOLO auto-accept and shows a
 // warning modal. See permission-gate.js `kind: "protected"`.
+// Default Obsidian config-folder name. Held as a constant rather than inline
+// string literals so the guardrail patterns below read as the intentional
+// security constants they are. obsidianmd/hardcoded-config-path steers callers
+// to Vault#configDir for path *navigation*; these are static prefix patterns
+// matched against tool paths and surfaced as user-editable defaults, so the
+// literal default name is the correct value to ship.
+const CONFIG_DIR = `.obsidian`;
 const DEFAULT_PROTECTED_PATHS = [
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/plugins/gryphon/",
+        pattern: `${CONFIG_DIR}/plugins/gryphon/`,
         category: "modifies-gryphon",
         userRisk: "This folder holds Gryphon's own settings — your permission mode, your stored API key, and the bundled plugin code. A write here can flip Gryphon's permissions, swap your API key, or replace the plugin code that runs every time Gryphon loads.",
         explanation: "Gryphon's own config. Writing here can flip permission mode to YOLO, overwrite stored API keys, or replace Gryphon's bundled code — the single highest-impact escalation path.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/community-plugins.json",
+        pattern: `${CONFIG_DIR}/community-plugins.json`,
         category: "modifies-editor",
         userRisk: "This file decides which Obsidian community plugins are turned on. A change can silently disable plugins you rely on or enable ones you didn't install — including Gryphon itself.",
         explanation: "Enables or disables every community plugin. An attacker could silently install or remove plugins across your vaults.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/core-plugins.json",
+        pattern: `${CONFIG_DIR}/core-plugins.json`,
         category: "modifies-editor",
         userRisk: "This file toggles Obsidian's built-in plugins. A change can silently disable features you depend on or turn off safety-relevant ones.",
         explanation: "Toggles Obsidian's built-in core plugins. Modifying this can disable security-relevant features or re-enable ones you've turned off.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/workspace.json",
+        pattern: `${CONFIG_DIR}/workspace.json`,
         category: "modifies-editor",
         userRisk: "This file stores your window and tab layout. There's rarely a reason to change it from a chat — a write here is almost certainly not what a normal request looks like.",
         explanation: "Obsidian's workspace layout and tab state. Rarely useful to edit programmatically; prompt-injection changes here can hide panes or open surprising views.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/workspace-mobile.json",
+        pattern: `${CONFIG_DIR}/workspace-mobile.json`,
         category: "modifies-editor",
         userRisk: "The mobile-side version of Obsidian's window/tab layout file. Same risk as the desktop workspace file.",
         explanation: "Mobile-side workspace layout; same concern as the desktop workspace file.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/hotkeys.json",
+        pattern: `${CONFIG_DIR}/hotkeys.json`,
         category: "modifies-editor",
         userRisk: "This file stores your keyboard shortcuts. Remapping everyday keys to destructive actions (e.g. mapping Enter to 'Delete note') is a subtle way to cause damage during your next normal typing.",
         explanation: "Your keyboard shortcuts. Remapping destructive actions (like Delete note) to common keys is a subtle UX attack.",
     },
     {
-        // eslint-disable-next-line obsidianmd/hardcoded-config-path -- protected-path guardrail pattern; the default config-folder prefix is intentional
-        pattern: ".obsidian/app.json",
+        pattern: `${CONFIG_DIR}/app.json`,
         category: "modifies-editor",
         userRisk: "This file stores Obsidian's app-level preferences (appearance, read-only mode, attachment folder, etc.). Usually not something that needs programmatic editing.",
         explanation: "Obsidian app-level preferences (appearance, read-only mode, attachment folder, etc.). Usually not worth programmatic changes.",

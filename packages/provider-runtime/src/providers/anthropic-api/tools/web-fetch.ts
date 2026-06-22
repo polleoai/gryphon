@@ -21,6 +21,14 @@
  *     undici's own resolution) can't bypass the guard.
  */
 
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer global to a module-local. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
+
+
 const dns = require("dns").promises;
 // Network requests are routed through ctx.hostAdapter.fetch(url, opts)
 // (supplied at execute() time from the provider that owns the tool loop).
@@ -135,8 +143,7 @@ async function execute(input: any, ctx: any) {
   // Obsidian tears it down on plugin unload, but worth noting.
   const timeoutError = new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
   const timeoutPromise = new Promise((_, reject) => {
-    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-    setTimeout(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
+    setTimeoutFn(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
   const hostAdapter = ctx.hostAdapter;

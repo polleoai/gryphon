@@ -8,6 +8,12 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.testCli = testCli;
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer global to a module-local. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
 const { spawn } = require("child_process");
 const { buildEnhancedPath } = require("../../utils");
 function testCli(codexPath) {
@@ -60,7 +66,6 @@ function testCli(codexPath) {
                 });
             }
         });
-        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-        setTimeout(() => finish({ ok: false, message: "Codex CLI timed out (5s)." }), 5000);
+        setTimeoutFn(() => finish({ ok: false, message: "Codex CLI timed out (5s)." }), 5000);
     });
 }

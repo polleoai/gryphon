@@ -39,6 +39,15 @@
  * lifecycle (auto-cleaned when the owning process exits).
  */
 
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer globals to module-locals. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
+const clearTimeoutFn = clearTimeout;
+
+
 const net = require("net") as typeof import("net");
 const fs = require("fs") as typeof import("fs");
 const path = require("path") as typeof import("path");
@@ -298,16 +307,14 @@ class PermissionIPCServer {
     // We start at REQUEST_LIFETIME_MS and extend to
     // MODAL_REQUEST_LIFETIME_MS when we see a `classify` request,
     // which legitimately blocks on user input.
-    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-    let deadlineTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    let deadlineTimer: ReturnType<typeof setTimeout> | null = setTimeoutFn(() => {
       try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch (_) {}
       try { socket.destroy(); } catch (_) {}
       this._activeSockets.delete(socket);
     }, REQUEST_LIFETIME_MS);
     // unref so a pending timer doesn't keep the process alive at unload
     if (deadlineTimer.unref) deadlineTimer.unref();
-    // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-    const clearDeadline = () => { if (deadlineTimer) { clearTimeout(deadlineTimer); deadlineTimer = null; } };
+    const clearDeadline = () => { if (deadlineTimer) { clearTimeoutFn(deadlineTimer); deadlineTimer = null; } };
 
     let buffer = "";
 
@@ -333,10 +340,8 @@ class PermissionIPCServer {
         // user input via the modal, so extend the deadline the first
         // time we see one. Other request types should complete fast.
         if (line.includes('"classify"') && deadlineTimer) {
-          // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-          clearTimeout(deadlineTimer);
-          // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-          deadlineTimer = setTimeout(() => {
+          clearTimeoutFn(deadlineTimer);
+          deadlineTimer = setTimeoutFn(() => {
             try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch (_) {}
             try { socket.destroy(); } catch (_) {}
             this._activeSockets.delete(socket);

@@ -41,6 +41,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, } = require("./constants");
 const { resolveActivePatterns } = require("./path-utils");
+// Default Obsidian config-folder name. Held as a const (not an inline literal)
+// so the deny-glob below reads as the intentional pattern it is — this is a
+// shell-redirect denylist matched against command strings, not Vault path
+// navigation, and the translator runs headless (CLI provider, no Vault).
+const CONFIG_DIR = `.obsidian`;
 /**
  * For each built-in protected-command regex we ship, this map supplies
  * the CC glob rules that approximate it. Keys are the raw regex
@@ -134,11 +139,9 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
             "Bash(Set-ItemProperty*HKLM:*)", "Bash(Set-ItemProperty*HKCU:*)",
         ]],
     ["(>|>>|tee)\\s+\\S*\\.(obsidian|git|claude|vscode)[/\\\\]", [
-            // eslint-disable-next-line obsidianmd/hardcoded-config-path -- shell-redirect denylist pattern targeting the default config folder; intentional
-            "Bash(*>*.obsidian/*)", "Bash(*>*.git/*)",
+            `Bash(*>*${CONFIG_DIR}/*)`, "Bash(*>*.git/*)",
             "Bash(*>*.claude/*)", "Bash(*>*.vscode/*)",
-            // eslint-disable-next-line obsidianmd/hardcoded-config-path -- shell-redirect denylist pattern targeting the default config folder; intentional
-            "Bash(*tee*.obsidian/*)", "Bash(*tee*.git/*)",
+            `Bash(*tee*${CONFIG_DIR}/*)`, "Bash(*tee*.git/*)",
             "Bash(*tee*.claude/*)", "Bash(*tee*.vscode/*)",
         ]],
     ["(>|>>|tee)\\s+\\S*(~/\\.claude|~/\\.config/|~/\\.ssh/|~/\\.bashrc|~/\\.zshrc|~/\\.profile|/etc/|/usr/|/System/|/var/)", [

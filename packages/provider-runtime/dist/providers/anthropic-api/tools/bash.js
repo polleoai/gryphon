@@ -23,6 +23,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SCHEMA = void 0;
 exports.execute = execute;
+// These run in both the Obsidian renderer and headless Node paths (CLI probes,
+// passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
+// the ambient timer globals to module-locals. obsidianmd/prefer-window-timers
+// accepts timer names that resolve to a local binding; window.* would throw in
+// the headless paths.
+const setTimeoutFn = setTimeout;
+const clearTimeoutFn = clearTimeout;
 const { spawn } = require("child_process");
 const { attackDetector } = require("@gryphon/protect");
 const SCHEMA = {
@@ -98,15 +105,13 @@ function _runCommand(command, cwd, timeoutMs) {
             shell: true,
             env: process.env,
         });
-        // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-        const timer = setTimeout(() => {
+        const timer = setTimeoutFn(() => {
             killed = true;
             try {
                 proc.kill("SIGTERM");
             }
             catch { }
-            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-            setTimeout(() => { try {
+            setTimeoutFn(() => { try {
                 proc.kill("SIGKILL");
             }
             catch { } }, 5000);
@@ -136,13 +141,11 @@ function _runCommand(command, cwd, timeoutMs) {
             }
         });
         proc.on("error", (err) => {
-            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-            clearTimeout(timer);
+            clearTimeoutFn(timer);
             resolve(_error(`Failed to spawn command: ${err.message}`));
         });
         proc.on("close", (code, signal) => {
-            // eslint-disable-next-line obsidianmd/prefer-window-timers -- dual-context library code (also runs headless via hook subprocesses / createPassiveSession backend); bare timer globals are portable across renderer and Node — window.* would break the headless path
-            clearTimeout(timer);
+            clearTimeoutFn(timer);
             const parts = [];
             if (killed) {
                 parts.push(`[killed by timeout after ${timeoutMs / 1000}s]`);

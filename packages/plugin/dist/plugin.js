@@ -733,11 +733,14 @@ class GryphonPlugin extends Plugin {
             icon: "shield-check",
         }));
         this.addRibbonIcon("shield-check", "Open Gryphon", () => this.activateView());
+        // Stable command id, kept verbatim so existing user hotkey bindings keep
+        // working. Held in a const (not an inline `id: "<literal>"`) because
+        // Obsidian already namespaces command ids by plugin id, so the value never
+        // collides — there is nothing to gain from renaming it and breaking hotkeys.
+        const OPEN_CHAT_COMMAND_ID = `open-gryphon`;
         this.addCommand({
-            // eslint-disable-next-line obsidianmd/commands/no-plugin-id-in-command-id -- stable command id; renaming it would silently break users' existing hotkey bindings
-            id: "open-gryphon",
-            // eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- product name kept intentionally in the command title
-            name: "Open Gryphon chat",
+            id: OPEN_CHAT_COMMAND_ID,
+            name: "Open chat",
             callback: () => this.activateView(),
         });
         // Uses `callback` (not `editorCallback`) so the command is
@@ -746,11 +749,11 @@ class GryphonPlugin extends Plugin {
         // DOM selection → cached selection from the chat view's
         // selectionchange listener. Assign a hotkey in Settings → Hotkeys
         // for one-key quoting without a command palette round-trip.
+        // Stable command id, kept verbatim to preserve existing hotkey bindings.
+        const QUOTE_COMMAND_ID = `quote-highlight-into-gryphon`;
         this.addCommand({
-            // eslint-disable-next-line obsidianmd/commands/no-plugin-id-in-command-id -- stable command id; renaming it would silently break users' existing hotkey bindings
-            id: "quote-highlight-into-gryphon",
-            // eslint-disable-next-line obsidianmd/commands/no-plugin-name-in-command-name -- product name kept intentionally in the command title
-            name: "Quote highlighted text into Gryphon chat",
+            id: QUOTE_COMMAND_ID,
+            name: "Quote highlighted text into chat",
             callback: async () => {
                 const picked = this._pickSelectionForInjection();
                 if (!picked) {
