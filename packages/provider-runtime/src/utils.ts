@@ -27,6 +27,12 @@ let _flatpakCache: { isFlatpak: boolean; appId: string | null } | null | undefin
 // Absolute-path → parsed [major,minor,patch] (or null = probe failed). Keyed
 // by path so repeated resolution across providers pays one --version spawn.
 let _versionCache: Record<string, number[] | null> = {};
+// binName → login-shell `command -v` result (path or null). The login-shell
+// fallback spawns `$SHELL -lc ...`, so cache it per name: now that find*Binary
+// no longer caches a null detection (so a cold-start miss self-heals), the
+// cheap candidate-list + --version probe re-run each call, but this expensive
+// shell spawn must NOT. Cleared by clearBinaryDiscoveryCache (Re-detect).
+let _loginShellCache: Record<string, string | null> = {};
 
 function clearBinaryDiscoveryCache() {
   _claudeBinaryCache = undefined;
@@ -35,6 +41,7 @@ function clearBinaryDiscoveryCache() {
   _geminiBinaryCache = undefined;
   _flatpakCache = undefined;
   _versionCache = {};
+  _loginShellCache = {};
 }
 
 // Minimum CLI versions Gryphon's spawn protocol supports. Permissive
@@ -113,7 +120,12 @@ function probeVersion(
       "";
     parsed = parseVersion(tail);
   }
-  _versionCache[binPath] = parsed;
+  // Cache ONLY a successful parse. A null here means a transient miss — a
+  // cold-start `--version` that exceeded the probe timeout, or momentary
+  // garbage — and must NOT be cached, or one cold first probe poisons
+  // detection for the whole session (the gemini "not found" bug). Leaving it
+  // uncached lets the next probe re-run and self-heal once warm.
+  if (parsed) _versionCache[binPath] = parsed;
   return parsed;
 }
 
@@ -151,7 +163,9 @@ function _pickNewestValid(
  * force a fresh probe (e.g. from a "re-detect" settings button).
  */
 function findClaudeBinary() {
-  if (_claudeBinaryCache !== undefined) return _claudeBinaryCache;
+  // Only a successful (truthy) detection is cached; a null is a transient miss
+  // (cold-start probe timeout) that must re-run next call so it self-heals.
+  if (_claudeBinaryCache) return _claudeBinaryCache;
   _claudeBinaryCache = _findClaudeBinaryUncached();
   return _claudeBinaryCache;
 }
@@ -296,35 +310,66 @@ function _findNodeBinaryUncached() {
  * entry or dock rather than a shell session. `command -v` is POSIX so
  * works across bash/zsh/dash; it prints the resolved path on success.
  */
-function _findViaLoginShell(binName: string): string | null {
-  const shell = process.env.SHELL || "/bin/bash";
-  try { fs.accessSync(shell, fs.constants.X_OK); }
-  catch { return null; }
-  try {
-    const out = execFileSync(
-      shell,
-      ["-lc", `command -v ${binName}`],
-      {
-        timeout: 2000,
-        stdio: ["ignore", "pipe", "ignore"],
-        encoding: "utf8",
-      },
-    );
-    // `command -v` may print the alias form ("alias x='...'") if the
-    // binary is a shell alias. Look for the first line that's an
-    // absolute path pointing at an executable file.
-    for (const line of out.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith("/")) {
-        try { fs.accessSync(trimmed, fs.constants.X_OK); return trimmed; }
-        catch { /* not executable — keep looking */ }
-      }
-    }
-    return null;
-  } catch {
-    // Timed out, shell exited non-zero (binary not found), or similar.
-    return null;
+// Default runner: a real login-shell `command -v` spawn. Injectable (param on
+// _findViaLoginShell) so tests can simulate a cold-start timeout vs a clean
+// miss without forking a shell.
+function _defaultLoginShellRunner(shell: string, args: string[]): string {
+  return execFileSync(shell, args, {
+    timeout: 2000,
+    stdio: ["ignore", "pipe", "ignore"],
+    encoding: "utf8",
+  });
+}
+
+function _findViaLoginShell(
+  binName: string,
+  runner: (shell: string, args: string[]) => string = _defaultLoginShellRunner,
+): string | null {
+  if (Object.prototype.hasOwnProperty.call(_loginShellCache, binName)) {
+    return _loginShellCache[binName];
   }
+  const { path, definitive } = _findViaLoginShellUncached(binName, runner);
+  // Cache ONLY a DEFINITIVE result. A transient failure (the login-shell spawn
+  // timed out or errored on a cold start) is NOT cached, so the next call
+  // re-probes and self-heals — mirroring find*Binary's truthy-only rule and
+  // closing the gemini "not found" bug class one layer down. A clean miss
+  // (shell ran, `command -v` found nothing) IS cached: re-spawning a login
+  // shell on every readiness poll for a genuinely-absent binary is a real cost.
+  if (definitive) _loginShellCache[binName] = path;
+  return path;
+}
+
+function _findViaLoginShellUncached(
+  binName: string,
+  runner: (shell: string, args: string[]) => string,
+): { path: string | null; definitive: boolean } {
+  const shell = process.env.SHELL || "/bin/bash";
+  // Can't even reach the shell → transient (don't cache; it may appear later).
+  try { fs.accessSync(shell, fs.constants.X_OK); }
+  catch { return { path: null, definitive: false }; }
+  let out: string;
+  try {
+    out = runner(shell, ["-lc", `command -v ${binName}`]);
+  } catch (e: any) {
+    // Distinguish a clean "not found" from a transient failure. A non-zero
+    // EXIT (e.status is a number) means the shell ran and `command -v` reported
+    // the binary absent → DEFINITIVE (cacheable). A timeout / kill / spawn
+    // error has no numeric exit status → TRANSIENT (cold start) → do NOT cache.
+    const cleanExit = e && typeof e.status === "number" && !e.killed && e.code !== "ETIMEDOUT";
+    return { path: null, definitive: !!cleanExit };
+  }
+  // `command -v` may print the alias form ("alias x='...'") if the binary is a
+  // shell alias. Look for the first line that's an absolute path pointing at an
+  // executable file.
+  for (const line of (out || "").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("/")) {
+      try { fs.accessSync(trimmed, fs.constants.X_OK); return { path: trimmed, definitive: true }; }
+      catch { /* not executable — keep looking */ }
+    }
+  }
+  // Shell ran cleanly but printed no usable path → binary genuinely absent.
+  return { path: null, definitive: true };
 }
 
 /**
@@ -336,7 +381,7 @@ function _findViaLoginShell(binName: string): string | null {
  * Returns absolute path or null. Cached.
  */
 function findCodexBinary() {
-  if (_codexBinaryCache !== undefined) return _codexBinaryCache;
+  if (_codexBinaryCache) return _codexBinaryCache;
   _codexBinaryCache = _findCodexBinaryUncached();
   return _codexBinaryCache;
 }
@@ -379,7 +424,7 @@ function _findCodexBinaryUncached() {
  * Returns absolute path or null. Cached.
  */
 function findGeminiBinary() {
-  if (_geminiBinaryCache !== undefined) return _geminiBinaryCache;
+  if (_geminiBinaryCache) return _geminiBinaryCache;
   _geminiBinaryCache = _findGeminiBinaryUncached();
   return _geminiBinaryCache;
 }
@@ -576,4 +621,5 @@ module.exports = {
   // Exported for unit tests (internal ranking primitives).
   _pickNewestValid,
   _collectPresentBinaries,
+  _findViaLoginShell,
 };

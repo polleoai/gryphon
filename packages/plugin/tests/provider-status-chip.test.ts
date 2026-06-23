@@ -27,19 +27,19 @@ Module._resolveFilename = function (request, ...args) {
   return originalResolve.call(this, request, ...args);
 };
 
-const obsidian = require("./_stubs/obsidian.js");
+const { _el, _allSettings } = require("./_stubs/obsidian.ts");
 const { renderGryphonSettings } = require("../src/settings-view");
 
-const makeContainer = () => obsidian._el();
+const makeContainer = () => _el();
 const findRow = (container, name) =>
-  container.__settings.find((s) => s.name === name);
+  _allSettings(container).find((s) => s.name === name);
 
-// The chip lives on the Provider row's descEl (the same anchor pattern the
-// API-key status lines use). Collect every text fragment recorded there.
-const providerDescText = (container) => {
+// The readiness warning lives ON the Provider dropdown now: a red border plus
+// the reason on hover (attachHoverTooltip stamps the text onto
+// `selectEl._gryphonTip`). No separate warning icon.
+const providerSelect = (container) => {
   const row = findRow(container, "Provider");
-  if (!row || !row.descEl) return "";
-  return (row.descEl.__created || []).map((c) => c.text || "").join(" ");
+  return row && row.controls.find((c) => c.type === "dropdown");
 };
 
 function withoutGoogleKey(fn) {
@@ -49,31 +49,40 @@ function withoutGoogleKey(fn) {
   finally { if (saved !== undefined) process.env.GOOGLE_API_KEY = saved; }
 }
 
-test("issue #16: google-api + no key → chip text names 'no API key'", () => {
+test("issue #16: unusable provider → red-bordered Provider dropdown, reason on hover (no separate icon)", () => {
   withoutGoogleKey(() => {
-    const host = { settings: { providerPreference: "google-api" }, saveSettings: async () => {} };
-    const container = makeContainer();
-
-    renderGryphonSettings(host, container);
-
-    const text = providerDescText(container);
-    assert.match(text, /no API key/, "an unconfigured provider must render the proactive warning chip");
-    assert.match(text, /won't be used/, "the chip must say the selected provider won't be used");
+    const c = makeContainer();
+    renderGryphonSettings({ settings: { providerPreference: "google-api" }, saveSettings: async () => {} }, c);
+    const drop = providerSelect(c);
+    assert.ok(drop.selectEl.classList.contains("gryphon-input-error"), "unusable selection → red border on the dropdown");
+    const tip = drop.selectEl._gryphonTip || "";
+    assert.match(tip, /no API key/i, "hovering the dropdown reveals the specific reason");
+    assert.match(tip, /won't be used/i, "…and the consequence");
   });
 });
 
-test("issue #16: google-api + key → no chip (happy path stays quiet)", () => {
+test("issue #16: usable provider → no red border, no hover warning (happy path stays quiet)", () => {
   withoutGoogleKey(() => {
-    const host = {
+    const c = makeContainer();
+    renderGryphonSettings({ settings: { providerPreference: "google-api", googleApiKey: "AIza-test" }, saveSettings: async () => {} }, c);
+    const drop = providerSelect(c);
+    assert.ok(!drop.selectEl.classList.contains("gryphon-input-error"), "usable selection → no red border");
+    assert.ok(!drop.selectEl._gryphonTip, "usable selection → no hover warning text");
+  });
+});
+
+test("buildProviderUnreadyNotice: unusable provider → actionable close notice; usable → null", () => {
+  withoutGoogleKey(() => {
+    const { buildProviderUnreadyNotice } = require("../src/settings-view");
+    const warn = buildProviderUnreadyNotice({ settings: { providerPreference: "google-api" } });
+    assert.match(warn, /Google Gemini API/, "names the selected provider");
+    assert.match(warn, /no API key/i, "names the reason");
+    assert.match(warn, /won't be used/i, "states the consequence");
+    assert.match(warn, /Settings/, "tells the user where to fix it");
+    const ok = buildProviderUnreadyNotice({
       settings: { providerPreference: "google-api", googleApiKey: "AIza-test" },
-      saveSettings: async () => {},
-    };
-    const container = makeContainer();
-
-    renderGryphonSettings(host, container);
-
-    const text = providerDescText(container);
-    assert.doesNotMatch(text, /won't be used/, "a configured provider must NOT render a warning chip");
+    });
+    assert.equal(ok, null, "a usable provider produces no close warning");
   });
 });
 

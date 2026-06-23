@@ -76,6 +76,85 @@ test("probeVersion returns null on unparseable output", () => {
   assert.equal(utils.probeVersion("/c/x", () => "garbage, no version"), null);
 });
 
+test("probeVersion does NOT cache a failed probe — a cold-start timeout self-heals on re-probe", () => {
+  // Root cause of the gemini 'not found' bug: the FIRST `gemini --version`
+  // ran cold (fs + node + bundle caches empty) and exceeded the probe timeout,
+  // so probeVersion got empty output → null. That null must NOT be cached, or
+  // every later read (readiness chip, Test CLI) returns the stale null for the
+  // whole Obsidian session with no recovery short of a plugin reload.
+  utils.clearBinaryDiscoveryCache();
+  let attempt = 0;
+  const coldThenWarm = () => {
+    attempt++;
+    if (attempt === 1) throw new Error("ETIMEDOUT"); // cold-start timeout: no output
+    return "0.41.2";
+  };
+  assert.equal(utils.probeVersion("/x/gemini", coldThenWarm), null, "cold probe → null");
+  assert.deepEqual(
+    utils.probeVersion("/x/gemini", coldThenWarm), [0, 41, 2],
+    "re-probe must re-run and succeed — a failed probe is not cached",
+  );
+  assert.equal(attempt, 2, "second call re-runs the probe (null was not cached)");
+});
+
+test("probeVersion still caches a SUCCESSFUL probe (no redundant spawns)", () => {
+  utils.clearBinaryDiscoveryCache();
+  let calls = 0;
+  const okRun = () => { calls++; return "0.41.2"; };
+  assert.deepEqual(utils.probeVersion("/y/gemini", okRun), [0, 41, 2]);
+  assert.deepEqual(utils.probeVersion("/y/gemini", okRun), [0, 41, 2]);
+  assert.equal(calls, 1, "successful probe served from cache on the second call");
+});
+
+// --- _findViaLoginShell: transient timeout must NOT be cached (self-heal) ---
+
+test("_findViaLoginShell does NOT cache a transient login-shell TIMEOUT — it self-heals", () => {
+  // The login-shell fallback ($SHELL -lc 'command -v <bin>') is the ONLY way a
+  // macOS GUI-launched Obsidian (minimal PATH) discovers an nvm/asdf/volta
+  // install. A cold-start login shell sourcing a heavy ~/.zshrc can exceed the
+  // 2s probe timeout. That timeout is TRANSIENT — it must not poison detection
+  // for the whole session (the same gemini "not found" bug class, one layer
+  // down from probeVersion). A re-call must re-spawn and self-heal.
+  utils.clearBinaryDiscoveryCache();
+  let calls = 0;
+  const coldThenWarm = () => {
+    calls++;
+    if (calls === 1) {
+      const e: any = new Error("spawn timed out");
+      e.code = "ETIMEDOUT";
+      e.killed = true;
+      throw e;
+    }
+    return "/home/u/.nvm/versions/node/v20/bin/gemini\n";
+  };
+  // First call: timeout → null, NOT cached.
+  assert.equal(utils._findViaLoginShell("gemini", coldThenWarm), null, "cold timeout → null");
+  // Second call: must re-run the runner (transient null wasn't cached). The
+  // returned path is gated by fs.accessSync(X_OK); a synthetic path won't be
+  // executable, so the resolved value is null — but the RUNNER must have fired
+  // twice, proving the timeout wasn't cached.
+  utils._findViaLoginShell("gemini", coldThenWarm);
+  assert.equal(calls, 2, "transient timeout must re-probe on the next call (not cached)");
+});
+
+test("_findViaLoginShell DOES cache a clean miss — a genuinely-absent binary isn't re-spawned each call", () => {
+  // When the login shell runs cleanly and `command -v` exits non-zero, the
+  // binary is genuinely absent. Caching that null is correct: re-spawning a
+  // login shell on every readiness poll for an absent binary is a real perf
+  // cost. Only TIMEOUTS (transient) are excluded from the cache.
+  utils.clearBinaryDiscoveryCache();
+  let calls = 0;
+  const cleanMiss = () => {
+    calls++;
+    const e: any = new Error("Command failed: command -v nope");
+    e.status = 1; // shell RAN, command -v found nothing → definitive absent
+    throw e;
+  };
+  assert.equal(utils._findViaLoginShell("nope", cleanMiss), null, "clean miss → null");
+  utils._findViaLoginShell("nope", cleanMiss);
+  assert.equal(calls, 1, "a clean (definitive) miss is cached — no second spawn");
+});
+
 // --- resolveCliBinary (real temp-dir fake CLIs) -------------------------
 
 // A POSIX fake CLI: an executable shell script that echoes a --version line.

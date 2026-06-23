@@ -776,12 +776,35 @@
 
 /* Proactive provider-readiness chip (issue #16) — warns inline under the
    Provider dropdown when the selected provider isn't usable (e.g. no key). */
-.gryphon-provider-status-chip {
-  display: inline-block;
-  margin-top: 4px;
-  font-size: 0.85em;
-  font-weight: 500;
-  color: var(--text-warning, var(--color-orange));
+/* Red border on a dropdown whose current selection can't actually run; the
+   reason shows when you hover the dropdown (gryphon-hover-tooltip). */
+.gryphon-settings-panel select.gryphon-input-error {
+  border: 1px solid var(--color-red, #e5484d);
+  box-shadow: 0 0 0 1px var(--color-red, #e5484d);
+}
+
+/* Self-owned hover tooltip (body-appended, position:fixed) — used for the info
+   (i) icons, CLI status pills, and the readiness warning, because Obsidian's
+   own tooltip layer doesn't render reliably inside the settings modal. */
+.gryphon-hover-tooltip {
+  position: fixed;
+  z-index: var(--layer-tooltip, 100);
+  max-width: 360px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--background-secondary-alt, var(--background-secondary));
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: 400;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  display: none;
+}
+.gryphon-hover-tooltip.is-visible {
+  display: block;
 }
 
 /* ── Help modal table ─────────────────────────────────────────────── */
@@ -1227,3 +1250,84 @@
 /* (CLI status is now rendered inline as `.gryphon-cli-status-pill`
    next to the "Claude CLI path" label — see the pill rule near the
    top of the settings-tab block.) */
+
+/* Settings — segmented tabs */
+.gryphon-settings-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 16px;
+}
+.gryphon-settings-tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 14px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  border-radius: 0;
+  box-shadow: none;
+}
+.gryphon-settings-tab:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.gryphon-settings-tab.is-active {
+  color: var(--text-normal);
+  border-bottom-color: var(--interactive-accent);
+  font-weight: var(--font-semibold);
+}
+.gryphon-settings-panel {
+  display: none;
+}
+.gryphon-settings-panel.is-active {
+  display: block;
+}
+/* Narrow-window safety. Provider / fallback dropdowns carry long descriptive
+   option labels ("Claude Code (advanced) — Spawns a local `claude`
+   subprocess…"); a native <select> sizes to its widest option, so in a
+   non-maximized window it overflows the pane's right edge AND stretches the
+   row into an oversized card. A flex item's default min-width is `auto` (its
+   content's intrinsic width), so the wide select refuses to shrink — fix by
+   letting the info/control columns shrink (min-width:0) and capping the select
+   at the available width so its label ellipsizes instead of overflowing. */
+.gryphon-settings-panel .setting-item-info,
+.gryphon-settings-panel .setting-item-control {
+  min-width: 0;
+}
+.gryphon-settings-panel .setting-item-control .dropdown,
+.gryphon-settings-panel .setting-item-control select {
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+/* Outlined sections inside a settings panel (Models tab: "Model" vs
+   "Fallback"), so two related-but-distinct groups read as separate sections. */
+.gryphon-settings-group {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 2px 12px 8px;
+  margin-bottom: 16px;
+}
+.gryphon-settings-group-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  padding: 8px 0 2px;
+}
+.gryphon-credentials-group {
+  margin: 6px 0 12px;
+  padding: 6px 0;
+}
+.gryphon-credentials-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding: 4px 0;
+}
+.gryphon-credentials-summary:hover {
+  color: var(--text-normal);
+}

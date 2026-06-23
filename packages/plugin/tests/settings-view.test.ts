@@ -24,12 +24,12 @@ Module._resolveFilename = function (request, ...args) {
   return originalResolve.call(this, request, ...args);
 };
 
-const obsidian = require("./_stubs/obsidian.js");
+const { _el, _allSettings, _allCreated } = require("./_stubs/obsidian.ts");
 const { renderGryphonSettings } = require("../src/settings-view");
 
-const makeContainer = () => obsidian._el();
+const makeContainer = () => _el();
 const findRow = (container, name) =>
-  container.__settings.find((s) => s.name === name);
+  _allSettings(container).find((s) => s.name === name);
 const textControl = (setting) =>
   setting && setting.controls.find((c) => c.type === "text");
 
@@ -78,20 +78,73 @@ test("driving the Google-key onChange writes settings + calls saveSettings (clos
   assert.equal(saved, true, "saveSettings() must fire on key change");
 });
 
-test("chrome:false suppresses the quick-start callout; default chrome renders it", () => {
+test("no quick-start callout is rendered (removed)", () => {
   const host = { settings: {}, saveSettings: async () => {} };
-
-  const withChrome = makeContainer();
-  renderGryphonSettings(host, withChrome);
+  const c = makeContainer();
+  renderGryphonSettings(host, c);
   assert.ok(
-    withChrome.__created.some((c) => c.cls === "gryphon-setting-callout"),
-    "default chrome should render the quick-start callout",
+    _allCreated(c).every((x) => x.cls !== "gryphon-setting-callout"),
+    "the quick-start callout was removed and must not render",
   );
+});
 
-  const noChrome = makeContainer();
-  renderGryphonSettings(host, noChrome, { chrome: false });
-  assert.ok(
-    noChrome.__created.every((c) => c.cls !== "gryphon-setting-callout"),
-    "chrome:false should omit the quick-start callout",
-  );
+test("renders a tab bar with Models/Advanced (no extraTabs)", () => {
+  const host = { settings: {}, saveSettings: async () => {} };
+  const c = makeContainer();
+  renderGryphonSettings(host, c);
+  const tabLabels = _allCreated(c)
+    .filter((x) => x.cls === "gryphon-settings-tab")
+    .map((x) => x.text);
+  assert.deepEqual(tabLabels, ["Models", "Advanced"]);
+});
+
+test("Models tab combines provider (Setup) + Default model (Defaults)", () => {
+  const host = { settings: { providerPreference: "anthropic-api", model: "claude-sonnet-4-6" }, saveSettings: async () => {} };
+  const c = makeContainer();
+  renderGryphonSettings(host, c);
+  const names = _allSettings(c).map((s) => s.name);
+  assert.ok(names.includes("Provider"), "Models tab holds the Setup provider row");
+  assert.ok(names.includes("Default model"), "Models tab holds the Defaults model row");
+});
+
+test("Models tab outlines Model and Fallback as two distinct groups", () => {
+  const host = { settings: { providerPreference: "anthropic-api", model: "claude-sonnet-4-6" }, saveSettings: async () => {} };
+  const c = makeContainer();
+  renderGryphonSettings(host, c);
+  const groups = _allCreated(c).filter((x) => x.cls === "gryphon-settings-group");
+  assert.equal(groups.length, 2, "two outlined groups: Model + Fallback");
+  const namesIn = (g) => _allSettings(g.el).map((s) => s.name);
+  const modelNames = namesIn(groups[0]);
+  const fbNames = namesIn(groups[1]);
+  assert.ok(modelNames.includes("Provider"), "Model group holds Provider");
+  assert.ok(modelNames.includes("Default model"), "Model group holds Default model");
+  assert.ok(!modelNames.includes("Fallback provider"), "Fallback is NOT inside the Model group");
+  assert.ok(fbNames.includes("Fallback provider"), "Fallback group holds Fallback provider");
+});
+
+test("Fallback renders AFTER the default-model settings in the Models tab", () => {
+  const host = { settings: { providerPreference: "anthropic-api", model: "claude-sonnet-4-6" }, saveSettings: async () => {} };
+  const c = makeContainer();
+  renderGryphonSettings(host, c);
+  const names = _allSettings(c).map((s) => s.name);
+  const iProvider = names.indexOf("Provider");
+  const iDefaultModel = names.indexOf("Default model");
+  const iFallback = names.indexOf("Fallback provider");
+  assert.ok(iProvider >= 0 && iDefaultModel >= 0 && iFallback >= 0, "all three rows present");
+  assert.ok(iFallback > iDefaultModel, "Fallback provider must come after Default model");
+  assert.ok(iDefaultModel > iProvider, "Default model still after Provider");
+});
+
+test("options.extraTabs appends a third tab (Security)", () => {
+  const host = { settings: {}, saveSettings: async () => {} };
+  const c = makeContainer();
+  let gotPanel = false;
+  renderGryphonSettings(host, c, {
+    extraTabs: [{ id: "security", label: "Security", render: () => { gotPanel = true; } }],
+  });
+  const tabLabels = _allCreated(c)
+    .filter((x) => x.cls === "gryphon-settings-tab")
+    .map((x) => x.text);
+  assert.deepEqual(tabLabels, ["Models", "Advanced", "Security"]);
+  assert.equal(gotPanel, true, "extraTabs render callback must run");
 });

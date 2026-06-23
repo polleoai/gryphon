@@ -4,6 +4,17 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.6.0] — 2026-06-23
+
+### Changed
+
+- **Redesigned settings interface.** Gryphon's settings are now organised into tabs — **Models**, **Advanced**, and **Security** — instead of one long scrolling list. The Models tab shows only the credential field(s) for the provider you've actually selected (your API key, or your CLI path), so configuring one provider no longer means scrolling past every other provider's fields. All of your existing settings carry over unchanged.
+- **Clearer warning when your selected provider can't run.** If the provider you've chosen is missing its API key, or its CLI isn't installed where Gryphon looks, the provider dropdown is now outlined in red with the exact reason shown on hover. And if you close settings while an unusable provider is still selected, Gryphon reminds you with a brief notice — so you find out then, not on your next message. The check is local only and never makes a network call.
+
+### Fixed
+
+- **CLI detection is more reliable and now recovers on its own.** Each CLI provider row (Claude / Codex / Gemini) shows a consistent detection status and a **Re-detect** button. A first-launch timing issue that could leave an installed CLI showing as "not detected" for the rest of the session now heals automatically on the next check, and **Re-detect** both re-probes and applies the newly-found CLI to your next message.
+
 ## [2.5.1] — 2026-06-22
 
 ### Changed

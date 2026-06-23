@@ -80,6 +80,7 @@ function _deriveActionTarget(tool, input) {
 
 class GryphonSettingTab extends PluginSettingTab {
   declare plugin: any;
+  declare _activeSettingsTabId: any;
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -95,17 +96,36 @@ class GryphonSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    // The portable config zone (Provider + Defaults) is drawn by the shared,
-    // host-agnostic renderer (issue #14) so consumers render the exact same
-    // fields instead of hand-mirroring rows (which drifted and dropped the
-    // API-key inputs). onRerender re-runs display() so the Gryphon-only zone
-    // below (Security / provenance / diagnostics) re-renders on provider
-    // switch too.
     renderGryphonSettings(this.plugin, containerEl, {
-      chrome: true,
-      onRerender: () => this.display(),
+      initialTabId: this._activeSettingsTabId || "models",
+      onTabChange: (id) => { this._activeSettingsTabId = id; },
+      extraTabs: [{
+        id: "security",
+        label: "Security",
+        render: (panelEl, ctx) => this._renderSecurityTab(panelEl, ctx),
+      }],
     });
+  }
 
+  hide() {
+    // Let Obsidian run its own teardown (empties containerEl) — we override
+    // hide() only to add the close-time toast below, not to replace cleanup.
+    super.hide?.();
+    // Close-time safety net: if the user leaves the settings with a selected
+    // provider that can't actually run (no key / no CLI), warn them with a
+    // toast so they don't unknowingly chat against an inert provider. Silent
+    // on the happy path. Best-effort — never throw out of a lifecycle hook.
+    try {
+      const { buildProviderUnreadyNotice } = require("./settings-view");
+      const msg = buildProviderUnreadyNotice(this.plugin);
+      // Defer the toast: hide() runs synchronously DURING the settings-modal
+      // teardown, and a Notice created mid-teardown is swallowed (never paints).
+      // A next-tick timer fires it after the modal has finished closing.
+      if (msg) window.setTimeout(() => new Notice(msg, 10000), 0);
+    } catch { /* best-effort */ }
+  }
+
+  _renderSecurityTab(containerEl, ctx) {
     // ── Security section ──────────────────────────────────────────
     // Single h3 with four sibling rows: two pattern-list toggles
     // (paths + commands), interactive CLI protection, and the
@@ -136,7 +156,7 @@ class GryphonSettingTab extends PluginSettingTab {
         this.plugin._resetActiveSessions();
         // Re-render so Auto-deny appears/disappears and sub-items
         // acquire/lose the dimmed state.
-        this.display();
+        ctx.rerenderSelf();
       },
     });
 
@@ -263,7 +283,7 @@ class GryphonSettingTab extends PluginSettingTab {
               ? "No stale tags found."
               : `Removed ${removed.length} stale tag${removed.length === 1 ? "" : "s"}.`
           );
-          this.display();
+          ctx.rerenderSelf();
         } catch (e) {
           new Notice(`Lint failed: ${(e && e.message) || e}`);
         }
@@ -1011,6 +1031,12 @@ class GryphonPlugin extends Plugin {
       try { void this.ipcServer.close(); } catch (_) { /* best-effort */ }
       this.ipcServer = null;
     }
+    // Remove the body-appended settings hover-tooltip singleton, if one was
+    // ever shown — Obsidian asks plugins to clean up DOM they add to body.
+    try {
+      const { disposeHoverTooltip } = require("./settings-view");
+      disposeHoverTooltip?.();
+    } catch (_) { /* best-effort */ }
   }
 
   /**

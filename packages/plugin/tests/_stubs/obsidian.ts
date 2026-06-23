@@ -34,10 +34,12 @@ function _control(type) {
     changeHandler: null,
     clickHandler: null,
     inputEl: { type: "" },
+    selectEl: _el(),   // DropdownComponent.selectEl — a recording element so
+                       // class toggles (e.g. error styling) are observable
     setPlaceholder(p) { c.placeholder = p; return c; },
     setValue(v) { c.value = v; return c; },
     setDisabled(d) { c.disabled = d; return c; },
-    setButtonText() { return c; },
+    setButtonText(t) { c.buttonText = t; return c; },
     setTooltip() { return c; },
     setCta() { return c; },
     setIcon() { return c; },
@@ -93,42 +95,89 @@ function setTooltip() { /* no-op */ }
 
 // Recording element factory. Beyond the original `setText`/`createEl`/`style`
 // surface, the returned element captures the children it creates (in
-// `__created`, each `{ tag, cls, text }`) and accumulates Settings built
+// `__created`, each `{ tag, cls, text, el }`) and accumulates Settings built
 // against it (in `__settings`). Sub-elements are themselves recording
 // elements, so chrome built into nested containers is still observable.
+// Class tracking is now real: classList/addClass/removeClass/toggleClass/
+// className all mutate a backing Set so tests can assert `is-active` toggling.
 function _el() {
-  const el = {
+  const _classes = new Set<string>();
+  const el: any = {
     __settings: [],
     __created: [],
     style: {},
-    className: "",
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    get className() { return [..._classes].join(" "); },
+    set className(v) {
+      _classes.clear();
+      String(v || "").split(/\s+/).filter(Boolean).forEach((c) => _classes.add(c));
+    },
+    classList: {
+      add(...cs: string[]) { cs.forEach((c) => _classes.add(c)); },
+      remove(...cs: string[]) { cs.forEach((c) => _classes.delete(c)); },
+      toggle(c: string, force?: boolean) {
+        const want = force === undefined ? !_classes.has(c) : force;
+        if (want) _classes.add(c); else _classes.delete(c);
+        return want;
+      },
+      contains(c: string) { return _classes.has(c); },
+    },
     setText() { return el; },
     setAttr() { return el; },
     setAttribute() { return el; },
-    empty() { el.__created.length = 0; return el; },
-    addClass() { return el; },
-    removeClass() { return el; },
-    toggleClass() { return el; },
+    empty() { el.__created.length = 0; el.__settings.length = 0; return el; },
+    addClass(c: string) { _classes.add(c); return el; },
+    removeClass(c: string) { _classes.delete(c); return el; },
+    toggleClass(c: string, force?: boolean) {
+      const want = force === undefined ? !_classes.has(c) : force;
+      if (want) _classes.add(c); else _classes.delete(c);
+      return el;
+    },
     addEventListener() {},
     removeEventListener() {},
-    setCssStyles(obj) { if (obj) Object.assign(el.style, obj); return el; },
+    setCssStyles(obj: any) { if (obj) Object.assign(el.style, obj); return el; },
     setTooltip() { return el; },
     appendChild() {},
-    createEl(tag, opts) {
-      el.__created.push({ tag, cls: opts && opts.cls, text: opts && opts.text });
-      return _el();
+    createEl(tag: string, opts?: any) {
+      const child = _el();
+      el.__created.push({ tag, cls: opts && opts.cls, text: opts && opts.text, attr: opts && opts.attr, el: child });
+      return child;
     },
-    createDiv(arg) {
-      el.__created.push({ tag: "div", cls: typeof arg === "string" ? arg : (arg && arg.cls) });
-      return _el();
+    createDiv(arg?: any) {
+      const child = _el();
+      el.__created.push({
+        tag: "div",
+        cls: typeof arg === "string" ? arg : (arg && arg.cls),
+        text: (arg && typeof arg === "object") ? arg.text : undefined,
+        attr: (arg && typeof arg === "object") ? arg.attr : undefined,
+        el: child,
+      });
+      return child;
     },
-    createSpan(opts) {
-      el.__created.push({ tag: "span", cls: opts && opts.cls, text: opts && opts.text });
-      return _el();
+    createSpan(opts?: any) {
+      const child = _el();
+      el.__created.push({ tag: "span", cls: opts && opts.cls, text: opts && opts.text, attr: opts && opts.attr, el: child });
+      return child;
     },
   };
   return el;
+}
+
+function _allSettings(el: any): any[] {
+  if (!el) return [];
+  const out = [...(el.__settings || [])];
+  for (const c of el.__created || []) {
+    if (c && c.el) out.push(..._allSettings(c.el));
+  }
+  return out;
+}
+
+function _allCreated(el: any): any[] {
+  if (!el) return [];
+  const out = [...(el.__created || [])];
+  for (const c of el.__created || []) {
+    if (c && c.el) out.push(..._allCreated(c.el));
+  }
+  return out;
 }
 
 // requestUrl: Obsidian's CORS-bypassing HTTP client. Tests typically replace
@@ -175,7 +224,8 @@ module.exports = {
   ItemView, MarkdownView, Menu, MarkdownRenderer,
   Plugin, PluginSettingTab,
   setTooltip, requestUrl,
-  // Test helper: the recording element factory, used by settings-view.test.ts
-  // to build a recording container.
-  _el,
+  // Test helpers: the recording element factory + recursive collectors.
+  // _el() builds a recording container; _allSettings/_allCreated recurse into
+  // child elements created via createDiv/createEl/createSpan.
+  _el, _allSettings, _allCreated,
 };
