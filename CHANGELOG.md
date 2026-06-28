@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.6.1] — 2026-06-27
+
+### Security
+
+- **External content pulled in during a response is now marked as untrusted on the direct Anthropic provider too.** When Gryphon answers using the Anthropic API key path, anything a tool brings into the conversation mid-response — a fetched web page, a web search result, the contents of a file Gryphon read — is now clearly labelled to the model as *data, not instructions*, exactly as the Claude CLI path already did. This closes a gap where text hidden inside a web page or file (a prompt-injection attempt) could be treated as a command on the API path. Genuine tool errors and your own edits are unaffected.
+
 ## [2.6.0] — 2026-06-23
 
 ### Changed

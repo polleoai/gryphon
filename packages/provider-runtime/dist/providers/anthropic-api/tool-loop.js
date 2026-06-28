@@ -23,6 +23,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.GRYPHON_SDK_SYSTEM_PROMPT = exports.MAX_ITERATIONS = void 0;
 exports.runToolLoop = runToolLoop;
 const { getToolSchemas, executeTool } = require("./tools/tool-registry");
+const { untrustedFraming } = require("@gryphon/protect");
+const { shouldFrame, buildFraming } = untrustedFraming;
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
 // System prompt sent with every SDK-mode request. Covers four observed
@@ -263,10 +265,46 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
             if (callbacks.onTool)
                 callbacks.onTool(block.name);
             const result = await executeTool(block.name, block.input, ctx);
+            // Apply framing for tools that should be framed (WebFetch, WebSearch, etc.)
+            let framedContent = result.content;
+            if (!result.isError && shouldFrame(block.name)) {
+                // Extract source detail for the framing
+                let sourceDetail;
+                if (block.name === "WebFetch" && block.input?.url) {
+                    sourceDetail = block.input.url;
+                }
+                else if (block.name === "WebSearch" && block.input?.query) {
+                    sourceDetail = block.input.query;
+                }
+                else if (block.name === "Read" && block.input?.file_path) {
+                    sourceDetail = block.input.file_path;
+                }
+                else if (block.name === "Bash" && block.input?.command) {
+                    sourceDetail = block.input.command;
+                }
+                // Build the framing text
+                const framing = buildFraming({
+                    tool: block.name,
+                    sourceDetail,
+                    injectionHits: [] // Tool-loop doesn't scan for injections; that's done in PostToolUse hook
+                });
+                // Combine the original content with the framing
+                // The content could be a string or an array of content blocks
+                if (typeof result.content === "string") {
+                    framedContent = result.content + "\n\n" + framing;
+                }
+                else if (Array.isArray(result.content)) {
+                    // Add framing as an additional text block
+                    framedContent = [
+                        ...result.content,
+                        { type: "text", text: "\n\n" + framing }
+                    ];
+                }
+            }
             toolResults.push({
                 type: "tool_result",
                 tool_use_id: block.id,
-                content: result.content,
+                content: framedContent,
                 is_error: !!result.isError,
             });
         }
