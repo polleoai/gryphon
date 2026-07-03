@@ -39,7 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *     whose regex has no literal keyword gets no CLI-mode protection
  *     for that entry — documented as a known gap.
  */
-const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, } = require("./constants");
+const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PACKAGE_INSTALL_COMMAND_PATTERNS, } = require("./constants");
 const { resolveActivePatterns } = require("./path-utils");
 // Default Obsidian config-folder name. Held as a const (not an inline literal)
 // so the deny-glob below reads as the intentional pattern it is — this is a
@@ -78,6 +78,14 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
     ["(curl|wget)[^|]*\\|\\s*(bash|sh|zsh|fish|tcsh|csh|ksh)\\b", [
             "Bash(curl*|*bash*)", "Bash(wget*|*bash*)",
             "Bash(curl*|*sh*)", "Bash(wget*|*sh*)",
+        ]],
+    // Reverse shell — bash `/dev/tcp|/dev/udp` network redirect or netcat
+    // execute flag. Globs match the network pseudo-device path and the
+    // `nc -e` / `ncat --exec` command shapes.
+    ["/dev/(tcp|udp)/|\\bnc(at)?\\b[^|\\r\\n]{0,80}(\\s-e\\b|\\s--exec\\b)", [
+            "Bash(*/dev/tcp/*)", "Bash(*/dev/udp/*)",
+            "Bash(nc -e*)", "Bash(*nc -e*)",
+            "Bash(ncat*-e*)", "Bash(*ncat*--exec*)",
         ]],
     ["\\b['\"]?rm['\"]?\\s+-[a-z]*r[a-z]*\\b", [
             "Bash(rm -r*)", "Bash(rm -R*)",
@@ -348,6 +356,31 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
             "Bash(pip install*)", "Bash(pip3 install*)", "Bash(pip3.11 install*)",
             "Bash(*pip install*)", "Bash(*pip3 install*)",
         ]],
+    ["\\bpython[\\d.]*\\s+-m\\s+pip\\s+install\\b", [
+            "Bash(python -m pip install*)", "Bash(python3 -m pip install*)", "Bash(*-m pip install*)",
+        ]],
+    ["\\b(uv|pipx)\\s+(pip\\s+install|install|add)\\b", [
+            "Bash(uv pip install*)", "Bash(uv add*)", "Bash(pipx install*)",
+            "Bash(*uv pip install*)", "Bash(*uv add*)", "Bash(*pipx install*)",
+        ]],
+    ["\\b(npm|pnpm|yarn|bun)\\s+(install|add|ci|i)\\b", [
+            "Bash(npm install*)", "Bash(npm i*)", "Bash(npm ci*)", "Bash(*npm install*)",
+            "Bash(pnpm install*)", "Bash(pnpm add*)", "Bash(*pnpm add*)",
+            "Bash(yarn install*)", "Bash(yarn add*)", "Bash(*yarn add*)",
+            "Bash(bun install*)", "Bash(bun add*)", "Bash(*bun add*)",
+        ]],
+    ["\\bgem\\s+install\\b", ["Bash(gem install*)", "Bash(*gem install*)"]],
+    ["\\bbundle\\s+install\\b", ["Bash(bundle install*)", "Bash(*bundle install*)"]],
+    ["\\bcargo\\s+install\\b", ["Bash(cargo install*)", "Bash(*cargo install*)"]],
+    ["\\bgo\\s+install\\b", ["Bash(go install*)", "Bash(*go install*)"]],
+    ["\\b(conda|poetry)\\s+(install|add)\\b", [
+            "Bash(conda install*)", "Bash(poetry add*)", "Bash(*conda install*)", "Bash(*poetry add*)",
+        ]],
+    ["\\b(apt|apt-get|dnf|yum|zypper|apk)\\s+install\\b", [
+            "Bash(apt install*)", "Bash(apt-get install*)", "Bash(*apt-get install*)",
+            "Bash(dnf install*)", "Bash(yum install*)", "Bash(zypper install*)", "Bash(apk install*)",
+        ]],
+    ["\\bbrew\\s+install\\b", ["Bash(brew install*)", "Bash(*brew install*)"]],
 ]);
 /**
  * Translate one protected PATH entry (plain string or { pattern, ... }
@@ -418,7 +451,12 @@ function buildDisallowedTools(settings) {
     const out = [];
     for (const p of activePaths)
         out.push(..._globsForPath(p));
-    for (const c of activeCommands)
+    const muteInstall = settings.blockPackageInstall === false;
+    const installSet = new Set(PACKAGE_INSTALL_COMMAND_PATTERNS);
+    const cmds = muteInstall
+        ? activeCommands.filter((c) => !installSet.has(c))
+        : activeCommands;
+    for (const c of cmds)
         out.push(..._globsForCommand(c));
     // Dedupe while preserving order (CC accepts dupes but the command
     // line stays readable without them).

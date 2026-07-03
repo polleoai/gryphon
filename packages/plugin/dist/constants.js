@@ -789,6 +789,7 @@ const DEFAULT_SETTINGS = {
     // can flip protection back on without losing their customizations.
     protectedPathsEnabled: true,
     protectedCommandsEnabled: true,
+    blockPackageInstall: true,
     // Default patterns the user has turned off via the checklist. These are
     // strings that appear in DEFAULT_PROTECTED_PATHS — only defaults can
     // be "disabled" (to remove a custom, delete it entirely).

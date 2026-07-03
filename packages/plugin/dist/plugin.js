@@ -223,6 +223,12 @@ class GryphonSettingTab extends PluginSettingTab {
                 }
             },
         });
+        this._renderSecurityHeaderRow(protectedContainer, {
+            title: "Block package installation",
+            shortDesc: "Flag pip / npm / brew / cargo / apt … install commands.",
+            tooltipDetail: "Gryphon runs inside Obsidian and never needs to install packages. Blocking installs stops a common off-task action and the first step of clean-repo prompt-injection attacks. You can still approve an install when prompted, or turn this off.",
+            toggleKey: "blockPackageInstall",
+        });
         // Untrusted-content tagging — header row without a toggle (the
         // feature is always on when the plugin dir is writable), followed
         // by the status + action toolbar.

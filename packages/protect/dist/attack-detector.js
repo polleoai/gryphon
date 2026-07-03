@@ -248,7 +248,9 @@ function _classifyCommand(tool, input, ctx, settings) {
         return null;
     const command = _normalizeForMatch(rawCommand);
     const defs = _activePatternDefs(DEFAULT_PROTECTED_COMMANDS, settings.protectedCommandsDisabled, settings.protectedCommandsCustom);
-    for (const def of defs) {
+    const muteInstall = settings.blockPackageInstall === false;
+    const activeDefs = muteInstall ? defs.filter((d) => d.category !== "package-install") : defs;
+    for (const def of activeDefs) {
         let re;
         try {
             re = new RegExp(def.pattern, "i");

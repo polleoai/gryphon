@@ -4,6 +4,13 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.7.0] — 2026-07-02
+
+### Security
+
+- **Package installation is now flagged by default.** Gryphon works inside your Obsidian vault and never needs to install software, so commands that install packages — `pip`, `npm` / `pnpm` / `yarn` / `bun`, `gem`, `cargo`, `go`, `brew`, `apt` / `dnf` / `yum`, `conda`, `poetry`, and similar — now ask for your approval before they run, even when you've set Gryphon to auto-approve routine actions. This closes one of the most common ways a booby-trapped project tries to get code onto your machine: an innocent-looking "install the requirements" step that quietly does more than it claims. A new **Block package installation** switch in Settings → Security is on by default; turn it off if you have a workflow that genuinely needs to install packages.
+- **Reverse-shell and payload-staging commands are now recognized.** Gryphon now flags command shapes used to open a reverse shell — a live connection that hands remote control of your machine to someone else — along with the DNS lookups sometimes used to fetch a hidden payload, so they surface for your approval instead of running silently. Ordinary interactive shells and everyday commands are unaffected.
+
 ## [2.6.1] — 2026-06-27
 
 ### Security

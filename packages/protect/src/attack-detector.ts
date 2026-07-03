@@ -268,7 +268,9 @@ function _classifyCommand(tool: string, input: Record<string, unknown>, ctx: Rec
     settings.protectedCommandsDisabled,
     settings.protectedCommandsCustom,
   );
-  for (const def of defs) {
+  const muteInstall = settings.blockPackageInstall === false;
+  const activeDefs = muteInstall ? defs.filter((d) => d.category !== "package-install") : defs;
+  for (const def of activeDefs) {
     let re;
     try {
       re = new RegExp(def.pattern, "i");
