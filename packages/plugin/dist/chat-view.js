@@ -661,7 +661,7 @@ function modelButtonText(settingsOrPlugin) {
     if (MODELS.some((m) => m.value === requested)) {
         return labelFor(MODELS, requested);
     }
-    return labelFor(MODELS, "claude-sonnet-4-6");
+    return labelFor(MODELS, "claude-sonnet-5");
 }
 function modelButtonTitle(settingsOrPlugin) {
     const settings = settingsOrPlugin && settingsOrPlugin.settings
@@ -1646,7 +1646,7 @@ class GryphonChatView extends ItemView {
                 + "warning toast fires if it does. Click to block.", { placement: "bottom" });
     }
     updateContextMeter(contextTokens) {
-        const model = this.plugin.settings.model || "claude-sonnet-4-6";
+        const model = this.plugin.settings.model || "claude-sonnet-5";
         const windowSize = MODEL_CONTEXT[model] || 200000;
         const pct = Math.min(Math.round(contextTokens / windowSize * 100), 100);
         // v1.7.0 — persist the absolute token count so a model switch
@@ -1785,7 +1785,7 @@ class GryphonChatView extends ItemView {
         try {
             const userInput = (this.inputEl && this.inputEl.value) || "";
             const settings = (this.plugin && this.plugin.settings) || {};
-            const modelId = settings.model || "claude-sonnet-4-6";
+            const modelId = settings.model || "claude-sonnet-5";
             const windowSize = MODEL_CONTEXT[modelId] || 200000;
             // Lazy-load the filesystem snapshot. Repopulated on session boundary
             // via _reloadContextSources(); kept across keystrokes for cheapness.
@@ -1975,7 +1975,7 @@ class GryphonChatView extends ItemView {
         const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
         if (!tokens)
             return 0;
-        const model = this.plugin.settings.model || "claude-sonnet-4-6";
+        const model = this.plugin.settings.model || "claude-sonnet-5";
         const windowSize = MODEL_CONTEXT[model] || 200000;
         return Math.min(100, Math.round(tokens / windowSize * 100));
     }
@@ -2325,7 +2325,7 @@ class GryphonChatView extends ItemView {
      */
     _cmdShowContext() {
         const contextTokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-        const model = this.plugin.settings.model || "claude-sonnet-4-6";
+        const model = this.plugin.settings.model || "claude-sonnet-5";
         const windowSize = MODEL_CONTEXT[model] || 200000;
         if (contextTokens === 0) {
             this._flashStatus(`Context: 0 / ${Math.round(windowSize / 1000)}K tokens (send a message to populate)`);
@@ -2604,7 +2604,7 @@ class GryphonChatView extends ItemView {
             return settings.providerPreference || "auto";
         })();
         const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-        const model = settings.model || "claude-sonnet-4-6";
+        const model = settings.model || "claude-sonnet-5";
         const windowSize = MODEL_CONTEXT[model] || 200000;
         const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
         let obsidianVersion = "unknown";
@@ -6237,7 +6237,7 @@ class GryphonChatView extends ItemView {
             // error body that names the active model + window, calls out
             // input size vs. history size, and recommends the concrete fix
             // (switch to a 1M-context model, or trim the system-prompt side).
-            const meterModel = this.plugin.settings.model || "claude-sonnet-4-6";
+            const meterModel = this.plugin.settings.model || "claude-sonnet-5";
             const meterWindow = MODEL_CONTEXT[meterModel] || 200000;
             const msgDepth = (this.messages || []).length;
             const inputChars = (originalRawText || "").length;

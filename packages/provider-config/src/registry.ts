@@ -42,6 +42,19 @@ const MODELS = [
     dropdown: { label: "Sonnet 4.6", desc: "Balanced (1M)" },
     contextTokens: 1_000_000,
     coldStartMs: 90_000,
+  },
+  {
+    // Claude Sonnet 5 — newest Sonnet, near-Opus quality on coding/agentic.
+    // Standard $3/$15 used here (NOT the $2/$10 intro rate that expires
+    // 2026-08-31 — the registry is not time-aware, so encoding a promo
+    // price would over-discount cost estimates once it lapses).
+    // Verified: probe-model.sh anthropic claude-sonnet-5 → ok
+    id: "claude-sonnet-5",
+    vendor: "anthropic",
+    pricing: { input: 3.00, output: 15.00 },
+    dropdown: { label: "Sonnet 5", desc: "Balanced, newest (1M)" },
+    contextTokens: 1_000_000,
+    coldStartMs: 90_000,
     isDefault: true,
   },
   {
@@ -67,7 +80,21 @@ const MODELS = [
     id: "claude-opus-4-8",
     vendor: "anthropic",
     pricing: { input: 5.00, output: 25.00 },
-    dropdown: { label: "Opus 4.8", desc: "Most capable (1M)" },
+    dropdown: { label: "Opus 4.8", desc: "Top Opus tier (1M)" },
+    contextTokens: 1_000_000,
+    coldStartMs: 180_000,
+  },
+  {
+    // Claude Fable 5 — Anthropic's most capable widely released model,
+    // for the most demanding reasoning / long-horizon agentic work.
+    // Priced above the Opus tier. Runtime special-casing (always-on
+    // thinking, refusal fallbacks) lives in provider-runtime, not here —
+    // this file is catalog-only (pricing / context / label / cold start).
+    // Verified: probe-model.sh anthropic claude-fable-5 → ok
+    id: "claude-fable-5",
+    vendor: "anthropic",
+    pricing: { input: 10.00, output: 50.00 },
+    dropdown: { label: "Fable 5", desc: "Most capable (1M)" },
     contextTokens: 1_000_000,
     coldStartMs: 180_000,
   },
@@ -210,6 +237,21 @@ const MODELS = [
     vendor: "google",
     pricing: { input: 0.50, output: 3.00, cached_input: 0.05 },
     dropdown: { label: "Gemini 3 Flash", desc: "Preview" },
+  },
+  {
+    // Gemini 3.5 Flash — newest GA Flash, tuned for agentic / coding work.
+    id: "gemini-3.5-flash",
+    vendor: "google",
+    pricing: { input: 1.50, output: 9.00, cached_input: 0.15 },
+    dropdown: { label: "Gemini 3.5 Flash", desc: "Agentic / coding (newest)" },
+  },
+  {
+    // Gemini 3.1 Flash-Lite — cheapest Gemini 3 tier. GA id; supersedes the
+    // `gemini-3.1-flash-lite-preview` model (retired 2026-07-09).
+    id: "gemini-3.1-flash-lite",
+    vendor: "google",
+    pricing: { input: 0.25, output: 1.50, cached_input: 0.025 },
+    dropdown: { label: "Gemini 3.1 Flash-Lite", desc: "Cheapest Gemini 3" },
   },
 ];
 

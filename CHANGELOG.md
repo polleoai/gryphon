@@ -4,6 +4,17 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.8.0] — 2026-07-06
+
+### Added
+
+- **New Claude models: Fable 5 and Sonnet 5.** Claude Fable 5 — Anthropic's most capable model for the most demanding reasoning and long-horizon work — and Claude Sonnet 5 — the newest balanced model, at the same price as Sonnet 4.6 — are now selectable in the model dropdown for the Anthropic and Claude paths.
+- **New Gemini models: 3.5 Flash and 3.1 Flash-Lite.** Gemini 3.5 Flash (tuned for agentic and coding work) and Gemini 3.1 Flash-Lite (the cheapest Gemini 3 tier) are now available in the Gemini dropdown.
+
+### Changed
+
+- **Claude Sonnet 5 is the new default Anthropic model.** Fresh installs start on Sonnet 5; if you have already picked a model, your choice is unchanged and every previous model (Sonnet 4.6, the Opus tiers, and the rest) remains selectable.
+
 ## [2.7.0] — 2026-07-02
 
 ### Security

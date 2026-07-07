@@ -41,7 +41,7 @@ test("aliasFor('opus', 'google') returns gemini-2.5-pro", () => {
 });
 
 test("defaultModelFor returns the marked default per vendor", () => {
-  assert.equal(registry.defaultModelFor("anthropic"), "claude-sonnet-4-6");
+  assert.equal(registry.defaultModelFor("anthropic"), "claude-sonnet-5");
   assert.equal(registry.defaultModelFor("openai"), "gpt-5.4-mini");
   assert.equal(registry.defaultModelFor("google"), "gemini-2.5-flash");
 });

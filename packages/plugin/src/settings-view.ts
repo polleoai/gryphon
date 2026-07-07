@@ -76,7 +76,7 @@ function _resetModelForProvider(plugin) {
     return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
   }
   // claude-code / anthropic-api / null → Anthropic MODELS list.
-  return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-4-6";
+  return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-5";
 }
 
 /**

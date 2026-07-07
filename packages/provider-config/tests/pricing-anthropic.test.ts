@@ -59,8 +59,8 @@ test("MODEL_ALIAS passes through native concrete ids", () => {
 
 // ---------- DEFAULT_MODEL ----------
 
-test("DEFAULT_MODEL is claude-sonnet-4-6", () => {
-  assert.equal(anthropic.DEFAULT_MODEL, "claude-sonnet-4-6");
+test("DEFAULT_MODEL is claude-sonnet-5", () => {
+  assert.equal(anthropic.DEFAULT_MODEL, "claude-sonnet-5");
 });
 
 // ---------- resolveModel ----------
@@ -68,8 +68,8 @@ test("DEFAULT_MODEL is claude-sonnet-4-6", () => {
 test("resolveModel returns concrete id for alias", () => {
   assert.equal(anthropic.resolveModel("opus"), "claude-opus-4-8");
   assert.equal(anthropic.resolveModel("claude-sonnet-4-6"), "claude-sonnet-4-6");
-  assert.equal(anthropic.resolveModel(undefined), "claude-sonnet-4-6", "default fallback");
-  assert.equal(anthropic.resolveModel(null), "claude-sonnet-4-6", "null also defaults");
+  assert.equal(anthropic.resolveModel(undefined), "claude-sonnet-5", "default fallback");
+  assert.equal(anthropic.resolveModel(null), "claude-sonnet-5", "null also defaults");
 });
 
 test("resolveModel passes unknown ids through (priceFor handles fallback)", () => {
