@@ -1750,11 +1750,17 @@ class GryphonPlugin extends Plugin {
    *   - codex-cli ("codex-cli-*")  → DROP. Server-side state may be
    *                                   stale (sandbox baked in at spawn).
    *   - gemini-cli ("gemini-cli-*")→ DROP. Same reason as codex-cli.
+   *   - antigravity-cli            → DROP. `--conversation <id>` resumes the
+   *     ("antigravity-cli-*")        CLI's own thread, which was opened under
+   *                                  the pre-reload permission/config state.
+   *                                  Chat history is untouched — it lives in
+   *                                  chat-history.json for this provider.
    */
   _dropStalePerReloadSessionIds() {
     const sid = this.settings && this.settings.lastSessionId;
     if (typeof sid !== "string" || !sid) return;
-    if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-")) {
+    if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-") ||
+        sid.startsWith("antigravity-cli-")) {
       console.log(
         `[gryphon] dropping stale CLI lastSessionId on plugin load: ${sid} ` +
         `(chat history preserved; next message starts a fresh CLI session ` +

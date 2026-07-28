@@ -1,4 +1,4 @@
-export type ProviderKind = "anthropic-api" | "openai-api" | "google-api" | "claude-code" | "codex-cli" | "gemini-cli";
+export type ProviderKind = "anthropic-api" | "openai-api" | "google-api" | "claude-code" | "codex-cli" | "gemini-cli" | "antigravity-cli";
 export type StreamMessageType = "init" | "replace" | "tool";
 export interface StructuredOutputRequest {
     name: string;

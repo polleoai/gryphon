@@ -135,6 +135,7 @@ function _buildProvider(plugin, kind, cwd, options = {}, modelOverride) {
     const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
     const codexPath = settings.codexPath || _detectCodexBinary();
     const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
+    const antigravityPath = settings.antigravityPath || _detectAntigravityBinary();
     // Issue #39: per-provider extraArgs targeting. `enrich(kind)` returns
     // options with extraArgs = legacy bucket + extraArgsByProvider[kind].
     // The merged array is run through the provider's cross-provider filter
@@ -203,6 +204,16 @@ function _buildProvider(plugin, kind, cwd, options = {}, modelOverride) {
         const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
         return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli"));
     }
+    // antigravity-cli (issue #19): the Google Antigravity CLI (`agy`)
+    // subprocess. Auth is handled by the CLI itself (silent keyring / OAuth,
+    // mirrors codex-cli's `codex login` model); no API key from settings.
+    // Binary must exist.
+    if (kind === "antigravity-cli") {
+        if (!antigravityPath)
+            return null;
+        const { AntigravityCliProvider } = require("./providers/antigravity-cli/antigravity-cli");
+        return new AntigravityCliProvider(antigravityPath, cwd, enrich("antigravity-cli"));
+    }
     return null;
 }
 /**
@@ -233,7 +244,9 @@ function _firstAvailableKind(settings) {
 function defaultModelForKind(kind) {
     const vendor = (kind === "anthropic-api" || kind === "claude-code") ? "anthropic" :
         (kind === "openai-api" || kind === "codex-cli") ? "openai" :
-            (kind === "google-api" || kind === "gemini-cli") ? "google" : null;
+            // antigravity-cli is the Gemini-based Antigravity suite (issue #19) —
+            // shares the google vendor default with gemini-cli/google-api.
+            (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") ? "google" : null;
     if (!vendor)
         return "";
     try {
@@ -332,6 +345,13 @@ function _createProviderFromBag(bag) {
         const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
         return new GeminiCliProvider(geminiPath, cwd, opts);
     }
+    if (kind === "antigravity-cli") {
+        const antigravityPath = opts.antigravityPath || _detectAntigravityBinary();
+        if (!antigravityPath)
+            return null;
+        const { AntigravityCliProvider } = require("./providers/antigravity-cli/antigravity-cli");
+        return new AntigravityCliProvider(antigravityPath, cwd, opts);
+    }
     return null;
 }
 /**
@@ -351,6 +371,7 @@ function explainUnavailable(plugin) {
     const hasGoogleKey = !!(settings.googleApiKey || process.env.GOOGLE_API_KEY);
     const hasCodexCli = !!(settings.codexPath || _detectCodexBinary());
     const hasGeminiCli = !!(settings.geminiCliPath || _detectGeminiBinary());
+    const hasAntigravityCli = !!(settings.antigravityPath || _detectAntigravityBinary());
     if (preference === "claude-code" && !hasCli) {
         return _cliNotFoundMessage();
     }
@@ -396,6 +417,17 @@ function explainUnavailable(plugin) {
                 "Or switch Provider to Google Gemini API and supply an API key.");
         }
         return "Gemini CLI failed to initialize. Verify the binary path in Settings.";
+    }
+    if (preference === "antigravity-cli") {
+        if (!hasAntigravityCli) {
+            return ("No local `agy` (Antigravity) CLI found. Install it with " +
+                "`curl -fsSL https://antigravity.google/cli/install.sh | bash`, or " +
+                "set the full path in Settings → Gryphon → Antigravity CLI path. " +
+                "After installing, run `agy` once in a terminal to authenticate. " +
+                "Note: gemini-cli is deprecated for Gemini Code Assist individuals — " +
+                "this is its replacement.");
+        }
+        return "Antigravity CLI failed to initialize. Verify the binary path in Settings.";
     }
     // auto-fallthrough with NO key/CLI at all. All three SDK adapters now
     // shipped — claude-code preserved as preferred when CLI is detected.
@@ -459,6 +491,9 @@ function _detectCodexBinary() {
 function _detectGeminiBinary() {
     return require("./utils").findGeminiBinary();
 }
+function _detectAntigravityBinary() {
+    return require("./utils").findAntigravityBinary();
+}
 /**
  * Inspect what's available right now, regardless of the user's selected
  * preference. Used by the welcome panel to render adaptive guidance:
@@ -515,6 +550,7 @@ function detectAvailable(plugin) {
     }
     const codexPath = settings.codexPath || _detectCodexBinary() || null;
     const geminiCliPath = settings.geminiCliPath || _detectGeminiBinary() || null;
+    const antigravityPath = settings.antigravityPath || _detectAntigravityBinary() || null;
     return {
         cliPath,
         apiKey, apiKeySource,
@@ -522,6 +558,7 @@ function detectAvailable(plugin) {
         googleKey, googleKeySource,
         codexPath,
         geminiCliPath,
+        antigravityPath,
     };
 }
 /**
@@ -546,6 +583,7 @@ function getActiveProviderKind(plugin) {
     const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
     const codexPath = settings.codexPath || _detectCodexBinary();
     const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
+    const antigravityPath = settings.antigravityPath || _detectAntigravityBinary();
     if (preference === "claude-code")
         return claudePath ? "claude-code" : null;
     if (preference === "anthropic-api")
@@ -558,6 +596,8 @@ function getActiveProviderKind(plugin) {
         return codexPath ? "codex-cli" : null;
     if (preference === "gemini-cli")
         return geminiPath ? "gemini-cli" : null;
+    if (preference === "antigravity-cli")
+        return antigravityPath ? "antigravity-cli" : null;
     // auto: same priority as createProvider's auto-fallthrough — CLI
     // fallthroughs are NOT in this list (see createProvider for rationale).
     if (claudePath)

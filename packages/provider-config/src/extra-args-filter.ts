@@ -51,6 +51,13 @@ const PROVIDER_FLAGS: Record<string, Set<string>> = {
   "gemini-cli": new Set([
     "--approval-mode",
   ]),
+  "antigravity-cli": new Set([
+    // Antigravity has no documented --approval-mode equivalent;
+    // `--dangerously-skip-permissions` is its always-on auto-approve flag
+    // (issue #19; verified real flag name — `agy --help` has no `--yes`
+    // or `--no-color` at all, so neither belongs here anymore).
+    "--dangerously-skip-permissions",
+  ]),
 };
 
 // Union of all provider-specific flags. A flag in this set is "owned" by

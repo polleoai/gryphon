@@ -21,16 +21,19 @@ const utils = require("../src/utils");
 const origCodex = utils.findCodexBinary;
 const origGemini = utils.findGeminiBinary;
 const origClaude = utils.findClaudeBinary;
+const origAntigravity = utils.findAntigravityBinary;
 
-function stubBinaries({ codex = null, gemini = null, claude = null }) {
+function stubBinaries({ codex = null, gemini = null, claude = null, antigravity = null }) {
   utils.findCodexBinary = () => codex;
   utils.findGeminiBinary = () => gemini;
   utils.findClaudeBinary = () => claude;
+  utils.findAntigravityBinary = () => antigravity;
 }
 function restoreBinaries() {
   utils.findCodexBinary = origCodex;
   utils.findGeminiBinary = origGemini;
   utils.findClaudeBinary = origClaude;
+  utils.findAntigravityBinary = origAntigravity;
 }
 
 // Reset env so process.env.OPENAI_API_KEY etc. don't leak into the
@@ -136,6 +139,109 @@ test("settings.geminiCliPath overrides autodetect", () => {
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof GeminiCliProvider);
       assert.equal(p.geminiPath, "/manual/gemini");
+    } finally { restoreBinaries(); }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────
+// createProvider — antigravity-cli branch (issue #19)
+// ─────────────────────────────────────────────────────────────────
+
+test("createProvider returns AntigravityCliProvider when preference=antigravity-cli + binary detected", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: "/Users/x/.local/bin/agy" });
+    try {
+      const { createProvider } = require("../src/factory");
+      const { AntigravityCliProvider } = require("../src/providers/antigravity-cli/antigravity-cli");
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      const p = createProvider(plugin, "/tmp/vault");
+      assert.ok(p instanceof AntigravityCliProvider);
+      assert.equal(p.antigravityPath, "/Users/x/.local/bin/agy");
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("createProvider returns null when preference=antigravity-cli + no binary anywhere", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: null });
+    try {
+      const { createProvider } = require("../src/factory");
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      assert.equal(createProvider(plugin, "/tmp/vault"), null);
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("settings.antigravityPath overrides autodetect", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: "/auto/detected/agy" });
+    try {
+      const { createProvider } = require("../src/factory");
+      const { AntigravityCliProvider } = require("../src/providers/antigravity-cli/antigravity-cli");
+      const plugin = {
+        settings: { providerPreference: "antigravity-cli", antigravityPath: "/manual/path/agy" },
+      };
+      const p = createProvider(plugin, "/tmp/vault");
+      assert.ok(p instanceof AntigravityCliProvider);
+      assert.equal(p.antigravityPath, "/manual/path/agy");
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("getActiveProviderKind returns antigravity-cli when preference=antigravity-cli + binary present", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: "/Users/x/.local/bin/agy" });
+    try {
+      const { getActiveProviderKind } = require("../src/factory");
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      assert.equal(getActiveProviderKind(plugin), "antigravity-cli");
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("getActiveProviderKind returns null when preference=antigravity-cli + binary missing", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: null });
+    try {
+      const { getActiveProviderKind } = require("../src/factory");
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      assert.equal(getActiveProviderKind(plugin), null);
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("explainUnavailable for antigravity-cli + no binary points to the install command", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: null });
+    try {
+      const { explainUnavailable } = require("../src/factory");
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      const msg = explainUnavailable(plugin);
+      assert.match(msg, /agy/i);
+      assert.match(msg, /curl -fsSL https:\/\/antigravity\.google\/cli\/install\.sh/);
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("detectAvailable surfaces antigravityPath alongside the other CLI paths", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: "/Users/x/.local/bin/agy" });
+    try {
+      const { detectAvailable } = require("../src/factory");
+      const plugin = { settings: {} };
+      const avail = detectAvailable(plugin);
+      assert.equal(avail.antigravityPath, "/Users/x/.local/bin/agy");
+    } finally { restoreBinaries(); }
+  });
+});
+
+test("auto preference does NOT select antigravity-cli even when only Antigravity is available", () => {
+  freshEnv(() => {
+    stubBinaries({ antigravity: "/Users/x/.local/bin/agy", claude: null });
+    try {
+      const { createProvider } = require("../src/factory");
+      const plugin = { settings: { providerPreference: "auto" } };
+      assert.equal(createProvider(plugin, "/tmp"), null);
     } finally { restoreBinaries(); }
   });
 });

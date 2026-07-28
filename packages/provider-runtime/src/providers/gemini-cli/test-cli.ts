@@ -1,7 +1,23 @@
 /**
- * Gemini CLI smoke test — spawn `<geminiPath> --version` to verify the
- * binary path is correct and the CLI is executable. Does not require
- * an API key (--version does not call the model).
+ * Gemini CLI liveness test — spawn a trivial real completion
+ * (`<geminiPath> -p "..." -o stream-json --skip-trust --approval-mode
+ * default`) and assert it returns non-empty assistant text.
+ *
+ * Issue #19: `--version` is NOT a liveness check — it only proves the
+ * binary launches, not that it can actually serve a completion. The
+ * 2026-07-27 incident this hardening responds to is exactly this gap:
+ * Google cut gemini-cli off the Gemini Code Assist individuals tier, the
+ * CLI now exits 0 with empty stdout (reasonCode: 'UNSUPPORTED_CLIENT' on
+ * stderr), and `gemini --version` keeps succeeding regardless — so the
+ * old smoke test reported healthy while the provider was dead. This test
+ * issues a real (billable / quota-consuming) round-trip so the health
+ * check actually exercises the failure mode it needs to catch.
+ *
+ * Timeout is 30s, not 5s: a live model round-trip needs materially more
+ * headroom than a local `--version` call (which never leaves the
+ * machine) to absorb normal latency variance, while staying well short
+ * of a typical host connection timeout (90-180s) so THIS test's specific
+ * failure message surfaces first, not a generic "no response."
  *
  * Returns { ok, message } with a user-facing message either way.
  */
@@ -17,6 +33,9 @@ const setTimeoutFn = setTimeout;
 const { spawn } = require("child_process") as typeof import("child_process");
 const { buildEnhancedPath } = require("../../utils");
 
+const _LIVENESS_TIMEOUT_MS = 30000;
+const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
+
 function testCli(geminiPath: any) {
   return new Promise((resolve) => {
     if (!geminiPath || typeof geminiPath !== "string") {
@@ -29,13 +48,19 @@ function testCli(geminiPath: any) {
       /\.(cmd|bat)$/i.test(geminiPath);
     const opts: Record<string, any> = {
       env: { ...process.env, PATH: buildEnhancedPath() },
+      // Close stdin so a CLI that misinterprets missing flags as
+      // "wait for interactive input" fails fast instead of hanging.
       stdio: ["ignore", "pipe", "pipe"],
     };
     if (isWindowsShim) opts.shell = true;
 
     let proc;
     try {
-      proc = spawn(geminiPath, ["--version"], opts);
+      proc = spawn(
+        geminiPath,
+        ["-p", _LIVENESS_PROMPT, "-o", "stream-json", "--skip-trust", "--approval-mode", "default"],
+        opts,
+      );
     } catch (err) {
       resolve({ ok: false, message: `Could not spawn Gemini CLI: ${(err as Error).message}` });
       return;
@@ -55,22 +80,54 @@ function testCli(geminiPath: any) {
     proc.stderr.on("data", (d: any) => { err += d.toString(); });
     proc.on("error", (e: any) => finish({ ok: false, message: `Spawn error: ${e.message}` }));
     proc.on("close", (code: any) => {
-      const version = (out || err).trim().split(/\r?\n/)[0] || "";
-      // gemini --version prints just a version number (e.g. "0.39.1") so
-      // we accept either a numeric version or a line that mentions gemini.
-      const looksValid = code === 0 && (/^\d+\.\d+/.test(version) || /gemini/i.test(version));
-      if (looksValid) {
-        finish({ ok: true, message: `Gemini CLI works: ${version}` });
-      } else {
+      // Issue #19: this is the specific failure the old --version-only
+      // check could never catch — surface it by name rather than the
+      // generic "no output" message below.
+      if (/UNSUPPORTED_CLIENT/.test(err)) {
         finish({
           ok: false,
-          message: `Gemini CLI returned exit code ${code}. ${(err || out).trim().slice(0, 240)}`,
+          message:
+            "Gemini CLI reports this account is no longer supported for Gemini " +
+            "Code Assist individuals. Switch Provider to Antigravity CLI in " +
+            "Settings → Gryphon → Provider, or use an API provider instead.",
         });
+        return;
       }
+
+      const text = _extractAssistantText(out);
+      if (code === 0 && text) {
+        finish({ ok: true, message: `Gemini CLI works: got a real completion (${text.length} chars).` });
+        return;
+      }
+
+      const tail = (err || out).trim().slice(-240);
+      finish({
+        ok: false,
+        message: code === 0
+          ? `Gemini CLI exited 0 but produced no completion text. ${tail}`
+          : `Gemini CLI returned exit code ${code}. ${tail}`,
+      });
     });
 
-    setTimeoutFn(() => finish({ ok: false, message: "Gemini CLI timed out (5s)." }), 5000);
+    setTimeoutFn(() => finish({ ok: false, message: `Gemini CLI timed out (${_LIVENESS_TIMEOUT_MS / 1000}s) waiting for a completion.` }), _LIVENESS_TIMEOUT_MS);
   });
+}
+
+// Scan stream-json JSONL for assistant message text, accumulating deltas
+// the same way GeminiCliProvider._processEvent does — kept intentionally
+// minimal (no session/tool/error handling) since this is a liveness probe,
+// not a real turn.
+function _extractAssistantText(stdout: string): string {
+  let text = "";
+  for (const line of stdout.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let evt: any;
+    try { evt = JSON.parse(line); } catch { continue; }
+    if (evt && evt.type === "message" && evt.role === "assistant" && typeof evt.content === "string") {
+      text = evt.delta ? text + evt.content : evt.content;
+    }
+  }
+  return text.trim();
 }
 
 export { testCli };

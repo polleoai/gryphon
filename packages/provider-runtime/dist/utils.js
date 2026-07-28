@@ -23,6 +23,7 @@ let _claudeBinaryCache;
 let _nodeBinaryCache;
 let _codexBinaryCache;
 let _geminiBinaryCache;
+let _antigravityBinaryCache;
 let _flatpakCache;
 // Absolute-path → parsed [major,minor,patch] (or null = probe failed). Keyed
 // by path so repeated resolution across providers pays one --version spawn.
@@ -38,6 +39,7 @@ function clearBinaryDiscoveryCache() {
     _nodeBinaryCache = undefined;
     _codexBinaryCache = undefined;
     _geminiBinaryCache = undefined;
+    _antigravityBinaryCache = undefined;
     _flatpakCache = undefined;
     _versionCache = {};
     _loginShellCache = {};
@@ -50,6 +52,7 @@ function clearBinaryDiscoveryCache() {
 const MIN_CLAUDE_VERSION = "0.0.0";
 const MIN_CODEX_VERSION = "0.0.0";
 const MIN_GEMINI_VERSION = "0.0.0";
+const MIN_ANTIGRAVITY_VERSION = "0.0.0";
 // Parse the first dotted numeric version (2- or 3-part) out of arbitrary
 // CLI `--version` output. Returns [major, minor, patch] or null.
 //   "2.1.181 (Claude Code)" → [2,1,181] ; "codex 0.9" → [0,9,0]
@@ -464,6 +467,53 @@ function _findGeminiBinaryUncached() {
     const best = _pickNewestValid(present, MIN_GEMINI_VERSION);
     return best ? best.path : null;
 }
+/**
+ * Locate the Google Antigravity CLI (`agy`). Unlike claude/codex/gemini,
+ * Antigravity ships as a single Go binary installed via
+ * `curl -fsSL https://antigravity.google/cli/install.sh | bash` — there is
+ * no Node/npm involved, so none of the npm-global/volta/bun candidate
+ * prefixes the other three finders use apply here.
+ *
+ * The installer's default target (verified against
+ * antigravity.google/cli/install.sh and antigravity.google/docs/cli/install,
+ * 2026-07-27) is `$HOME/.local/bin/agy` on macOS/Linux and
+ * `%LOCALAPPDATA%\agy\bin\agy.exe` on Windows. Both support a `--dir`
+ * override the user may have used at install time; the login-shell PATH
+ * fallback inside `_collectPresentBinaries` still catches that case, same
+ * as it does for the other three CLIs.
+ *
+ * Returns absolute path or null. Cached.
+ */
+function findAntigravityBinary() {
+    if (_antigravityBinaryCache)
+        return _antigravityBinaryCache;
+    _antigravityBinaryCache = _findAntigravityBinaryUncached();
+    return _antigravityBinaryCache;
+}
+function _findAntigravityBinaryUncached() {
+    const home = os.homedir();
+    const isWindows = process.platform === "win32";
+    const candidates = [
+        // Canonical installer target (curl | bash default).
+        path.join(home, ".local", "bin", "agy"),
+        // Speculative fallbacks in case a future package manager (brew tap,
+        // apt, a custom --dir install) lands it elsewhere — same defensive
+        // breadth as the other three find*Binary functions. No npm/volta/bun
+        // paths: Antigravity is not an npm package.
+        "/opt/homebrew/bin/agy",
+        "/usr/local/bin/agy",
+        "/usr/bin/agy",
+        "/snap/bin/agy",
+        // Windows: installer registers to %LOCALAPPDATA%\agy\bin\agy.exe.
+        path.join(process.env.LOCALAPPDATA || "", "agy", "bin", "agy.exe"),
+        "C:\\Program Files\\agy\\agy.exe",
+    ];
+    // Version-aware: newest valid install wins (R2/R3) — identical algorithm
+    // to findClaudeBinary; antigravity has the same stale-binary exposure.
+    const present = _collectPresentBinaries(candidates, "agy", isWindows);
+    const best = _pickNewestValid(present, MIN_ANTIGRAVITY_VERSION);
+    return best ? best.path : null;
+}
 function buildEnhancedPath() {
     const home = os.homedir();
     return [
@@ -532,11 +582,13 @@ const _MIN_BY_KIND = {
     "claude-code": MIN_CLAUDE_VERSION,
     "codex-cli": MIN_CODEX_VERSION,
     "gemini-cli": MIN_GEMINI_VERSION,
+    "antigravity-cli": MIN_ANTIGRAVITY_VERSION,
 };
 const _LABEL_BY_KIND = {
     "claude-code": "claude",
     "codex-cli": "codex",
     "gemini-cli": "gemini",
+    "antigravity-cli": "agy",
 };
 // Dispatch detection through module.exports (not the local fn refs) so the
 // finder stays patchable at runtime — tests reassign utils.findClaudeBinary,
@@ -549,6 +601,8 @@ function _detectFor(kind) {
         return module.exports.findCodexBinary();
     if (kind === "gemini-cli")
         return module.exports.findGeminiBinary();
+    if (kind === "antigravity-cli")
+        return module.exports.findAntigravityBinary();
     return null;
 }
 /**
@@ -613,6 +667,7 @@ module.exports = {
     findClaudeBinary,
     findCodexBinary,
     findGeminiBinary,
+    findAntigravityBinary,
     findNodeBinary,
     buildEnhancedPath,
     detectFlatpakSandbox,

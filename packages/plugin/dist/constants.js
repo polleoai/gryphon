@@ -750,6 +750,11 @@ const DEFAULT_SETTINGS = {
     // sourced from googleApiKey above (forwarded as GEMINI_API_KEY env)
     // — no separate field required.
     geminiCliPath: "",
+    // Google Antigravity CLI (`agy`) absolute path (issue #19 —
+    // antigravity-cli mode). Empty string defers to autodetect via
+    // utils.findAntigravityBinary. Unlike gemini-cli, auth is owned by the
+    // CLI itself (run `agy` once in a terminal) — no API key field feeds it.
+    antigravityPath: "",
     // Fallback provider/model for automatic one-hop failover (issue #15).
     // When the active provider can't serve a request for an AVAILABILITY
     // reason (construct-time: no key/CLI; or a send error in the no-key /
@@ -1058,7 +1063,8 @@ const PROVIDER_PREFS = [
     { value: "openai-api", label: "OpenAI API", desc: "Uses your OpenAI API key" },
     { value: "google-api", label: "Google Gemini API", desc: "Uses your Google AI Studio key" },
     { value: "codex-cli", label: "Codex CLI (advanced)", desc: "Spawns the OpenAI Codex CLI — uses its own auth (run `codex login` once); subject to that product's terms" },
-    { value: "gemini-cli", label: "Gemini CLI (advanced)", desc: "Spawns the Google Gemini CLI — auth via your Google API key" },
+    { value: "gemini-cli", label: "Gemini CLI (advanced)", desc: "Spawns the Google Gemini CLI — auth via your Google API key. Deprecated for free-tier Google accounts: use Antigravity CLI instead" },
+    { value: "antigravity-cli", label: "Antigravity CLI (advanced)", desc: "Spawns the Google Antigravity CLI (`agy`) — uses its own auth (run `agy` once); subject to that product's terms" },
     { value: "auto", label: "Auto", desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
 // Fallback-provider dropdown (issue #15). Reuses the PROVIDER_PREFS shape

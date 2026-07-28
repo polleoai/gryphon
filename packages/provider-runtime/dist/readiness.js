@@ -102,6 +102,7 @@ function friendlyProviderLabel(kind) {
         case "google-api": return "Google Gemini API";
         case "codex-cli": return "Codex CLI";
         case "gemini-cli": return "Gemini CLI";
+        case "antigravity-cli": return "Antigravity CLI";
         default: return kind || "the provider";
     }
 }

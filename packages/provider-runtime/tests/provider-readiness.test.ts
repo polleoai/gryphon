@@ -31,15 +31,18 @@ const utils = require("../src/utils");
 const origCodex = utils.findCodexBinary;
 const origGemini = utils.findGeminiBinary;
 const origClaude = utils.findClaudeBinary;
-function stubBinaries({ codex = null, gemini = null, claude = null } = {}) {
+const origAntigravity = utils.findAntigravityBinary;
+function stubBinaries({ codex = null, gemini = null, claude = null, antigravity = null } = {}) {
   utils.findCodexBinary = () => codex;
   utils.findGeminiBinary = () => gemini;
   utils.findClaudeBinary = () => claude;
+  utils.findAntigravityBinary = () => antigravity;
 }
 function restoreBinaries() {
   utils.findCodexBinary = origCodex;
   utils.findGeminiBinary = origGemini;
   utils.findClaudeBinary = origClaude;
+  utils.findAntigravityBinary = origAntigravity;
 }
 function freshEnv(fn) {
   const snap = { ...process.env };
@@ -112,6 +115,18 @@ test("issue #16: claude-code + no binary → { ready:false, reason:'construct-nu
   });
 });
 
+test("issue #19: antigravity-cli + no binary → { ready:false, reason:'construct-null' }", () => {
+  freshEnv(() => {
+    stubBinaries({}); // no agy binary on disk
+    try {
+      const plugin = { settings: { providerPreference: "antigravity-cli" } };
+      assert.deepEqual(describeProviderReadiness(plugin), {
+        ready: false, reason: "construct-null", kind: null,
+      });
+    } finally { restoreBinaries(); }
+  });
+});
+
 test("issue #16: explicit preference arg overrides plugin.settings.providerPreference", () => {
   freshEnv(() => {
     stubBinaries({});
@@ -162,4 +177,5 @@ test("issue #16: friendlyProviderLabel maps every provider kind", () => {
   assert.equal(friendlyProviderLabel("google-api"), "Google Gemini API");
   assert.equal(friendlyProviderLabel("codex-cli"), "Codex CLI");
   assert.equal(friendlyProviderLabel("gemini-cli"), "Gemini CLI");
+  assert.equal(friendlyProviderLabel("antigravity-cli"), "Antigravity CLI");
 });

@@ -112,10 +112,14 @@ const PROJECTION_DEBOUNCE_MS = 300;
 //   - "gemini-sdk-..."   → google-api SDK
 //   - "codex-cli-..."    → codex-cli   (one-shot CLI; no resume re-supply)
 //   - "gemini-cli-..."   → gemini-cli  (one-shot CLI; no resume re-supply)
+//   - "antigravity-cli-…"→ antigravity-cli. Its `--conversation <id>` resume
+//                          continues the CLI's OWN context; prior turns are
+//                          never re-streamed back to us, so the same rule
+//                          applies (issue #19).
 //
 // Anything else (typically a UUID) is treated as a Claude-Code-style CLI
 // session whose history will be re-supplied on resume.
-const _SDK_SESSION_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli|gemini-cli)-/;
+const _SDK_SESSION_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli|gemini-cli|antigravity-cli)-/;
 
 /**
  * Insert a paragraph break before any canonical Gryphon-emitted block
@@ -524,7 +528,7 @@ function _replaceNoResponsePlaceholder(text) {
 // not a resolved ProviderKind the kernel maps.
 function _providerLabelFor(preference) {
   if (preference === "auto") return "Auto-selected provider";
-  const known = ["anthropic-api", "claude-code", "openai-api", "google-api", "codex-cli", "gemini-cli"];
+  const known = ["anthropic-api", "claude-code", "openai-api", "google-api", "codex-cli", "gemini-cli", "antigravity-cli"];
   if (known.includes(preference)) {
     return require("@gryphon/provider-runtime").friendlyProviderLabel(preference);
   }
@@ -672,8 +676,8 @@ function modelButtonText(settingsOrPlugin) {
     const fallback = isCodex ? CODEX_CLI_DEFAULT_MODEL : OPENAI_DEFAULT_MODEL;
     return labelFor(options, fitsDropdown ? resolved : fallback);
   }
-  if (kind === "google-api" || kind === "gemini-cli") {
-    // gemini-cli reuses Google's pricing tables / model dropdown.
+  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
+    // gemini-cli / antigravity-cli reuse Google's pricing tables + dropdown.
     const {
       getModelDropdownOptions: getGeminiOptions,
       resolveModel: resolveGeminiModel,
@@ -711,7 +715,8 @@ function modelButtonTitle(settingsOrPlugin) {
   // Claude" naming. Users care about the model family, not whether
   // it's reached via HTTPS or a local subprocess.
   if (kind === "openai-api" || kind === "codex-cli")  return "Model (Codex)";
-  if (kind === "google-api" || kind === "gemini-cli") return "Model (Gemini)";
+  if (kind === "google-api" || kind === "gemini-cli" ||
+      kind === "antigravity-cli") return "Model (Gemini)";
   if (kind === "anthropic-api" || kind === "claude-code") return "Model (Claude)";
   return "Model";
 }
@@ -875,7 +880,7 @@ class GryphonChatView extends ItemView {
     // spawn forever. One-shot O(n) check — n is at most 6.
     const KNOWN_PROVIDER_KINDS = [
       "claude-code", "anthropic-api", "openai-api", "google-api",
-      "codex-cli", "gemini-cli",
+      "codex-cli", "gemini-cli", "antigravity-cli",
     ];
     const knownSet = new Set(KNOWN_PROVIDER_KINDS);
     for (const key of Object.keys(this.extraProcessArgsByProvider)) {
@@ -1612,8 +1617,9 @@ class GryphonChatView extends ItemView {
         ? openaiPricing.getCodexCliModelDropdownOptions()
         : openaiPricing.getModelDropdownOptions();
       modelList = opts.map((o) => ({ value: o.id, label: o.label }));
-    } else if (kind === "google-api" || kind === "gemini-cli") {
-      // gemini-cli reuses the Gemini model list.
+    } else if (kind === "google-api" || kind === "gemini-cli" ||
+               kind === "antigravity-cli") {
+      // gemini-cli / antigravity-cli reuse the Gemini model list.
       const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
       modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
     }
@@ -6177,7 +6183,8 @@ class GryphonChatView extends ItemView {
                    this.plugin.settings.providerPreference;
       const assistant =
         (kind === "openai-api" || kind === "codex-cli")  ? "Codex"  :
-        (kind === "google-api" || kind === "gemini-cli") ? "Gemini" :
+        (kind === "google-api" || kind === "gemini-cli" ||
+         kind === "antigravity-cli")                     ? "Gemini" :
         "Claude";
       this.updateStatus(`Connecting to ${assistant}...`);
     }
@@ -6740,6 +6747,7 @@ module.exports = {
   nextContextWarningState,
   modelButtonText,
   modelButtonTitle,
+  _providerLabelFor,
   _separateCanonicalBlocks,
   _dedupeConsecutiveParagraphs,
   _collapseSummaryDrafts,

@@ -153,7 +153,8 @@ const SESSION_PREFIX = "codex-cli-";
 // without clearing the id, or two open chat views raced), treating it
 // as a Codex thread to resume would fail every send. Detect + treat as
 // "no resume" instead. QA1-2, QA1-3.
-const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|gemini-cli)-/;
+// antigravity-cli added in issue #19.
+const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|gemini-cli|antigravity-cli)-/;
 
 function _wrapSession(id: any) {
   if (!id) return null;

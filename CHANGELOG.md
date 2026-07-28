@@ -4,6 +4,16 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.0] — 2026-07-28
+
+### Added
+
+- **New provider: Antigravity CLI.** Gryphon can now run through Google's Antigravity CLI (`agy`). Pick **Antigravity CLI (advanced)** in Settings → Models, and Gryphon shows an **Antigravity CLI path** row that auto-detects the binary — with the same detection status and **Re-detect** button as the other CLI providers, and a place to enter the full path if you installed it somewhere non-standard. The CLI handles its own sign-in (run `agy` once in a terminal), so there's no API key to enter. Antigravity uses the Gemini model list, and it's also available as a fallback provider.
+
+### Changed
+
+- **Gemini CLI now tells you when your account can no longer use it.** Google discontinued Gemini CLI access for Gemini Code Assist individual accounts. Until now that failure was invisible — Gryphon would appear to work and simply return an empty reply. Gryphon now recognises this specific rejection and surfaces it as a clear error pointing you at Antigravity CLI as the replacement. Gemini CLI remains available and unchanged for accounts that still have access, and the Gemini API provider is unaffected.
+
 ## [2.8.0] — 2026-07-06
 
 ### Added

@@ -129,6 +129,7 @@ declare function detectAvailable(plugin: any): {
     googleKeySource: string | null;
     codexPath: any;
     geminiCliPath: any;
+    antigravityPath: any;
 };
 /**
  * Returns the resolved provider kind that createProvider would pick for the

@@ -305,11 +305,12 @@ test("detectAvailable settings beats env (precedence)", () => {
 // PROVIDER_PREFS — the dropdown source of truth
 // ──────────────────────────────────────────────────────────────────────
 
-test("PROVIDER_PREFS contains seven options spanning all SDK + CLI providers", () => {
+test("PROVIDER_PREFS contains eight options spanning all SDK + CLI providers", () => {
   const { PROVIDER_PREFS } = require("../../plugin/src/constants");
   const values = PROVIDER_PREFS.map((p) => p.value).sort();
   assert.deepEqual(values, [
     "anthropic-api",
+    "antigravity-cli",
     "auto",
     "claude-code",
     "codex-cli",

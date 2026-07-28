@@ -272,6 +272,25 @@ test("GeminiCliProvider.send rejects fast when no CLI resolves (R1/R5)", async (
   }
 });
 
+test("AntigravityCliProvider.send rejects fast when no CLI resolves (R1/R5, issue #19)", async () => {
+  utils.clearBinaryDiscoveryCache();
+  const orig = utils.findAntigravityBinary;
+  utils.findAntigravityBinary = () => null;
+  try {
+    const { AntigravityCliProvider } = require("../src/providers/antigravity-cli/antigravity-cli");
+    const provider = new AntigravityCliProvider("", "/tmp", {});
+    const started = Date.now();
+    await assert.rejects(
+      () => provider.send("hi", {}),
+      /Antigravity CLI not found/,
+      "send must reject with the actionable not-found message, not hang",
+    );
+    assert.ok(Date.now() - started < 5000, "must fail fast (<5s), not reach the connection timeout");
+  } finally {
+    utils.findAntigravityBinary = orig;
+  }
+});
+
 // --- newest-wins through the REAL ranker + floor gate (R2/R3) ------------
 
 test("_pickNewestValid picks the newest even when the stale path is listed first (R2)", { skip: isWindows }, () => {
@@ -340,6 +359,45 @@ test("resolveCliBinary self-heals per kind (codex + gemini): empty config → de
   } finally {
     utils.findCodexBinary = oc;
     utils.findGeminiBinary = og;
+  }
+});
+
+// --- antigravity-cli (issue #19) -----------------------------------------
+
+test("findAntigravityBinary picks the NEWEST installed candidate (R2)", { skip: isWindows }, () => {
+  utils.clearBinaryDiscoveryCache();
+  const dir = tmpDir();
+  const stale = fakeCli(dir, "agy-stale", "0.1.0");
+  const current = fakeCli(dir, "agy-current", "0.9.0");
+  const best = utils._pickNewestValid([stale, current], "0.0.0");
+  assert.equal(best.path, current);
+});
+
+test("resolveCliBinary self-heals for antigravity-cli: empty config → detected newest (R4)", { skip: isWindows }, () => {
+  utils.clearBinaryDiscoveryCache();
+  const dir = tmpDir();
+  const agy = fakeCli(dir, "agy", "0.3.1");
+  const orig = utils.findAntigravityBinary;
+  utils.findAntigravityBinary = () => agy;
+  try {
+    const res = utils.resolveCliBinary("antigravity-cli", "");
+    assert.equal(res.ok, true);
+    assert.equal(res.path, agy);
+  } finally {
+    utils.findAntigravityBinary = orig;
+  }
+});
+
+test("resolveCliBinary: antigravity-cli nothing found → typed not-found failure (R5)", () => {
+  utils.clearBinaryDiscoveryCache();
+  const orig = utils.findAntigravityBinary;
+  utils.findAntigravityBinary = () => null;
+  try {
+    const res = utils.resolveCliBinary("antigravity-cli", "");
+    assert.equal(res.ok, false);
+    assert.equal(res.error, "not-found");
+  } finally {
+    utils.findAntigravityBinary = orig;
   }
 });
 

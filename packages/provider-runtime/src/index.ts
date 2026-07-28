@@ -55,6 +55,7 @@ module.exports = {
   findClaudeBinary: utils.findClaudeBinary,
   findCodexBinary: utils.findCodexBinary,
   findGeminiBinary: utils.findGeminiBinary,
+  findAntigravityBinary: utils.findAntigravityBinary,
   findNodeBinary: utils.findNodeBinary,
   buildEnhancedPath: utils.buildEnhancedPath,
   detectFlatpakSandbox: utils.detectFlatpakSandbox,

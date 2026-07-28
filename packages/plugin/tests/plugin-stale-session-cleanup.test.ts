@@ -35,7 +35,8 @@ function installCleanupHarness() {
   function _dropStalePerReloadSessionIdsFor(settings) {
     const sid = settings && settings.lastSessionId;
     if (typeof sid !== "string" || !sid) return;
-    if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-")) {
+    if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-") ||
+        sid.startsWith("antigravity-cli-")) {
       settings.lastSessionId = null;
     }
   }
@@ -50,6 +51,13 @@ test("codex-cli session id is cleared on reload", () => {
 test("gemini-cli session id is cleared on reload", () => {
   const s = makePluginShell("gemini-cli-550e8400-e29b-41d4-a716-446655440000");
   assert.equal(s.lastSessionId, null);
+});
+
+test("antigravity-cli session id is cleared on reload", () => {
+  const s = makePluginShell("antigravity-cli-c29f1b0e-7a41-4d5b-9d2f-0a1b2c3d4e5f");
+  assert.equal(s.lastSessionId, null,
+    "a resumed `agy --conversation <id>` would carry the pre-reload " +
+    "permission/config state; chat history itself is untouched");
 });
 
 test("Claude Code UUID session id survives reload (CC re-streams history on resume)", () => {
@@ -92,4 +100,6 @@ test("plugin.js loadSettings still calls _dropStalePerReloadSessionIds()", () =>
     "removing it strands users on stale CLI sessions across plugin updates");
   assert.match(src, /codex-cli-|gemini-cli-/,
     "_dropStalePerReloadSessionIds must check for the codex-cli / gemini-cli prefixes");
+  assert.match(src, /antigravity-cli-/,
+    "_dropStalePerReloadSessionIds must also check the antigravity-cli prefix (issue #19)");
 });

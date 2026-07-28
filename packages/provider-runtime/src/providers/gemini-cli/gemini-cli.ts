@@ -73,8 +73,23 @@ function _mapPermissionToApproval(permissionMode: any) {
 const SESSION_PREFIX = "gemini-cli-";
 
 // Foreign provider prefixes — see codex-cli.js for the rationale.
-// QA1-2, QA1-3.
-const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli)-/;
+// QA1-2, QA1-3. antigravity-cli added in issue #19.
+const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli|antigravity-cli)-/;
+
+// Issue #19: Google's deprecation signal for the individuals tier.
+// Evidence (2026-07-27, macOS, gemini v0.41.2): the CLI exits 0 with
+// empty stdout and this reasonCode on stderr, redirecting users to the
+// Antigravity suite. See _handleStderr / _handleClose for where this
+// fires; kept as one shared string so streaming (onError) and the
+// terminal Promise rejection say exactly the same thing.
+const _UNSUPPORTED_CLIENT_MESSAGE =
+  "Gemini CLI reports this account is no longer supported for Gemini Code " +
+  "Assist individuals (Google is redirecting free-tier users to the " +
+  "Antigravity suite: https://antigravity.google). The gemini-cli provider " +
+  "is deprecated for this account tier — switch Provider to Antigravity CLI " +
+  "in Settings → Gryphon → Provider (install with `curl -fsSL " +
+  "https://antigravity.google/cli/install.sh | bash`), or switch to the " +
+  "Anthropic / OpenAI / Google API providers instead.";
 
 function _wrapSession(id: any) {
   if (!id) return null;
@@ -266,6 +281,10 @@ class GeminiCliProvider {
     this._lastStats = null;
     this._currentResolve = null;
     this._currentReject = null;
+    // Issue #19 — set true when stderr carries UNSUPPORTED_CLIENT, Google's
+    // signal that this account tier is cut off gemini-cli entirely. See
+    // _handleStderr / _handleClose / _UNSUPPORTED_CLIENT_MESSAGE below.
+    this._deprecatedClientDetected = false;
 
     this.onMessage = null;
     this.onError = null;
@@ -521,6 +540,7 @@ class GeminiCliProvider {
       this._turnText = "";
       this._lastStats = null;
       this._failed = false; // QA1-1
+      this._deprecatedClientDetected = false; // issue #19 — reset per turn
       // Track the prompt so _handleStaleSession can replay it on the
       // recovery path (`gemini --resume <uuid>` reports "Invalid
       // session identifier" when the JSONL has been wiped from
@@ -737,6 +757,22 @@ class GeminiCliProvider {
     const trimmed = text.trim();
     if (!trimmed) return;
 
+    // Issue #19: Google cut gemini-cli off the Gemini Code Assist
+    // individuals tier and is redirecting free-tier users to the
+    // Antigravity suite. The CLI reports this as reasonCode:
+    // 'UNSUPPORTED_CLIENT' on stderr, EXIT CODE 0, with empty stdout — a
+    // caller reading only stdout+exitcode would see a silent empty
+    // completion. Detect it here (so streaming UX gets an immediate
+    // onError) and again authoritatively in _handleClose (so the
+    // Promise never resolves as a successful empty completion,
+    // regardless of exit code / whether any stdout events happened to
+    // stream first).
+    if (/UNSUPPORTED_CLIENT/.test(trimmed)) {
+      this._deprecatedClientDetected = true;
+      if (this.onError) this.onError(_UNSUPPORTED_CLIENT_MESSAGE);
+      return;
+    }
+
     // Auth-missing case → surface a clean error.
     if (/Please set an Auth method|GEMINI_API_KEY/i.test(trimmed)) {
       if (this.onError) this.onError(
@@ -769,6 +805,16 @@ class GeminiCliProvider {
     this._currentResolve = null;
     this._currentReject = null;
     if (!resolve) return;
+
+    // Issue #19: authoritative override. UNSUPPORTED_CLIENT means Google
+    // has cut this account off the gemini-cli protocol entirely — never
+    // let this read as a successful (possibly empty) completion, even if
+    // the CLI happened to exit 0 or streamed a partial `result` event
+    // before dying. Checked BEFORE the success branch below on purpose.
+    if (this._deprecatedClientDetected) {
+      reject(new Error(_UNSUPPORTED_CLIENT_MESSAGE));
+      return;
+    }
 
     if (code === 0 && this._lastStats) {
       // Map Gemini stream-json stats → google-api/pricing computeCost
@@ -962,6 +1008,7 @@ class GeminiCliProvider {
     this._stderrTail = "";
     this._turnText = "";
     this._lastStats = null;
+    this._deprecatedClientDetected = false;
     this._failed = false;
 
     // V13H-2: hoist the orig-promise reattachment OUT of the
@@ -1087,4 +1134,5 @@ export {
   _scrubInternalLeaks,
   SESSION_PREFIX,
   DEFAULT_MODEL,
+  _UNSUPPORTED_CLIENT_MESSAGE,
 };

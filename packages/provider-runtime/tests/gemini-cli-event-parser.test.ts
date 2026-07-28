@@ -22,6 +22,7 @@ const {
   _mapPermissionToApproval,
   _scrubInternalLeaks,
   SESSION_PREFIX,
+  _UNSUPPORTED_CLIENT_MESSAGE,
 } = require("../src/providers/gemini-cli/gemini-cli");
 
 function makeProvider(options = {}) {
@@ -524,4 +525,57 @@ test("QA1-1: integration — fatal error then new turn → second turn resolves 
 test("costIsEstimate is true (cost computed from token counts × pricing)", () => {
   const p = new GeminiCliProvider("/bin/gemini", "/tmp");
   assert.equal(p.costIsEstimate, true);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Issue #19 — UNSUPPORTED_CLIENT deprecation detection. Evidence
+// (2026-07-27): the CLI exits 0 with empty stdout and this reasonCode
+// on stderr — a caller reading only stdout+exitcode sees a silent
+// empty completion instead of an actionable error.
+// ─────────────────────────────────────────────────────────────────
+
+test("issue #19: UNSUPPORTED_CLIENT on stderr sets the deprecation flag and fires onError immediately", () => {
+  const { provider, captured } = makeProvider();
+  provider._handleStderr(Buffer.from(
+    "reasonCode: 'UNSUPPORTED_CLIENT', reasonMessage: 'migrate to Antigravity'",
+  ));
+  assert.equal(provider._deprecatedClientDetected, true);
+  assert.equal(captured.errors.length, 1);
+  assert.match(captured.errors[0], /Antigravity/);
+  assert.match(captured.errors[0], /no longer supported/i);
+  assert.equal(captured.errors[0], _UNSUPPORTED_CLIENT_MESSAGE);
+});
+
+test("issue #19: exit code 0 with UNSUPPORTED_CLIENT never resolves as a (silent, empty) success", () => {
+  // Reproduces the exact incident shape: exit 0, stderr carries the
+  // deprecation reasonCode, and (worst case) a partial `result` event
+  // DID stream on stdout before the CLI died — _lastStats would be
+  // non-null. The deprecation override must still win over the
+  // code===0 && _lastStats success branch.
+  const { provider } = makeProvider();
+  let resolved: any = null;
+  let rejected: any = null;
+  provider._currentResolve = (r: any) => { resolved = r; };
+  provider._currentReject = (e: any) => { rejected = e; };
+  provider.alive = true;
+  provider.process = { kill: () => {} };
+
+  provider._handleStderr(Buffer.from("Error: reasonCode: 'UNSUPPORTED_CLIENT'"));
+  // Simulate a partial result event still having streamed.
+  provider._lastStats = { input_tokens: 1, output_tokens: 0, cached: 0, duration_ms: 1 };
+
+  provider._handleClose(0);
+
+  assert.equal(resolved, null, "must NOT resolve as a successful empty completion");
+  assert.ok(rejected, "must reject instead");
+  assert.equal(rejected.message, _UNSUPPORTED_CLIENT_MESSAGE);
+});
+
+test("issue #19: _deprecatedClientDetected resets per turn (doesn't poison the next send())", () => {
+  const p = new GeminiCliProvider("/bin/gemini", "/tmp");
+  p._deprecatedClientDetected = true;
+  // Mirrors the per-turn reset block in _spawnTurn.
+  p._buffer = ""; p._stderrTail = ""; p._turnText = ""; p._lastStats = null;
+  p._failed = false; p._deprecatedClientDetected = false;
+  assert.equal(p._deprecatedClientDetected, false);
 });

@@ -67,9 +67,10 @@ function _resetModelForProvider(plugin) {
       : openaiPricing.DEFAULT_MODEL;
     return options.some((o) => o.id === current) ? current : fallback;
   }
-  if (kind === "google-api" || kind === "gemini-cli") {
-    // gemini-cli reuses the Gemini model dropdown — both go to the same
-    // Google models, and pricing tables/aliases are identical.
+  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
+    // gemini-cli and antigravity-cli reuse the Gemini model dropdown — all
+    // three go to the same Google models, and pricing tables/aliases are
+    // identical.
     const { getModelDropdownOptions, DEFAULT_MODEL } =
       require("@gryphon/provider-runtime").pricing.google;
     const options = getModelDropdownOptions();
@@ -92,7 +93,7 @@ function _fallbackModelOptions(kind) {
   if (kind === "codex-cli") {
     return runtime.pricing.openai.getCodexCliModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
   }
-  if (kind === "google-api" || kind === "gemini-cli") {
+  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
     return runtime.pricing.google.getModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
   }
   // anthropic-api / claude-code → Anthropic MODELS list.
@@ -113,6 +114,10 @@ function _credentialFieldsFor(pref) {
     case "claude-code": return ["claudePath"];
     case "codex-cli": return ["codexPath"];
     case "gemini-cli": return ["geminiPath", "googleKey"];
+    // antigravity-cli: no key row. `agy` authenticates itself (run it once
+    // in a terminal), the way codex-cli uses `codex login` — a Google API
+    // key field here would imply a credential Gryphon never forwards.
+    case "antigravity-cli": return ["antigravityPath"];
     default: return null;
   }
 }
@@ -405,6 +410,28 @@ function renderGeminiPathRow(host, panelEl) {
   });
 }
 
+function renderAntigravityPathRow(host, panelEl) {
+  renderCliPathRow(host, panelEl, {
+    name: "Antigravity CLI path",
+    tooltip:
+      "Optional. Required only when Provider is Antigravity CLI. Empty " +
+      "string auto-detects via PATH and common bin directories. Auth is " +
+      "handled by the CLI itself — run `agy` in a terminal once after " +
+      "installing and sign in there. No API key is used.",
+    settingsKey: "antigravityPath",
+    findKey: "findAntigravityBinary",
+    defaultPlaceholder: "~/.antigravity/bin/agy",
+    cliLabel: "Antigravity CLI",
+    installHint:
+      "Gryphon checked common install locations and your login-shell PATH. " +
+      "Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash` " +
+      "and restart Obsidian, or set the full path in the field on the right " +
+      "if it's already installed in a non-standard location. After installing, " +
+      "run `agy` once to authenticate.",
+    flatpakHint: "e.g. curl -fsSL https://antigravity.google/cli/install.sh | bash",
+  });
+}
+
 // credential-key -> renderer. Key rows take refreshChip; path rows ignore it.
 function _renderCredentialRow(key, host, panelEl, refreshChip) {
   switch (key) {
@@ -414,13 +441,14 @@ function _renderCredentialRow(key, host, panelEl, refreshChip) {
     case "claudePath":   return renderClaudePathRow(host, panelEl);
     case "codexPath":    return renderCodexPathRow(host, panelEl);
     case "geminiPath":   return renderGeminiPathRow(host, panelEl);
+    case "antigravityPath": return renderAntigravityPathRow(host, panelEl);
     default: throw new Error(`unknown credential key: ${key}`);
   }
 }
 
 const ALL_CREDENTIAL_KEYS = [
   "anthropicKey", "openaiKey", "googleKey",
-  "claudePath", "codexPath", "geminiPath",
+  "claudePath", "codexPath", "geminiPath", "antigravityPath",
 ];
 
 /**
@@ -814,8 +842,8 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
     "an exact projected context size before send. Anthropic does not " +
     "charge for this endpoint. Disable to keep all pre-send context " +
     "computation strictly local (the heuristic estimator is used as " +
-    "the fallback). CLI providers (claude-code / codex-cli / gemini-cli) " +
-    "are unaffected — they always use the local heuristic.",
+    "the fallback). CLI providers (claude-code / codex-cli / gemini-cli / " +
+    "antigravity-cli) are unaffected — they always use the local heuristic.",
   )
     .addToggle((toggle) =>
       toggle.setValue(hostPlugin.settings.useExactTokenCounting !== false).onChange(async (value) => {
@@ -998,7 +1026,8 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx) {
   const activePref = getActiveProviderKind(hostPlugin) ||
                      hostPlugin.settings.providerPreference || "auto";
 
-  if (activePref === "google-api" || activePref === "gemini-cli") {
+  if (activePref === "google-api" || activePref === "gemini-cli" ||
+      activePref === "antigravity-cli") {
     // Gemini adapter shipped Stage 3 — render the real Gemini model
     // dropdown with the same auto-correct pattern as the OpenAI branch:
     // if the persisted settings.model isn't a Gemini id (e.g. cross-vendor
@@ -1199,6 +1228,9 @@ module.exports = {
   renderAdvancedPanel,
   renderDefaultsPanel,
   _credentialFieldsFor,
+  // Exported for unit testing only.
+  _resetModelForProvider,
+  _fallbackModelOptions,
   renderSectionHeading,
   descToTooltip,
 };

@@ -2,8 +2,9 @@
 // G3: types are erased at runtime — the providers' runtime validation/parse/retry stays.
 
 export type ProviderKind =
-  | "anthropic-api" | "openai-api" | "google-api"
-  | "claude-code"   | "codex-cli"  | "gemini-cli";
+  | "anthropic-api" | "openai-api"   | "google-api"
+  | "claude-code"   | "codex-cli"    | "gemini-cli"
+  | "antigravity-cli";
 
 export type StreamMessageType = "init" | "replace" | "tool";
 

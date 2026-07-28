@@ -317,17 +317,32 @@ test("v1.3 — gemini-cli session: llm messages tagged with current sessionId ar
     "gemini-cli is one-shot per turn — same data-loss risk as the SDK case.");
 });
 
-test("v1.3 — mixed history: CLI providers (codex-cli + gemini-cli) all survive when current is Claude-Code-style CLI", () => {
+test("issue #19 — antigravity-cli session: llm messages tagged with current sessionId are KEPT", () => {
+  const messages = [
+    msg("user", "llm", "refactor this", "antigravity-cli-c29f1b0e-7a41-4d5b-9d2f-0a1b2c3d4e5f"),
+    msg("assistant", "llm", "here's the diff...", "antigravity-cli-c29f1b0e-7a41-4d5b-9d2f-0a1b2c3d4e5f"),
+  ];
+  const out = filterMessagesForSave(messages, "antigravity-cli-c29f1b0e-7a41-4d5b-9d2f-0a1b2c3d4e5f");
+  assert.equal(out.length, 2,
+    "antigravity-cli resumes via `--conversation <id>`, which continues the " +
+    "CLI's own context WITHOUT re-streaming prior turns to Gryphon — so " +
+    "chat-history.json is the only copy. Dropping these is silent data loss.");
+});
+
+test("v1.3 — mixed history: CLI providers (codex-cli + gemini-cli + antigravity-cli) all survive when current is Claude-Code-style CLI", () => {
   const messages = [
     msg("user", "llm", "codex turn", "codex-cli-aaa"),
     msg("assistant", "llm", "codex resp", "codex-cli-aaa"),
     msg("user", "llm", "gemini cli turn", "gemini-cli-bbb"),
     msg("assistant", "llm", "gemini cli resp", "gemini-cli-bbb"),
+    msg("user", "llm", "antigravity turn", "antigravity-cli-ccc"),
+    msg("assistant", "llm", "antigravity resp", "antigravity-cli-ccc"),
     msg("user", "llm", "current cc", "uuid-current-cc"),
     msg("assistant", "llm", "cc resp", "uuid-current-cc"),
   ];
   const out = filterMessagesForSave(messages, "uuid-current-cc");
-  assert.equal(out.length, 4, "only the current Claude-Code-style turn is dropped");
+  assert.equal(out.length, 6, "only the current Claude-Code-style turn is dropped");
   assert.match(out[0].text, /codex turn/);
   assert.match(out[2].text, /gemini cli turn/);
+  assert.match(out[4].text, /antigravity turn/);
 });

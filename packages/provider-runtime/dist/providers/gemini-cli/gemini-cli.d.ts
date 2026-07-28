@@ -43,6 +43,7 @@ declare const DEFAULT_MODEL: any;
  */
 declare function _mapPermissionToApproval(permissionMode: any): "default" | "plan" | "auto_edit" | "yolo";
 declare const SESSION_PREFIX = "gemini-cli-";
+declare const _UNSUPPORTED_CLIENT_MESSAGE: string;
 declare function _wrapSession(id: any): string | null;
 declare function _unwrapSession(id: any): any;
 /**
@@ -99,4 +100,4 @@ declare class GeminiCliProvider {
     isAlive(): any;
     get costIsEstimate(): boolean;
 }
-export { GeminiCliProvider, _mapPermissionToApproval, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, };
+export { GeminiCliProvider, _mapPermissionToApproval, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, _UNSUPPORTED_CLIENT_MESSAGE, };
