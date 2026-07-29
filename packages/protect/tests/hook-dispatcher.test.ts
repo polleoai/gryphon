@@ -26,8 +26,12 @@ const { listSupportedKinds, getAdapter } = require("../src/hook-adapters");
 // Adapter registry shape
 // ─────────────────────────────────────────────────────────────────
 
-test("registry exposes claude-code, codex-cli, gemini-cli adapters", () => {
-  assert.deepEqual(listSupportedKinds(), ["claude-code", "codex-cli", "gemini-cli"]);
+test("registry exposes an adapter for every CLI provider kind", () => {
+  // Exhaustive on purpose: a CLI provider missing from this list has NO
+  // guardrail enforcement — prepareSpawn returns degradationReason and the
+  // provider runs unguarded. antigravity-cli shipped in that state in
+  // v2.9.0 (issue #19) and this assertion is what catches the next one.
+  assert.deepEqual(listSupportedKinds(), ["antigravity-cli", "claude-code", "codex-cli", "gemini-cli"]);
 });
 
 test("each registered adapter declares its kind and has buildSpawnExtras", () => {

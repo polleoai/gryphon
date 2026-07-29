@@ -117,6 +117,9 @@ const TOOL_ALIASES = {
     "command_execution": "Bash", // Codex JSONL item.type (defensive — Codex's hook
     //   uses tool_name, not item.type, but hook input
     //   shape may evolve)
+    "run_command": "Bash", // Antigravity CLI (`agy`) — args {CommandLine, Cwd};
+    //   the field mapping lives in hooks/dialects.ts,
+    //   since an alias can rename a tool but not its args
     // File mutation
     "Write": "Write",
     "Edit": "Edit",

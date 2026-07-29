@@ -1650,6 +1650,27 @@ class GryphonPlugin extends Plugin {
         this.settings = Object.assign({}, DEFAULT_SETTINGS, userData);
         this._migrateSettings(userData);
         this._dropStalePerReloadSessionIds();
+        this._stripStaleAntigravityHooks();
+    }
+    /**
+     * Antigravity (`agy`) reads hooks only from the user-global
+     * `~/.gemini/config/hooks.json`, so unlike every other provider Gryphon
+     * cannot keep its hook registration in a private temp file. The adapter
+     * removes its key when a spawn ends — but a crash or a force-quit between
+     * spawn and cleanup would strand it.
+     *
+     * A stranded key is not inert: the pretool script it points at denies when
+     * it cannot reach the plugin, so the user's OWN `agy` sessions would start
+     * refusing tool calls with a Gryphon message, outside Obsidian entirely.
+     * Clear it on every load. Cheap (one stat) and idempotent.
+     */
+    _stripStaleAntigravityHooks() {
+        try {
+            require("@gryphon/protect").hookAdapters.getAdapter("antigravity-cli")?.stripStaleHooks();
+        }
+        catch (e) {
+            console.warn(`[gryphon] antigravity hook self-heal skipped: ${e.message}`);
+        }
     }
     /**
      * Drop `lastSessionId` for providers whose CLI-side session state can

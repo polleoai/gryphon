@@ -49,11 +49,13 @@
  * confirmed via `init.permission_mode: "always-proceed"` on a live
  * response vs `"request-review"` without it) to auto-approve — the
  * alternative is a headless hang waiting on interactive confirmation.
- * Gryphon's BeforeTool hook would be the enforcement layer once a
- * `packages/protect` adapter exists for this kind (deliberately out of
- * scope for issue #19 — see `hookDispatcher.prepareSpawn` below, which
- * degrades gracefully with a `console.warn` today, same as the other
- * three CLIs do on a failed pre-flight).
+ * Gryphon's PreToolUse hook IS the enforcement layer here (adapter:
+ * `packages/protect/src/hook-adapters/antigravity-cli.ts`). Verified live
+ * against agy v1.1.8: a hook `deny` hard-blocks the tool even with
+ * `--dangerously-skip-permissions` set, which is what makes auto-approve
+ * safe to pass. Note that agy treats a CRASHED hook as allow, so the
+ * adapter bakes the hook env into the command rather than relying on spawn
+ * inheritance — see its header.
  *
  * Known sharp edges (issue #19, carried into this implementation):
  *   - Headless reliability is not yet solid upstream. A community
@@ -154,11 +156,10 @@ declare function _unwrapSession(id: any): any;
 /**
  * Strip Antigravity-side internal-mechanism leaks from the model's
  * user-facing text. Mirrors gemini-cli's `_scrubInternalLeaks` /
- * codex-cli's copy — kept identical pending a real hook adapter for
- * this provider (see header). Harmless no-op today (no hook adapter
- * means no "BeforeTool hook" text can ever be echoed by the model), but
- * kept so the day a `packages/protect` adapter lands for antigravity-cli,
- * this provider is already symmetric with the other three.
+ * codex-cli's copy. Load-bearing now that this provider has a real hook
+ * adapter: a PreToolUse deny surfaces Gryphon's reason to the model, and
+ * without this scrub the model echoes the mechanism vocabulary back to the
+ * user (see `feedback_public_release_wording`).
  */
 declare function _scrubInternalLeaks(text: any): any;
 declare class AntigravityCliProvider {

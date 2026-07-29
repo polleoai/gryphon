@@ -45,6 +45,12 @@ const HOOK_FILES = [
   // rather than forking the source.
   "hooks/common/injection-patterns.js",
   "hooks/common/untrusted-framing.js",
+  // Issue #19: pretool.js requires this to translate Antigravity's
+  // camelCase `toolCall` payload. Hook scripts are transpiled 1:1, NOT
+  // bundled — omitting it here does not fail the build, it ships a
+  // pretool.js that throws MODULE_NOT_FOUND at spawn. Antigravity treats a
+  // crashed hook as ALLOW, so the miss is silent and un-gates the provider.
+  "hooks/common/dialects.js",
 ];
 
 // Hook source-of-truth: every hook script (and its helper modules) lives
@@ -65,6 +71,7 @@ const HOOK_SOURCE_OVERRIDES = {
   "hooks/common/ipc-client.js":         path.join(PROTECT_SRC, "hooks", "common", "ipc-client.ts"),
   "hooks/common/injection-patterns.js": path.join(PROTECT_SRC, "injection-patterns.ts"),
   "hooks/common/untrusted-framing.js":  path.join(PROTECT_SRC, "untrusted-framing.ts"),
+  "hooks/common/dialects.js":           path.join(PROTECT_SRC, "hooks", "common", "dialects.ts"),
 };
 
 // Artifacts Obsidian loads from <vault>/.obsidian/plugins/gryphon/ when the

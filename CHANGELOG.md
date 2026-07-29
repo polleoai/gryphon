@@ -4,6 +4,13 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.1] — 2026-07-28
+
+### Security
+
+- **Antigravity CLI now runs behind Gryphon's guardrails.** In 2.9.0 the new Antigravity provider was selectable but not actually protected: Antigravity offers no per-request approval prompt that works outside an interactive terminal, so Gryphon auto-approves its tools — and the layer meant to take over that decision had not been built for it yet. Anything the model asked to run, ran. This release adds that layer, so protected commands and protected file paths now surface for your approval on Antigravity exactly as they do on Claude, Codex and Gemini. If you selected Antigravity CLI in 2.9.0, update before using it again.
+- **Gryphon's Antigravity protection cleans up after itself.** Antigravity reads its automation settings from a single shared file in your home directory, so Gryphon adds its entry when a request starts and removes it when the request ends, leaving any entries of your own untouched. If Obsidian is force-quit mid-request, the leftover entry is cleared the next time Gryphon loads — so your own terminal use of `agy` is never left gated by a plugin that isn't running.
+
 ## [2.9.0] — 2026-07-28
 
 ### Added

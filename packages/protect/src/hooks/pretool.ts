@@ -30,6 +30,10 @@ const {
   traceHook,
   installHookDeadline,
 } = require("./common/ipc-client");
+const {
+  normalizeAntigravityInput,
+  buildAntigravityDecision,
+} = require("./common/dialects");
 
 // Wall-clock budget for the whole hook. CC's configured PreToolUse
 // timeout is 300s; we leave a 15s gap so our own deny lands before CC
@@ -52,8 +56,17 @@ const IPC_TIMEOUT_MS = 270_000;
  * dispatcher passes `GRYPHON_HOOK_DIALECT=gemini` in the spawn env
  * when the active provider is gemini-cli; absent / "claude" /
  * "codex" all use the Claude-Code-shape output.
+ *
+ * Antigravity CLI: also flat `{ decision, reason }`, but with its own
+ * decision vocabulary (allow / deny / ask / force_ask) — see
+ * `dialects.ts`. Its `deny` hard-blocks the tool even under
+ * `--dangerously-skip-permissions`, which is what makes this provider
+ * enforceable at all.
  */
 function buildDecision(decision: string, reason?: string) {
+  if (process.env.GRYPHON_HOOK_DIALECT === "antigravity") {
+    return buildAntigravityDecision(decision, reason);
+  }
   if (process.env.GRYPHON_HOOK_DIALECT === "gemini") {
     const geminiDecision = decision === "ask" ? "ask_user" : decision;
     return Object.assign(
@@ -95,6 +108,15 @@ async function main() {
     return;
   }
   traceHook("PreToolUse", input);
+
+  // Antigravity sends a camelCase, nested `toolCall` payload instead of the
+  // flat snake_case shape the other three CLIs share, and names its tools
+  // and argument fields differently. Translate before anything below reads
+  // the input — a missed mapping here does not throw, it just produces a
+  // payload the classifier reads as "nothing to gate".
+  if (process.env.GRYPHON_HOOK_DIALECT === "antigravity") {
+    input = normalizeAntigravityInput(input) || input;
+  }
 
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
