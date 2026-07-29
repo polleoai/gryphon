@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.2] — 2026-07-29
+
+### Changed
+
+- **Antigravity CLI: better recognition of edits and searches.** When Antigravity modifies an existing file in place, Gryphon now sees the replacement text alongside the file path, so the approval prompt shows you what is actually being written rather than just where. Directory listings and file searches are now labelled in plain language ("Searching…", "Listing…") instead of showing Antigravity's internal tool names. Protected-path approval for file edits already worked in 2.9.1 and is unchanged.
+
 ## [2.9.1] — 2026-07-28
 
 ### Security

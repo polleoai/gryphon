@@ -72,6 +72,47 @@ test("view_file → file_path from AbsolutePath (live-captured shape)", () => {
   assert.equal(out.tool_input.file_path, "/vault/notes/secret.md");
 });
 
+test("replace_file_content → file_path from TargetFile (live-captured shape)", () => {
+  const out = normalizeAntigravityInput({
+    toolCall: {
+      name: "replace_file_content",
+      args: {
+        TargetFile: "/vault/.obsidian/plugins/gryphon/data.json",
+        TargetContent: "bravo",
+        ReplacementContent: "DELTA",
+        StartLine: 2, EndLine: 2, AllowMultiple: false, Instruction: "swap it",
+      },
+    },
+  });
+  assert.equal(out.tool_input.file_path, "/vault/.obsidian/plugins/gryphon/data.json",
+    "in-place edits must hit protected-path rules exactly like write_to_file");
+  assert.equal(out.tool_input.content, "DELTA");
+});
+
+test("read-only tools map onto the canonical field names (live-captured shapes)", () => {
+  const dir = normalizeAntigravityInput({
+    toolCall: { name: "list_dir", args: { DirectoryPath: "/vault/notes" } },
+  });
+  assert.equal(dir.tool_input.path, "/vault/notes");
+  const grep = normalizeAntigravityInput({
+    toolCall: { name: "grep_search", args: { Query: "password", SearchPath: "/vault" } },
+  });
+  assert.equal(grep.tool_input.pattern, "password");
+  assert.equal(grep.tool_input.path, "/vault");
+});
+
+test("an unmapped mutating tool still carries its original args through", () => {
+  // delete_directory's shape was never captured live. The mapping is a
+  // convention-based guess, so the guarantee that matters is that a wrong
+  // guess degrades to "unmapped" rather than dropping the payload.
+  const out = normalizeAntigravityInput({
+    toolCall: { name: "delete_directory", args: { SomeUnexpectedKey: "/vault/notes" } },
+  });
+  assert.equal(out.tool_name, "delete_directory");
+  assert.equal(out.tool_input.SomeUnexpectedKey, "/vault/notes",
+    "originals must survive so a future mapper (or the classifier) can still see them");
+});
+
 test("unknown tools pass through with args intact rather than being dropped", () => {
   const out = normalizeAntigravityInput({
     toolCall: { name: "some_future_tool", args: { Whatever: 1 } },

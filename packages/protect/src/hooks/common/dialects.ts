@@ -30,10 +30,17 @@
  * classifier reads. `attack-detector`'s TOOL_ALIASES maps the NAMES; this
  * maps the ARGUMENT shapes, which aliases alone cannot do.
  *
- * Verified live (agy v1.1.8):
- *   run_command   { CommandLine, Cwd, WaitMsBeforeAsync }
- *   write_to_file { TargetFile, CodeContent, Overwrite, Description }
- *   view_file     { AbsolutePath }
+ * Verified live (agy v1.1.8) — every entry below marked "captured" was read
+ * off a real PreToolUse payload:
+ *   run_command          { CommandLine, Cwd, WaitMsBeforeAsync }
+ *   write_to_file        { TargetFile, CodeContent, Overwrite, Description }
+ *   view_file            { AbsolutePath }
+ *   replace_file_content { TargetFile, TargetContent, ReplacementContent,
+ *                          StartLine, EndLine, Instruction, AllowMultiple,
+ *                          Description }
+ *   list_dir             { DirectoryPath }
+ *   grep_search          { Query, SearchPath }
+ *   ask_permission       { Action, Reason, Target }
  */
 const ARG_MAPPERS: Record<string, (args: Record<string, any>) => Record<string, unknown>> = {
   run_command: (args) => ({
@@ -49,14 +56,29 @@ const ARG_MAPPERS: Record<string, (args: Record<string, any>) => Record<string, 
     ...args,
     file_path: args.AbsolutePath,
   }),
-  // Antigravity's in-place edit tool. Field names follow write_to_file's
-  // TargetFile convention; NOT captured live, so the spread above keeps the
-  // originals intact and the classifier still sees TargetFile if the mapped
-  // name is ever wrong.
+  // Antigravity's in-place edit tool — captured live; TargetFile confirmed.
   replace_file_content: (args) => ({
     ...args,
     file_path: args.TargetFile,
+    content: args.ReplacementContent,
   }),
+  // Read-only tools. Not gated (the classifier returns null for them), but
+  // mapped so downstream consumers like chat-view's status-line normalizer
+  // show "Searching…" / "Listing…" instead of a raw Antigravity identifier.
+  list_dir: (args) => ({
+    ...args,
+    path: args.DirectoryPath,
+  }),
+  grep_search: (args) => ({
+    ...args,
+    pattern: args.Query,
+    path: args.SearchPath,
+  }),
+  // NOT captured live — the shape probe never reached them (the deny fired
+  // on an earlier step). Mapped on Antigravity's observed conventions
+  // (`TargetFile` for files, `DirectoryPath` for directories, both confirmed
+  // on sibling tools). The spread preserves the originals either way, so a
+  // wrong guess degrades to "unmapped", never to corrupted input.
   propose_code: (args) => ({
     ...args,
     file_path: args.TargetFile,
