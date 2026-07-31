@@ -82,6 +82,57 @@ function compareVersions(a, b) {
 // this is itself a strong "discard this candidate" signal — real CLIs answer
 // in well under 200ms.
 const _VERSION_PROBE_TIMEOUT_MS = 1500;
+/**
+ * Budget for large single-file CLI binaries — see _versionProbeTimeoutFor.
+ *
+ * 5000ms, NOT something roomier, and the ceiling is deliberate. This probe is
+ * `execFileSync` and `findAntigravityBinary` is called from the settings view
+ * (settings-view.ts), i.e. on Obsidian's RENDERER thread — the budget is a
+ * worst-case UI freeze, not just a latency bound. Failed probes are also
+ * deliberately not cached (see probeVersion), so a genuinely hung binary
+ * re-freezes on every subsequent call rather than once.
+ *
+ * 5000ms clears the measured 3071ms cold start with ~1.6x headroom while
+ * keeping the worst case survivable. Raising it trades a rare false
+ * "not detected" for a frequent multi-second hang, which is the worse bug.
+ */
+const _VERSION_PROBE_TIMEOUT_LARGE_MS = 5000;
+/** `agy` is ~179MB; `claude`/`codex` shims are kilobytes. 50MB separates them cleanly. */
+const _LARGE_BINARY_BYTES = 50 * 1024 * 1024;
+/**
+ * How long `<bin> --version` may take before we give up on it.
+ *
+ * This is not a cosmetic budget: probeVersion DISCARDS any candidate whose
+ * version it cannot read, so a probe that times out is indistinguishable from
+ * "not installed" and the CLI shows as undetected while sitting on disk.
+ *
+ * A flat 1500ms suited `claude` and `codex`, which ship small JS shims. It
+ * does not suit `agy`: a ~179MB Go binary whose cold-cache start was measured
+ * at **3071ms** on the Debian VM right after boot (379/436ms once warm), and
+ * 263ms on a fast Mac with a warm cache — which is why host testing never saw
+ * it. The failure lands on exactly the users least able to diagnose it: slow
+ * disks, network volumes, first launch after a reboot.
+ *
+ * Scaling by file size rather than by CLI name means the next large binary is
+ * covered without anyone remembering to add it to a list.
+ *
+ * Caveat: on Windows a candidate may be a small `.cmd` shim that launches a
+ * large `.exe`, in which case the shim's size understates the real cost. That
+ * is not the case for `agy` (the installer registers `agy.exe` directly), but
+ * a future shim-based CLI would need naming rather than sizing.
+ */
+function _versionProbeTimeoutFor(binPath) {
+    try {
+        if (fs.statSync(binPath).size >= _LARGE_BINARY_BYTES) {
+            return _VERSION_PROBE_TIMEOUT_LARGE_MS;
+        }
+    }
+    catch {
+        // Unstattable (gone, permission denied) — the probe is about to fail for
+        // its own reasons; the default budget is the right answer.
+    }
+    return _VERSION_PROBE_TIMEOUT_MS;
+}
 function _runVersion(binPath) {
     const isWinShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(binPath);
     // Windows .cmd/.bat shims must run through a shell. Under shell:true Node
@@ -90,7 +141,7 @@ function _runVersion(binPath) {
     // would fail; quote the path so cmd parses it as one token.
     const file = isWinShim ? `"${binPath}"` : binPath;
     return execFileSync(file, ["--version"], {
-        timeout: _VERSION_PROBE_TIMEOUT_MS,
+        timeout: _versionProbeTimeoutFor(binPath),
         stdio: ["ignore", "pipe", "pipe"],
         encoding: "utf8",
         env: { ...process.env, PATH: buildEnhancedPath() },
@@ -485,7 +536,11 @@ function _findGeminiBinaryUncached() {
  * Returns absolute path or null. Cached.
  */
 function findAntigravityBinary() {
-    if (_antigravityBinaryCache)
+    // `!== undefined`, not truthiness: null is a CACHED MISS. A truthy check
+    // re-runs the whole filesystem + login-shell PATH scan on every readiness
+    // poll and factory call whenever `agy` isn't installed — which is the
+    // common case for most users.
+    if (_antigravityBinaryCache !== undefined)
         return _antigravityBinaryCache;
     _antigravityBinaryCache = _findAntigravityBinaryUncached();
     return _antigravityBinaryCache;
@@ -677,6 +732,7 @@ module.exports = {
     parseVersion,
     compareVersions,
     probeVersion,
+    _versionProbeTimeoutFor,
     resolveCliBinary,
     // Exported for unit tests (internal ranking primitives).
     _pickNewestValid,

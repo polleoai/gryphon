@@ -80,7 +80,19 @@ const MODELS = [
     id: "claude-opus-4-8",
     vendor: "anthropic",
     pricing: { input: 5.00, output: 25.00 },
-    dropdown: { label: "Opus 4.8", desc: "Top Opus tier (1M)" },
+    dropdown: { label: "Opus 4.8", desc: "Previous Opus tier (1M)" },
+    contextTokens: 1_000_000,
+    coldStartMs: 180_000,
+  },
+  {
+    // Claude Opus 5 — the current Opus, superseding 4.8 at the SAME price
+    // ($5/$25). Anthropic's own guidance is "if you're unsure which model to
+    // use, start with Claude Opus 5", so it carries the Opus-tier label here.
+    // Verified: probe-model.sh anthropic claude-opus-5 → ok
+    id: "claude-opus-5",
+    vendor: "anthropic",
+    pricing: { input: 5.00, output: 25.00 },
+    dropdown: { label: "Opus 5", desc: "Top Opus tier (1M)" },
     contextTokens: 1_000_000,
     coldStartMs: 180_000,
   },
@@ -149,7 +161,36 @@ const MODELS = [
     id: "gpt-5.5",
     vendor: "openai",
     pricing: { input: 5.00, output: 30.00, cached_input: 0.50 },
-    dropdown: { label: "GPT-5.5", desc: "Most capable (newest)" },
+    dropdown: { label: "GPT-5.5", desc: "Balanced" },
+    codexCliSupported: true,
+  },
+  // GPT-5.6 family (GA 2026-07-09). Three variants — Sol / Terra / Luna.
+  //
+  // SOL IS DELIBERATELY ABSENT. `gpt-5.6-sol` and its `gpt-5.6` alias return
+  // NO completion on a probe while the in-registry `gpt-5.5` control returns
+  // one from the same CLI — so the probe path is healthy and Sol simply is
+  // not reachable. Listing it would put a model in the dropdown that silently
+  // produces nothing. Add it only when a probe returns a real completion.
+  //
+  // Pricing is OpenAI's SHORT-CONTEXT tier. GPT-5.6 prices by context length
+  // (long-context roughly doubles input), and this registry has one flat rate
+  // per model — so long-context turns under-report cost. Same simplification
+  // already applied to every other entry here; a context-aware pricing shape
+  // would be a schema change, not a per-model fix.
+  {
+    // Verified: real completion via codex → "OK"
+    id: "gpt-5.6-terra",
+    vendor: "openai",
+    pricing: { input: 2.00, output: 12.00, cached_input: 0.20 },
+    dropdown: { label: "GPT-5.6 Terra", desc: "Balanced, newest" },
+    codexCliSupported: true,
+  },
+  {
+    // Verified: real completion via codex → "OK"
+    id: "gpt-5.6-luna",
+    vendor: "openai",
+    pricing: { input: 0.20, output: 1.20, cached_input: 0.02 },
+    dropdown: { label: "GPT-5.6 Luna", desc: "Fastest, cheapest" },
     codexCliSupported: true,
   },
   // GPT-4 family (legacy)
@@ -243,7 +284,27 @@ const MODELS = [
     id: "gemini-3.5-flash",
     vendor: "google",
     pricing: { input: 1.50, output: 9.00, cached_input: 0.15 },
-    dropdown: { label: "Gemini 3.5 Flash", desc: "Agentic / coding (newest)" },
+    dropdown: { label: "Gemini 3.5 Flash", desc: "Agentic / coding" },
+  },
+  {
+    // Gemini 3.6 Flash — the newest GA Flash, and cheaper on output than the
+    // 3.5 Flash it succeeds ($7.50 vs $9.00) at the same input rate.
+    //
+    // Verified with a REAL COMPLETION, not the model-probe script: the
+    // `gemini` CLI the probe drives is dead on the Code Assist individuals
+    // tier and false-negatives everything, so this was probed through the
+    // Antigravity CLI instead — `agy --model gemini-3.6-flash --effort low`
+    // returned "OK". (`agy` requires a companion --effort for this model.)
+    //
+    // NOT added alongside it: `gemini-3.5-flash-lite`. Google's docs list it
+    // GA, but nothing here can reach it — agy's catalog does not carry it and
+    // the gemini CLI is dead — so it stays out until a probe returns a real
+    // completion. Adding an unverifiable id is what shipped, and reverted,
+    // `gemini-3.5-flash` in the v2.1 → v2.2 window.
+    id: "gemini-3.6-flash",
+    vendor: "google",
+    pricing: { input: 1.50, output: 7.50, cached_input: 0.15 },
+    dropdown: { label: "Gemini 3.6 Flash", desc: "Agentic / coding (newest)" },
   },
   {
     // Gemini 3.1 Flash-Lite — cheapest Gemini 3 tier. GA id; supersedes the

@@ -243,6 +243,28 @@ test("_buildArgs without hooks wired uses 1-for-1 user mode mapping", () => {
   ]);
 });
 
+test("_buildArgs rewrites a stale CROSS-VENDOR model id rather than spawning it", () => {
+  // settings.model can hold another vendor's id whenever the provider was
+  // switched by a route that doesn't run the Settings dropdown's onChange.
+  // Spawning it verbatim sends `-m claude-opus-4-8` to Gemini (a 400) while
+  // the cost calculation has already coerced it. codex-cli already follows
+  // this rule; gemini-cli did not until now.
+  const p = new GeminiCliProvider("/bin/gemini", "/tmp/vault", { model: "claude-opus-4-8" });
+  const args = p._buildArgs("hello");
+  const model = args[args.indexOf("-m") + 1];
+  assert.ok(!/^claude-/.test(model), `must not spawn a Claude id, got ${model}`);
+  assert.match(model, /^gemini-/, "should resolve to a Gemini model");
+});
+
+test("_buildArgs forwards a forward-compat gemini-* id untouched", () => {
+  // coerceToVendorModel passes the gemini- namespace through even when the
+  // id predates our registry, so a brand-new Gemini model keeps working
+  // without a Gryphon update.
+  const p = new GeminiCliProvider("/bin/gemini", "/tmp/vault", { model: "gemini-9.9-turbo-preview" });
+  const args = p._buildArgs("hello");
+  assert.equal(args[args.indexOf("-m") + 1], "gemini-9.9-turbo-preview");
+});
+
 test("_buildArgs with hooks wired forces approval-mode=yolo so the full tool palette is exposed", () => {
   // User report 2026-05-03: in headless `-p` mode with
   // approval-mode=default, Gemini hides tools that would otherwise

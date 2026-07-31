@@ -197,6 +197,13 @@ function _wrapSession(id) {
         return id;
     return SESSION_PREFIX + id;
 }
+/**
+ * Model ids that unambiguously belong to another vendor. Kept deliberately
+ * narrow: `agy` has its own model vocabulary we have only partly observed
+ * (`gemini-3.6-flash-high` and `auto` seen live, neither in our registry), so
+ * anything not provably foreign is forwarded untouched rather than rewritten.
+ */
+const FOREIGN_MODEL_RE = /^(claude[-.]|gpt[-.]|o[1-9][-.]?|anthropic[/.]|openai[/.])/i;
 function _unwrapSession(id) {
     if (typeof id !== "string")
         return id;
@@ -287,7 +294,83 @@ class AntigravityCliProvider {
         this.onDone = null;
         this.onSessionExpired = null;
     }
-    _buildArgs(prompt) {
+    /**
+     * The model id to actually spawn with.
+     *
+     * `settings.model` can hold another vendor's id: the Settings dropdown
+     * auto-corrects on change, but any route that doesn't run that handler (a
+     * hand-edited data.json, a migration, a programmatic switch) leaves it
+     * stale. Spawning it verbatim made `agy` fail on an id that the cost
+     * calculation had ALREADY coerced via `resolvedModel` — the UI, the billing
+     * and the subprocess each believed a different model was in use.
+     *
+     * Only provably-foreign ids are rewritten; `agy`'s own vocabulary passes
+     * through so a new Antigravity model works without a Gryphon update.
+     *
+     * Surfaced by the Argus spec `07-antigravity-reachable`, which selected the
+     * provider without going through the dropdown and left a Claude id behind.
+     * NOTE: `gemini-cli.ts:317` has the identical raw-spawn shape — logged as a
+     * follow-up, not changed here (its hook-spawn spec is skipped in the VM
+     * image, so it has no E2E cover for a behaviour change).
+     */
+    _modelForSpawn() {
+        const raw = this.options.model;
+        if (!raw)
+            return null;
+        return FOREIGN_MODEL_RE.test(String(raw)) ? this.resolvedModel : raw;
+    }
+    /**
+     * Decide whether this spawn may auto-approve, and whether a failure to
+     * install the guardrail should stop it outright.
+     *
+     * Three cases, which are genuinely different and must not be collapsed:
+     *
+     *  - NO PLUGIN CONTEXT (headless probes, unit tests). There is no IPC
+     *    server to gate against and no user session at risk. Spawn, but never
+     *    with auto-approve — a probe does not need it and must not have it.
+     *
+     *  - PROTECTED MODE OFF. The user deliberately turned the guardrail off.
+     *    Gryphon's two axes are independent by design: permission modes are
+     *    convenience, protected-path rules are the guardrail, and disabling
+     *    the latter is a supported choice. Refusing here would override the
+     *    user's own decision, so auto-approve stands.
+     *
+     *  - PROTECTED MODE ON, GUARDRAIL FAILED TO INSTALL. The user asked to be
+     *    protected and we could not deliver it. This is the case that shipped
+     *    twice — 2.9.0 with no adapter, 2.9.1/2.9.2 on Windows where the hook
+     *    installed but its command could not execute — and both times it was a
+     *    console.warn nobody reads while auto-approve stayed on. Refuse, so
+     *    the next occurrence is visible instead of silent.
+     */
+    _autoApproveDecision(hookExtras) {
+        const plugin = this.options?.plugin;
+        if (!plugin) {
+            return { autoApprove: false, refuse: false, message: "" };
+        }
+        if (hookExtras?.ok) {
+            return { autoApprove: true, refuse: false, message: "" };
+        }
+        if (plugin?.settings?.protectedMode === false) {
+            return { autoApprove: true, refuse: false, message: "" };
+        }
+        return {
+            autoApprove: false,
+            refuse: true,
+            message: "Gryphon will not start Antigravity without its guardrail. `agy` has no " +
+                "per-tool approval prompt, so Gryphon must pass " +
+                "--dangerously-skip-permissions for it to work at all, and the PreToolUse " +
+                "hook is the only thing enforcing your protected paths behind that flag. " +
+                `Reason: ${hookExtras?.degradationReason || "unknown"}. ` +
+                "Check that ~/.gemini/config/hooks.json is valid JSON and writable, or " +
+                "turn off Protected mode in Settings to run without the guardrail.",
+        };
+    }
+    /**
+     * @param autoApprove pass `--dangerously-skip-permissions`. Defaults to
+     *   true for callers that predate the guardrail coupling; the spawn path
+     *   passes it explicitly. See `_autoApproveDecision`.
+     */
+    _buildArgs(prompt, autoApprove = true) {
         // No documented per-call approval-mode flag exists for `agy` (unlike
         // gemini's `--approval-mode`). `--dangerously-skip-permissions`
         // (verified real flag name — `agy --help` has no `--yes`/`--no-color`
@@ -295,18 +378,25 @@ class AntigravityCliProvider {
         // an interactive confirmation prompt. `--output-format stream-json`
         // is the verified long-form flag (`-o` is not a valid short alias —
         // only `-p`/`-i`/`-c` have short forms per `agy --help`).
+        //
+        // The flag is CONDITIONAL: it is the whole reason a PreToolUse hook is
+        // load-bearing here, so it must never be emitted into a spawn that has
+        // no working guardrail behind it.
         const args = [
             "-p", prompt,
             "--output-format", "stream-json",
-            "--dangerously-skip-permissions",
         ];
-        if (this.options.model) {
+        if (autoApprove)
+            args.push("--dangerously-skip-permissions");
+        const spawnModel = this._modelForSpawn();
+        if (spawnModel) {
             // `-m` is not a valid short form (verified: errors "flags provided
             // but not defined: -m") — the real flag is `--model`. Some models
             // additionally REQUIRE a companion `--effort`; others REJECT it —
             // see header "Known sharp edges". Only forward it when the caller
             // explicitly set one; we don't guess a default.
-            args.push("--model", this.options.model);
+            //
+            args.push("--model", spawnModel);
             if (this.options.effort) {
                 args.push("--effort", this.options.effort);
             }
@@ -468,10 +558,30 @@ class AntigravityCliProvider {
         return new Promise((resolve, reject) => {
             // Supersede an in-flight turn — same shape as CodexProvider/GeminiCliProvider.
             if (this.alive && this.process) {
+                // The old process's close handler is skipped by its forThis() guard,
+                // so nothing below it ever runs for the superseded turn. Both of
+                // these are overwritten a few lines down, so releasing them here is
+                // the only chance:
+                //   - the watchdog would otherwise keep a live 60s timer whose
+                //     callback no-ops (forThis() false), holding the loop open;
+                //   - _hookCleanup would otherwise leave Gryphon's key sitting in the
+                //     user's shared ~/.gemini/config/hooks.json after every
+                //     superseded turn, gating their own `agy` until the next
+                //     plugin-load self-heal.
+                this._clearWatchdog();
                 try {
                     killProcessTree(this.process, "SIGTERM");
                 }
                 catch { }
+                if (this._hookCleanup) {
+                    try {
+                        this._hookCleanup();
+                    }
+                    catch (e) {
+                        console.warn(`[gryphon/antigravity-cli] hook cleanup on supersede failed: ${e.message}`);
+                    }
+                    this._hookCleanup = null;
+                }
                 if (this._currentReject) {
                     const r = this._currentReject;
                     this._currentReject = null;
@@ -499,21 +609,31 @@ class AntigravityCliProvider {
                 this.sessionId = null;
             }
             // HookDispatcher: the "antigravity-cli" adapter installs Gryphon's
-            // PreToolUse gate into the global hooks.json and removes it on close,
-            // so this always returns a degraded result. Calling it anyway keeps
-            // this provider structurally symmetric with the other three and
-            // means it picks up hook support automatically the day an adapter
-            // lands, with zero changes here.
+            // PreToolUse gate into the global hooks.json and removes it on close.
             const hookExtras = dispatcher.prepareSpawn({
                 kind: "antigravity-cli",
                 plugin: this.options.plugin,
                 options: this.options,
             });
-            if (!hookExtras.ok && hookExtras.degradationReason) {
-                console.warn(`[gryphon/antigravity-cli] hooks degraded: ${hookExtras.degradationReason}`);
-            }
             this._hookCleanup = hookExtras.cleanup;
-            const args = this._buildArgs(prompt);
+            const autoApprove = this._autoApproveDecision(hookExtras);
+            if (autoApprove.refuse) {
+                try {
+                    hookExtras.cleanup?.();
+                }
+                catch { /* nothing installed */ }
+                this._hookCleanup = undefined;
+                // Clear the in-flight turn handles before rejecting. They were set
+                // above on the assumption a spawn would follow; leaving them set makes
+                // the NEXT send() take the supersede branch against an
+                // already-settled promise and kill a process that was never started.
+                this._currentResolve = null;
+                this._currentReject = null;
+                // Inside the Promise executor, so this rejects the turn rather than
+                // escaping as an unhandled throw.
+                throw new Error(autoApprove.message);
+            }
+            const args = this._buildArgs(prompt, autoApprove.autoApprove);
             if (hookExtras.args && hookExtras.args.length > 0) {
                 args.push(...hookExtras.args);
             }

@@ -29,7 +29,7 @@
  */
 
 const { Setting, Notice } = require("obsidian");
-const { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, resolveConnectionTimeoutMs } = require("./constants");
+const { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, visibleProviderPrefs, resolveConnectionTimeoutMs } = require("./constants");
 const { testApiKey: testAnthropicApiKey } = require("../../provider-runtime/src/providers/anthropic-api/anthropic-api");
 const { testApiKey: testOpenAIApiKey } = require("../../provider-runtime/src/providers/openai-api/openai-api");
 const { testApiKey: testGoogleApiKey } = require("../../provider-runtime/src/providers/google-api/test-key");
@@ -420,11 +420,18 @@ function renderAntigravityPathRow(host, panelEl) {
       "installing and sign in there. No API key is used.",
     settingsKey: "antigravityPath",
     findKey: "findAntigravityBinary",
-    defaultPlaceholder: "~/.antigravity/bin/agy",
+    // Verified against a real v1.1.8 install: the installer puts `agy` on
+    // ~/.local/bin (macOS/Linux), NOT ~/.antigravity/bin.
+    defaultPlaceholder: process.platform === "win32"
+      ? "%LOCALAPPDATA%\\agy\\bin\\agy.exe"
+      : "~/.local/bin/agy",
     cliLabel: "Antigravity CLI",
     installHint:
       "Gryphon checked common install locations and your login-shell PATH. " +
-      "Install with `curl -fsSL https://antigravity.google/cli/install.sh | bash` " +
+      "Install with " +
+      (process.platform === "win32"
+        ? "`irm https://antigravity.google/cli/install.ps1 | iex` (PowerShell) "
+        : "`curl -fsSL https://antigravity.google/cli/install.sh | bash` ") +
       "and restart Obsidian, or set the full path in the field on the right " +
       "if it's already installed in a non-standard location. After installing, " +
       "run `agy` once to authenticate.",
@@ -499,7 +506,9 @@ function renderSetupPanel(hostPlugin, panelEl, ctx) {
   )
     .addDropdown((drop) => {
       providerSelectEl = drop.selectEl;
-      for (const p of PROVIDER_PREFS) drop.addOption(p.value, `${p.label} — ${p.desc}`);
+      for (const p of visibleProviderPrefs(PROVIDER_PREFS, hostPlugin.settings.providerPreference)) {
+        drop.addOption(p.value, `${p.label} — ${p.desc}`);
+      }
       drop.setValue(hostPlugin.settings.providerPreference || "auto");
       drop.onChange(async (value) => {
         const prevPreference = hostPlugin.settings.providerPreference || "auto";
@@ -551,7 +560,9 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
     "trigger failover. 'No fallback' surfaces a clear error instead.",
   )
     .addDropdown((drop) => {
-      for (const p of FALLBACK_PROVIDER_PREFS) drop.addOption(p.value, `${p.label} — ${p.desc}`);
+      for (const p of visibleProviderPrefs(FALLBACK_PROVIDER_PREFS, hostPlugin.settings.fallbackProviderPreference)) {
+        drop.addOption(p.value, `${p.label} — ${p.desc}`);
+      }
       drop.setValue(hostPlugin.settings.fallbackProviderPreference || "none");
       drop.onChange(async (value) => {
         hostPlugin.settings.fallbackProviderPreference = value;

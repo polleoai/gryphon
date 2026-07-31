@@ -231,6 +231,30 @@ test("_buildArgs always includes -p / --output-format stream-json / --dangerousl
   ]);
 });
 
+test("_buildArgs rewrites a stale CROSS-VENDOR model id rather than spawning it", () => {
+  // settings.model can hold another vendor's id whenever the provider was
+  // switched by a route that doesn't run the Settings dropdown's onChange
+  // (hand-edited data.json, migration, programmatic switch). Spawning it
+  // verbatim made `agy` fail on an id the cost calculation had already
+  // coerced — UI, billing and subprocess each on a different model.
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "claude-opus-4-8" });
+  const args = p._buildArgs("hello");
+  const model = args[args.indexOf("--model") + 1];
+  assert.ok(!/^claude-/.test(model), `must not spawn a Claude id, got ${model}`);
+  assert.match(model, /^gemini-/, "should fall back to the Google vendor default");
+});
+
+test("_buildArgs forwards Antigravity's OWN model vocabulary untouched", () => {
+  // agy has ids we have not catalogued (`gemini-3.6-flash-high` and `auto`
+  // both seen live, neither in the registry). Blanket coercion would rewrite
+  // them and break a working config, so only provably-foreign ids are touched.
+  for (const id of ["antigravity-1", "gemini-3.6-flash-high", "auto"]) {
+    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: id });
+    const args = p._buildArgs("hello");
+    assert.equal(args[args.indexOf("--model") + 1], id, `${id} must pass through`);
+  }
+});
+
 test("_buildArgs adds --effort alongside --model only when options.effort is explicitly set", () => {
   const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.5-flash", effort: "medium" });
   const args = p._buildArgs("hello");
@@ -347,4 +371,66 @@ test("hard timeout: watchdog kills a hung agy and rejects with an actionable mes
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 5000, `watchdog must fire well before a real hang (elapsed=${elapsed}ms)`);
   assert.equal(p.isAlive(), false, "the hung process must be reaped, not leaked");
+});
+
+// ── Auto-approval is coupled to the guardrail ────────────────────────────
+//
+// `agy` has no per-tool approval prompt, so this provider must pass
+// --dangerously-skip-permissions for tools to work at all. That makes the
+// PreToolUse hook the ONLY thing enforcing protected paths, and it makes an
+// unconditional flag a security defect rather than a convenience.
+//
+// It shipped twice. v2.9.0 had no hook adapter at all. v2.9.1/2.9.2 installed
+// the hook on Windows but emitted a command cmd.exe could not run (agy's Go
+// exec layer re-escapes quotes), and agy treats a failed hook as ALLOW — so a
+// write to a protected path succeeded on a Windows VM on 2026-07-30. Both
+// times the only signal was a console.warn.
+
+test("the dangerous flag is omitted unless the caller opts in", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {});
+  assert.ok(!p._buildArgs("hi", false).includes("--dangerously-skip-permissions"),
+    "auto-approve must be opt-in at the call site");
+  assert.ok(p._buildArgs("hi", true).includes("--dangerously-skip-permissions"));
+});
+
+test("no plugin context: spawn is allowed but never auto-approved", () => {
+  // Headless probes and unit tests have no IPC server to gate against. They
+  // do not need auto-approve, so they must not get it.
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {});
+  const d = p._autoApproveDecision({ ok: false, degradationReason: "ipc server not listening" });
+  assert.equal(d.refuse, false, "a probe must not be blocked");
+  assert.equal(d.autoApprove, false, "a probe must not auto-approve");
+});
+
+test("guardrail live: auto-approve is granted", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} } });
+  const d = p._autoApproveDecision({ ok: true });
+  assert.equal(d.autoApprove, true);
+  assert.equal(d.refuse, false);
+});
+
+test("protected mode OFF: the user's own opt-out is honoured, not overridden", () => {
+  // Gryphon's two axes are independent by design: permission modes are
+  // convenience, protected-path rules are the guardrail. Turning the
+  // guardrail off is a supported choice, so refusing here would override the
+  // user's decision rather than protect them.
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {
+    plugin: { settings: { protectedMode: false } },
+  });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: "protectedMode is off" });
+  assert.equal(d.refuse, false, "an explicit opt-out must not be turned into an error");
+  assert.equal(d.autoApprove, true);
+});
+
+test("protected mode ON but guardrail failed: REFUSE, do not spawn unguarded", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {
+    plugin: { settings: { protectedMode: true } },
+  });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: "hook scripts missing on disk" });
+  assert.equal(d.refuse, true, "the exact case that shipped twice must now be loud");
+  assert.equal(d.autoApprove, false);
+  assert.match(d.message, /hook scripts missing on disk/,
+    "the message must name the actual cause, not just say it failed");
+  assert.match(d.message, /Protected mode/,
+    "the message must state the supported way out");
 });

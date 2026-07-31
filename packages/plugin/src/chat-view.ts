@@ -703,6 +703,34 @@ function modelButtonText(settingsOrPlugin) {
   return labelFor(MODELS, "claude-sonnet-5");
 }
 
+/**
+ * The model list a given provider kind can actually serve, as
+ * `[{value, label}]`.
+ *
+ * Single source for BOTH the toolbar menu and the `/model <id>` slash
+ * command. They diverged once: the menu was made provider-aware while
+ * `/model` kept validating against the Anthropic `MODELS` list, so a valid
+ * Gemini or GPT id typed as `/model <id>` was rejected for every non-Claude
+ * provider. Keep both callers on this function.
+ */
+function _modelOptionsForKind(kind) {
+  if (kind === "openai-api" || kind === "codex-cli") {
+    // codex-cli reuses the OpenAI model list — both target the same
+    // gpt-5 family models on the backend.
+    const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+    const opts = (kind === "codex-cli")
+      ? openaiPricing.getCodexCliModelDropdownOptions()
+      : openaiPricing.getModelDropdownOptions();
+    return opts.map((o) => ({ value: o.id, label: o.label }));
+  }
+  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
+    // gemini-cli / antigravity-cli reuse the Gemini model list.
+    const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+    return getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
+  }
+  return MODELS;
+}
+
 function modelButtonTitle(settingsOrPlugin) {
   const settings = settingsOrPlugin && settingsOrPlugin.settings
     ? settingsOrPlugin.settings : settingsOrPlugin;
@@ -1608,21 +1636,7 @@ class GryphonChatView extends ItemView {
     const kind = getActiveProviderKind(this.plugin) ||
                  this.plugin.settings.providerPreference;
 
-    let modelList = MODELS;
-    if (kind === "openai-api" || kind === "codex-cli") {
-      // codex-cli reuses the OpenAI model list — both target the same
-      // gpt-5 family models on the backend.
-      const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
-      const opts = (kind === "codex-cli")
-        ? openaiPricing.getCodexCliModelDropdownOptions()
-        : openaiPricing.getModelDropdownOptions();
-      modelList = opts.map((o) => ({ value: o.id, label: o.label }));
-    } else if (kind === "google-api" || kind === "gemini-cli" ||
-               kind === "antigravity-cli") {
-      // gemini-cli / antigravity-cli reuse the Gemini model list.
-      const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
-      modelList = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
-    }
+    const modelList = _modelOptionsForKind(kind);
 
     const menu = new Menu();
     for (const m of modelList) {
@@ -2188,8 +2202,15 @@ class GryphonChatView extends ItemView {
 
       { match: (c) => c === "/model", run: () =>
           this.modelBtn && this.showModelMenu({ target: this.modelBtn }) },
-      { match: (c) => c.startsWith("/model "), run: () =>
-          this._applyDirectSetting("model", text.trim().substring(7).trim(), MODELS, this.modelBtn, "Model") },
+      { match: (c) => c.startsWith("/model "), run: () => {
+          // Validate against the ACTIVE provider's list, not Anthropic's —
+          // same source as the toolbar menu (see _modelOptionsForKind).
+          const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+          const kind = getActiveProviderKind(this.plugin) ||
+                       this.plugin.settings.providerPreference;
+          this._applyDirectSetting("model", text.trim().substring(7).trim(),
+            _modelOptionsForKind(kind), this.modelBtn, "Model");
+        } },
 
       { match: (c) => c === "/effort", run: () =>
           this.effortBtn && this.showEffortMenu({ target: this.effortBtn }) },
@@ -2827,8 +2848,20 @@ class GryphonChatView extends ItemView {
     const settings = this.plugin.settings || {};
     const provider = (() => {
       const sid = this.claudeProcess && this.claudeProcess.sessionId;
-      if (sid && String(sid).startsWith("sdk-")) return "anthropic-api";
-      if (sid) return "claude-code";
+      // Every CLI provider tags its session with a synthetic prefix. Mapping
+      // "any non-sdk id" to claude-code misreported codex-cli, gemini-cli and
+      // antigravity-cli in /status, /version and feedback diagnostics — i.e.
+      // exactly the reports used to debug those providers.
+      if (sid) {
+        const s = String(sid);
+        if (s.startsWith("sdk-")) return "anthropic-api";
+        if (s.startsWith("openai-sdk-")) return "openai-api";
+        if (s.startsWith("gemini-sdk-")) return "google-api";
+        if (s.startsWith("antigravity-cli-")) return "antigravity-cli";
+        if (s.startsWith("codex-cli-")) return "codex-cli";
+        if (s.startsWith("gemini-cli-")) return "gemini-cli";
+        return "claude-code";   // bare UUID — Claude Code's own session id
+      }
       return settings.providerPreference || "auto";
     })();
     const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;

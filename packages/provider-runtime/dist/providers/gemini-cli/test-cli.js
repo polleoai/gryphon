@@ -32,6 +32,7 @@ exports.testCli = testCli;
 const setTimeoutFn = setTimeout;
 const { spawn } = require("child_process");
 const { buildEnhancedPath } = require("../../utils");
+const { killProcessTree } = require("../../subprocess-registry");
 const _LIVENESS_TIMEOUT_MS = 30000;
 const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
 function testCli(geminiPath) {
@@ -61,12 +62,31 @@ function testCli(geminiPath) {
         let out = "";
         let err = "";
         let settled = false;
+        // Probe cleanup uses killProcessTree, not proc.kill.
+        //
+        // A Windows .cmd/.bat shim is spawned with shell:true, so the direct child is
+        // cmd.exe and the real CLI is a GRANDCHILD — SIGTERM to the direct child
+        // orphans it. Gryphon already solved this for provider spawns (v2.3.1
+        // subprocess-registry); the probes were written without it and leaked a CLI
+        // process per run, including on every release gate via live-cli-probe.sh.
+        //
+        // The liveness timer is also captured and cleared: unstored, it keeps the
+        // event loop alive for its full duration after a fast probe, delaying exit of
+        // the very script the gate runs.
+        let timer = null;
         const finish = (result) => {
             if (settled)
                 return;
             settled = true;
+            if (timer) {
+                try {
+                    clearTimeout(timer);
+                }
+                catch { }
+                timer = null;
+            }
             try {
-                proc.kill("SIGTERM");
+                killProcessTree(proc, "SIGTERM");
             }
             catch { }
             resolve(result);

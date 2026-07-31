@@ -420,3 +420,54 @@ test("ClaudeCodeProvider.send rejects with the actionable message (not a null-st
     utils.findClaudeBinary = orig;
   }
 });
+
+// ── Version-probe timeout must scale with binary size ────────────────────
+//
+// probeVersion runs `<bin> --version` and DISCARDS any candidate it cannot
+// parse, so a probe that times out reads as "not installed". The budget was a
+// flat 1500ms — fine for the small JS shims `claude` and `codex` ship, but not
+// for `agy`: a ~179MB Go binary that takes materially longer to start on a
+// cold page cache.
+//
+// Measured on the Debian VM immediately after a cold boot (2026-07-30):
+//   run1: 3071 ms   <- exceeds the 1500ms budget, detection FAILS
+//   run2:  379 ms
+//   run3:  436 ms
+// and on the developer Mac (fast NVMe, warm): 263 / 81 / 81 ms — which is why
+// this never surfaced in host testing.
+//
+// Symptom: a false "not detected" on the first check after boot, on any slow
+// or cold storage. Found by the VM matrix, not by any host run.
+
+test("a large CLI binary gets a longer version-probe budget than a small shim", () => {
+  const utils = require("../src/utils");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gryphon-probe-timeout-"));
+  try {
+    const small = path.join(dir, "small-shim");
+    const large = path.join(dir, "large-bin");
+    fs.writeFileSync(small, "#!/bin/sh\necho 1.0.0\n");
+    // Sparse file: costs no real disk, but stat().size reports the full size.
+    const fd = fs.openSync(large, "w");
+    fs.ftruncateSync(fd, 179 * 1024 * 1024);
+    fs.closeSync(fd);
+
+    const smallMs = utils._versionProbeTimeoutFor(small);
+    const largeMs = utils._versionProbeTimeoutFor(large);
+
+    assert.ok(largeMs > smallMs,
+      `a 179MB binary needs more than a shim's budget (small=${smallMs} large=${largeMs})`);
+    assert.ok(largeMs >= 5000,
+      `measured cold start was 3071ms; the budget must clear it with headroom, got ${largeMs}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an unstattable path falls back to the default budget rather than throwing", () => {
+  const utils = require("../src/utils");
+  const ms = utils._versionProbeTimeoutFor("/no/such/binary/anywhere");
+  // "is a number" would pass for NaN, 0 and Infinity — each of which breaks
+  // execFileSync's timeout differently (0/Infinity disable it entirely, so a
+  // hung binary would block the renderer thread forever).
+  assert.ok(Number.isFinite(ms) && ms > 0, `expected a finite positive budget, got ${ms}`);
+});

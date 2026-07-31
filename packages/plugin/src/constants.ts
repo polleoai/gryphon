@@ -1151,7 +1151,13 @@ const PROVIDER_PREFS = [
   { value: "openai-api",    label: "OpenAI API",                  desc: "Uses your OpenAI API key" },
   { value: "google-api",    label: "Google Gemini API",           desc: "Uses your Google AI Studio key" },
   { value: "codex-cli",     label: "Codex CLI (advanced)",        desc: "Spawns the OpenAI Codex CLI — uses its own auth (run `codex login` once); subject to that product's terms" },
-  { value: "gemini-cli",    label: "Gemini CLI (advanced)",       desc: "Spawns the Google Gemini CLI — auth via your Google API key. Deprecated for free-tier Google accounts: use Antigravity CLI instead" },
+  // Discontinued by Google. Kept in this catalogue so existing users who
+  // already selected it still get a correct label (and can see what they're
+  // on), but hidden from the dropdown for everyone else — see
+  // `visibleProviderPrefs`. Removing the entry outright would make the
+  // Settings select silently snap to a different provider while
+  // settings.providerPreference stayed "gemini-cli".
+  { value: "gemini-cli",    label: "Gemini CLI (discontinued)",   desc: "Google discontinued this CLI — switch to Antigravity CLI, or the Google Gemini API", deprecated: true },
   { value: "antigravity-cli", label: "Antigravity CLI (advanced)", desc: "Spawns the Google Antigravity CLI (`agy`) — uses its own auth (run `agy` once); subject to that product's terms" },
   { value: "auto",          label: "Auto",                        desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
@@ -1164,6 +1170,24 @@ const FALLBACK_PROVIDER_PREFS = [
   { value: "none", label: "No fallback", desc: "Disabled — an unavailable provider surfaces a clear error (default)" },
   ...PROVIDER_PREFS,
 ];
+
+/**
+ * The provider options to actually render, given what the user is on now.
+ *
+ * Deprecated providers are hidden — offering a dead end to someone choosing a
+ * provider for the first time is worse than offering nothing. But a provider
+ * the user has ALREADY selected always stays visible, however deprecated:
+ * `SettingComponent.setValue()` on an id with no matching <option> leaves the
+ * select displaying some other provider while `settings.providerPreference`
+ * still says the old one. The user would then read the wrong provider off
+ * their own settings screen.
+ *
+ * @param prefs    PROVIDER_PREFS or FALLBACK_PROVIDER_PREFS
+ * @param current  the currently persisted preference
+ */
+function visibleProviderPrefs(prefs: any[], current: string | null | undefined) {
+  return prefs.filter((p) => !p.deprecated || p.value === current);
+}
 
 // Human-readable title shown at the top of the protected-operation modal
 // for each category key used by the default pattern lists above. Keep the
@@ -1189,6 +1213,7 @@ module.exports = {
   PROTECTED_CATEGORIES,
   MODELS, MODEL_ALIAS_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
   CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS,
+  visibleProviderPrefs,
   CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
   COLD_START_BUDGET_MS, DEFAULT_COLD_START_BUDGET_MS,
   MIN_COLD_START_BUDGET_MS, MAX_COLD_START_BUDGET_MS,

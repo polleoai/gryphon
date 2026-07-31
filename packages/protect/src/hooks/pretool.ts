@@ -115,13 +115,32 @@ async function main() {
   // the input — a missed mapping here does not throw, it just produces a
   // payload the classifier reads as "nothing to gate".
   if (process.env.GRYPHON_HOOK_DIALECT === "antigravity") {
-    input = normalizeAntigravityInput(input) || input;
+    const normalized = normalizeAntigravityInput(input);
+    if (!normalized || typeof normalized.tool_name !== "string" || !normalized.tool_name) {
+      // FAIL CLOSED. Every other CLI keeps its own approval prompt, so their
+      // fall-through below is survivable. Antigravity is spawned with
+      // `--dangerously-skip-permissions` (without it, headless `agy`
+      // auto-denies every tool and the provider is unusable), so this hook is
+      // the ONLY gate. A payload we cannot read is precisely when allowing is
+      // indefensible — a future `agy` that renames `toolCall.name` would
+      // otherwise sail past unchecked.
+      await emitAndExit(buildDecision(
+        "deny",
+        "Gryphon could not read this Antigravity tool request, so it was " +
+        "refused rather than allowed unchecked. This usually means the " +
+        "Antigravity CLI changed its hook format — update Gryphon, and " +
+        "report it if the update doesn't help.",
+      ));
+      return;
+    }
+    input = normalized;
   }
 
   const toolName = input && input.tool_name;
   const toolInput = input && input.tool_input;
   if (typeof toolName !== "string" || !toolInput || typeof toolInput !== "object") {
-    // Nothing to classify — allow. CC's own (if any) checks still run.
+    // Nothing to classify — allow. The CLI's own checks still run. (Not
+    // reachable for antigravity: the branch above already denied.)
     await emitAndExit(buildDecision("allow"));
     return;
   }

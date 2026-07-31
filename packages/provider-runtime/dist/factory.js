@@ -421,7 +421,9 @@ function explainUnavailable(plugin) {
     if (preference === "antigravity-cli") {
         if (!hasAntigravityCli) {
             return ("No local `agy` (Antigravity) CLI found. Install it with " +
-                "`curl -fsSL https://antigravity.google/cli/install.sh | bash`, or " +
+                (process.platform === "win32"
+                    ? "`irm https://antigravity.google/cli/install.ps1 | iex` (PowerShell), or "
+                    : "`curl -fsSL https://antigravity.google/cli/install.sh | bash`, or ") +
                 "set the full path in Settings → Gryphon → Antigravity CLI path. " +
                 "After installing, run `agy` once in a terminal to authenticate. " +
                 "Note: gemini-cli is deprecated for Gemini Code Assist individuals — " +

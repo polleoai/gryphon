@@ -42,6 +42,21 @@
  *   grep_search          { Query, SearchPath }
  *   ask_permission       { Action, Reason, Target }
  */
+/**
+ * Field names Antigravity uses for a filesystem path, most specific first.
+ * Used as a fallback when a tool has no explicit mapper — see the derivation
+ * below `ARG_MAPPERS`. Drawn from the live-captured tools plus the argument
+ * naming convention visible across agy v1.1.8's tool identifiers.
+ */
+const ANTIGRAVITY_PATH_FIELDS = [
+  "TargetFile", "AbsolutePath", "FilePath", "NotebookPath",
+  "TargetPath", "DestinationFile", "DestinationPath", "SourceFile",
+  "TargetDirectory", "DirectoryPath", "Path",
+];
+
+/** Field names Antigravity uses for a shell command string. */
+const ANTIGRAVITY_COMMAND_FIELDS = ["CommandLine", "Command", "Script", "Input"];
+
 const ARG_MAPPERS: Record<string, (args: Record<string, any>) => Record<string, unknown>> = {
   run_command: (args) => ({
     ...args,
@@ -108,7 +123,40 @@ function normalizeAntigravityInput(input: any) {
   const name = call.name;
   const rawArgs = (call.args && typeof call.args === "object") ? call.args : {};
   const mapper = typeof name === "string" ? ARG_MAPPERS[name] : null;
-  const toolInput = mapper ? mapper(rawArgs) : { ...rawArgs };
+  const toolInput: Record<string, any> = mapper ? mapper(rawArgs) : { ...rawArgs };
+
+  // Generic fallback for tools we have no explicit mapper for.
+  //
+  // Without this, an unmapped tool is a SILENT BYPASS even when its name is
+  // aliased to Write: the alias routes it to the file branch, the branch looks
+  // for `file_path`, Antigravity supplies `TargetFile`, no path is found and
+  // nothing matches a protected rule. Enumerating tool names does not fix that
+  // on its own — both halves are required, which is the same trap that left
+  // every file-mutating agy tool ungated in 2.9.1/2.9.2.
+  //
+  // SCOPE, stated precisely so this is not over-read: this closes the
+  // ARGUMENT half only. Gating still requires the tool NAME to be in
+  // TOOL_ALIASES — attack-detector.ts resolves `TOOL_ALIASES[tool] || tool`,
+  // and an unrecognised name falls through to the "not currently gated"
+  // branch. So this makes every alias we add work WITHOUT a bespoke mapper;
+  // it does not gate a tool agy ships that nobody has aliased yet.
+  //
+  // That residual gap is real: agy v1.1.8's binary carries 100+ tool
+  // identifiers and exposes different subsets by mode, so the alias table
+  // will lag its releases. Closing it needs a name-independent rule (e.g.
+  // "carries both a path and a content field ⇒ treat as a write"), which is
+  // a change to the classifier's default rather than to this mapping layer.
+  // Tracked in docs/code-review-findings.md.
+  if (typeof toolInput.file_path !== "string" || !toolInput.file_path) {
+    for (const f of ANTIGRAVITY_PATH_FIELDS) {
+      if (typeof rawArgs[f] === "string" && rawArgs[f]) { toolInput.file_path = rawArgs[f]; break; }
+    }
+  }
+  if (typeof toolInput.command !== "string" || !toolInput.command) {
+    for (const f of ANTIGRAVITY_COMMAND_FIELDS) {
+      if (typeof rawArgs[f] === "string" && rawArgs[f]) { toolInput.command = rawArgs[f]; break; }
+    }
+  }
 
   // A tool's own working directory is more specific than the workspace
   // root — `agy` runs commands from its own scratch dir by default, and a

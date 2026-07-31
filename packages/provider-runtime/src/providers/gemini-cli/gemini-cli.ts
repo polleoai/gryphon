@@ -314,7 +314,17 @@ class GeminiCliProvider {
     ];
 
     if (this.options.model) {
-      args.push("-m", this.options.model);
+      // Pass the resolved/coerced model, NOT raw options.model — same rule
+      // codex-cli already follows. settings.model can hold another vendor's
+      // id whenever the provider was switched by a route that doesn't run the
+      // Settings dropdown's onChange (hand-edited data.json, migration,
+      // programmatic switch); spawning it verbatim sends e.g.
+      // `-m claude-opus-4-8` to Gemini, which 400s, while the cost
+      // calculation below has ALREADY coerced it — UI, billing and
+      // subprocess each on a different model. `coerceToVendorModel` passes
+      // `gemini-*` ids straight through (forward-compat for models newer than
+      // our registry) and only rewrites genuinely foreign ones.
+      args.push("-m", this.resolvedModel);
     }
 
     // Resume the prior session if we captured one; else start fresh.

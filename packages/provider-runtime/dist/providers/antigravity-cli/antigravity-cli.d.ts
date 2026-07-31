@@ -165,7 +165,60 @@ declare function _scrubInternalLeaks(text: any): any;
 declare class AntigravityCliProvider {
     [key: string]: any;
     constructor(antigravityPath: any, cwd: any, options?: Record<string, any>);
-    _buildArgs(prompt: any): any[];
+    /**
+     * The model id to actually spawn with.
+     *
+     * `settings.model` can hold another vendor's id: the Settings dropdown
+     * auto-corrects on change, but any route that doesn't run that handler (a
+     * hand-edited data.json, a migration, a programmatic switch) leaves it
+     * stale. Spawning it verbatim made `agy` fail on an id that the cost
+     * calculation had ALREADY coerced via `resolvedModel` — the UI, the billing
+     * and the subprocess each believed a different model was in use.
+     *
+     * Only provably-foreign ids are rewritten; `agy`'s own vocabulary passes
+     * through so a new Antigravity model works without a Gryphon update.
+     *
+     * Surfaced by the Argus spec `07-antigravity-reachable`, which selected the
+     * provider without going through the dropdown and left a Claude id behind.
+     * NOTE: `gemini-cli.ts:317` has the identical raw-spawn shape — logged as a
+     * follow-up, not changed here (its hook-spawn spec is skipped in the VM
+     * image, so it has no E2E cover for a behaviour change).
+     */
+    _modelForSpawn(): any;
+    /**
+     * Decide whether this spawn may auto-approve, and whether a failure to
+     * install the guardrail should stop it outright.
+     *
+     * Three cases, which are genuinely different and must not be collapsed:
+     *
+     *  - NO PLUGIN CONTEXT (headless probes, unit tests). There is no IPC
+     *    server to gate against and no user session at risk. Spawn, but never
+     *    with auto-approve — a probe does not need it and must not have it.
+     *
+     *  - PROTECTED MODE OFF. The user deliberately turned the guardrail off.
+     *    Gryphon's two axes are independent by design: permission modes are
+     *    convenience, protected-path rules are the guardrail, and disabling
+     *    the latter is a supported choice. Refusing here would override the
+     *    user's own decision, so auto-approve stands.
+     *
+     *  - PROTECTED MODE ON, GUARDRAIL FAILED TO INSTALL. The user asked to be
+     *    protected and we could not deliver it. This is the case that shipped
+     *    twice — 2.9.0 with no adapter, 2.9.1/2.9.2 on Windows where the hook
+     *    installed but its command could not execute — and both times it was a
+     *    console.warn nobody reads while auto-approve stayed on. Refuse, so
+     *    the next occurrence is visible instead of silent.
+     */
+    _autoApproveDecision(hookExtras: any): {
+        autoApprove: boolean;
+        refuse: boolean;
+        message: string;
+    };
+    /**
+     * @param autoApprove pass `--dangerously-skip-permissions`. Defaults to
+     *   true for callers that predate the guardrail coupling; the spawn path
+     *   passes it explicitly. See `_autoApproveDecision`.
+     */
+    _buildArgs(prompt: any, autoApprove?: boolean): any[];
     _buildEnv(): {
         PATH: any;
     };

@@ -4,6 +4,23 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.3] — 2026-07-31
+
+### Added
+
+- **Four new models.** Claude Opus 5, GPT-5.6 Terra, GPT-5.6 Luna, and Gemini 3.6 Flash are now selectable, with current pricing. OpenAI cut Terra and Luna rates on 30 July and those reductions are reflected here.
+
+### Security
+
+- **Antigravity CLI protection now actually works on Windows.** On Windows, Gryphon's approval layer for Antigravity was being set up correctly but could never start, and Antigravity treats a protection layer that fails to start as permission granted. The result: on Windows only, in 2.9.1 and 2.9.2, protected commands and protected file paths were not enforced for Antigravity, and anything the model asked to run, ran. macOS and Linux were unaffected. **If you use Antigravity CLI on Windows, update before using it again.**
+- **Gryphon now refuses to start Antigravity when it cannot protect you.** Antigravity has no per-request approval prompt that works outside an interactive terminal, so Gryphon must auto-approve its tools and rely on its own approval layer instead. If that layer cannot be set up, Gryphon now stops with an explanation naming the cause, rather than continuing unprotected with a warning you would never see. Turning off Protected mode remains a supported choice and is unaffected.
+- **More of Antigravity's actions are now recognised.** Gryphon previously understood a handful of Antigravity's file and command tools by name; it now covers substantially more of them, so protected paths are enforced whichever route the model takes to reach them — including when it retries a blocked file write as a shell command.
+
+### Fixed
+
+- **Antigravity CLI no longer reports "not detected" on slower machines.** Gryphon gives each CLI a short window to answer a version check. Antigravity's program file is unusually large, and on slower disks — or the first launch after a restart — it could exceed that window and be reported as missing even though it was installed. The window now scales with the size of the program.
+- **CLI detection checks no longer leave background processes behind on Windows.** Checking whether a CLI is installed could orphan the program it started, leaving a process running after the check finished.
+
 ## [2.9.2] — 2026-07-29
 
 ### Changed

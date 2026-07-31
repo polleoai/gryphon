@@ -47,10 +47,10 @@
 const path = require("path") as typeof import("path");
 const fs = require("fs") as typeof import("fs");
 const os = require("os") as typeof import("os");
+const crypto = require("crypto") as typeof import("crypto");
 const {
   DEFAULT_HOOK_TIMEOUTS,
   HOOK_FILES,
-  POSTTOOL_MATCHER,
 } = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
 
 const KIND = "antigravity-cli";
@@ -83,20 +83,176 @@ function hooksFilePath(): string {
  * (its embedded docs), so a leading assignment works on both with the right
  * syntax. hooks.json is rewritten per spawn, so the socket path is current.
  */
-function _makeCommand(nodePath: string, scriptPath: string, ipcSocketPath: string): string {
-  const env = {
-    GRYPHON_HOOK_DIALECT: "antigravity",
-    GRYPHON_HOOK_PROVIDER: KIND,
-    GRYPHON_PERMISSION_SOCKET: ipcSocketPath,
-  };
-  if (process.platform === "win32") {
-    const sets = Object.entries(env).map(([k, v]) => `set "${k}=${v}"`).join(" && ");
-    return `${sets} && "${nodePath}" "${scriptPath}"`;
+/**
+ * POSIX single-quote. Everything inside '' is literal to sh — including $,
+ * backticks and \ — and an embedded ' is handled by closing, escaping and
+ * reopening ('\'').
+ *
+ * JSON.stringify is NOT safe here despite looking like it is: it emits DOUBLE
+ * quotes, and `sh -c` still expands $(...) and backticks inside those. An
+ * Obsidian vault is user-named and its path reaches us verbatim, so a folder
+ * called `My $(...) Vault` would execute at hook-registration time.
+ */
+function _shQuote(s: string): string {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Characters that cannot appear in a value interpolated into the Windows
+ * shim BODY. Inside a .cmd, `%` begins variable expansion and `"` terminates
+ * a quoted assignment. A Windows path cannot contain `"`, but `%` is a legal
+ * folder-name character and an Obsidian vault is user-named, so a vault at
+ * `C:\100% Done\…` must be declined rather than turned into a shim that
+ * expands something at hook time.
+ */
+const WIN_SHIM_UNSAFE = /["%\r\n]/;
+
+/**
+ * Why Windows gets a shim file instead of an inline command.
+ *
+ * Antigravity executes a hook command through Go's `os/exec`, which quotes
+ * arguments using the C-runtime convention: an embedded `"` is emitted as
+ * `\"`. `cmd.exe` does not implement that convention — it treats `\"` as a
+ * literal quote character. So a command containing a quoted interpreter path
+ * arrives at cmd with the quotes welded into the filename:
+ *
+ *   '"C:\Program Files\nodejs\node.exe"' is not recognized as an internal or
+ *   external command
+ *
+ * Captured from agy v1.1.8's own log on a Windows VM (2026-07-30). The hook
+ * exited 1 and agy allowed the tool anyway — a failed hook is an ALLOW — so
+ * the protected write it was meant to block succeeded.
+ *
+ * There is no escaping that survives both layers, so the command must contain
+ * NO double quote at all. That in turn means it cannot contain a space, since
+ * a space is what forces a quote. A file path satisfies both if we choose the
+ * path; the quoted interpreter and script paths live INSIDE the file, where
+ * nothing re-escapes them.
+ *
+ * Verified on the Windows VM by invoking each candidate form the way agy does
+ * (Go-style escaping) rather than the way a human types it at a prompt: the
+ * bare shim path and a short-path form both reached the IPC server and denied;
+ * the inline form and a QUOTED shim path both failed with the error above.
+ */
+function _winShimPath(ipcSocketPath: string): string | null {
+  // Per-socket, so two vaults spawning concurrently write two shims and
+  // neither can rewrite the other's out from under a live turn.
+  const tag = crypto.createHash("sha256").update(ipcSocketPath).digest("hex").slice(0, 12);
+
+  // PER-USER ONLY. The shim is a script agy executes with this user's
+  // privileges, so where it lives is a security boundary, not a convenience.
+  //
+  // An earlier revision of this function fell back to %ProgramData% when
+  // %LOCALAPPDATA% contained a space. That is a machine-wide directory: on a
+  // multi-user Windows box another local account could overwrite the .cmd and
+  // get arbitrary code execution as this user the next time any tool call
+  // fired. A local privilege escalation, introduced to dodge a quoting rule.
+  //
+  // %LOCALAPPDATA% is inside the user profile and inherits its ACL, so it is
+  // the only acceptable home. A spaced profile ("C:\Users\Jane Smith\...")
+  // still needs a space-free command, which is what the 8.3 short name
+  // provides — and an 8.3 alias of a per-user path is still per-user.
+  const base = process.env.LOCALAPPDATA;
+  if (!base) return null;
+
+  const dir = path.join(base, "gryphon", "agy-hooks");
+  const direct = path.join(dir, `pretool-${tag}.cmd`);
+  if (!direct.includes(" ") && !direct.includes('"')) return direct;
+
+  // Spaced profile: 8.3 requires the directory to exist before it has a
+  // short name, so create it first.
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { return null; }
+  const short = _shortPathOf(dir);
+  if (short && !short.includes(" ") && !short.includes('"')) {
+    return path.join(short, `pretool-${tag}.cmd`);
   }
-  const assigns = Object.entries(env)
-    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
-    .join(" ");
-  return `${assigns} ${JSON.stringify(nodePath)} ${JSON.stringify(scriptPath)}`;
+  return null;
+}
+
+/**
+ * Windows 8.3 short name for an existing directory, or null.
+ *
+ * Node exposes no GetShortPathName binding, so this shells out to `for %I in
+ * (...) do @echo %~sI`. 8.3 generation can be disabled per volume
+ * (`fsutil 8dot3name`), in which case cmd echoes the long path back and the
+ * caller must decline rather than emit a command it cannot quote.
+ */
+function _shortPathOf(dir: string): string | null {
+  try {
+    const { spawnSync } = require("child_process") as typeof import("child_process");
+    // windowsVerbatimArguments: the argument contains quotes, and default
+    // escaping would render them as \" — which cmd reads literally. That is
+    // the exact defect this whole shim exists to work around, so it must not
+    // be reintroduced in the code that computes the shim's path.
+    const r = spawnSync(
+      "cmd",
+      ["/c", `for %I in ("${dir}") do @echo %~sI`],
+      { encoding: "utf8", timeout: 5000, windowsVerbatimArguments: true },
+    );
+    if (!r || r.status !== 0) return null;
+    const line = String(r.stdout || "").trim().split(/\r?\n/)[0];
+    return line && !line.includes("%") ? line : null;
+  } catch {
+    return null;
+  }
+}
+
+function _writeWinShim(
+  shimPath: string, nodePath: string, scriptPath: string, ipcSocketPath: string,
+): boolean {
+  const body = [
+    "@echo off",
+    `set "GRYPHON_HOOK_DIALECT=antigravity"`,
+    `set "GRYPHON_HOOK_PROVIDER=${KIND}"`,
+    `set "GRYPHON_PERMISSION_SOCKET=${ipcSocketPath}"`,
+    `"${nodePath}" "${scriptPath}"`,
+    "",
+  ].join("\r\n");
+  try {
+    fs.mkdirSync(path.dirname(shimPath), { recursive: true });
+    fs.writeFileSync(shimPath, body, { mode: 0o600 });
+    return true;
+  } catch (e) {
+    console.warn(
+      `[gryphon/antigravity-hooks] could not write the hook shim ${shimPath}: ` +
+      `${(e as Error).message}`,
+    );
+    return false;
+  }
+}
+
+function _makeCommand(nodePath: string, scriptPath: string, ipcSocketPath: string): string | null {
+  const env: Array<[string, string]> = [
+    ["GRYPHON_HOOK_DIALECT", "antigravity"],
+    ["GRYPHON_HOOK_PROVIDER", KIND],
+    ["GRYPHON_PERMISSION_SOCKET", ipcSocketPath],
+  ];
+  if (process.platform === "win32") {
+    for (const v of [nodePath, scriptPath, ipcSocketPath]) {
+      if (WIN_SHIM_UNSAFE.test(v)) {
+        console.warn(
+          `[gryphon/antigravity-hooks] refusing to build a hook command: ` +
+          `"${v}" contains a character that cannot be embedded in a cmd shim. ` +
+          `Move the vault (or the CLI) to a path without " or %.`,
+        );
+        return null;
+      }
+    }
+    const shimPath = _winShimPath(ipcSocketPath);
+    if (!shimPath) {
+      console.warn(
+        `[gryphon/antigravity-hooks] refusing to build a hook command: no ` +
+        `space-free location for the hook shim (tried LOCALAPPDATA and ` +
+        `ProgramData). Antigravity's hook command cannot contain a quote, and ` +
+        `a space would require one.`,
+      );
+      return null;
+    }
+    if (!_writeWinShim(shimPath, nodePath, scriptPath, ipcSocketPath)) return null;
+    return shimPath;
+  }
+  const assigns = env.map(([k, v]) => `${k}=${_shQuote(v)}`).join(" ");
+  return `${assigns} ${_shQuote(nodePath)} ${_shQuote(scriptPath)}`;
 }
 
 /**
@@ -115,8 +271,20 @@ function _buildHookEntry(
 ) {
   const hooksDir = path.join(pluginDir, "hooks");
   const pre = _makeCommand(nodePath, path.join(hooksDir, String(HOOK_FILES.PreToolUse)), ipcSocketPath);
-  const post = _makeCommand(nodePath, path.join(hooksDir, String(HOOK_FILES.PostToolUse)), ipcSocketPath);
+  if (!pre) return null;
 
+  // NO PostToolUse. Captured live from agy v1.1.8, its PostToolUse payload is
+  //   { toolCall: null, error: "", stepIdx, conversationId, workspacePaths, … }
+  // — no tool call, and no tool OUTPUT of any kind. posttool.js exists solely
+  // to wrap tool results in untrusted-content framing (the prompt-injection
+  // hardening from v2.6.1), and there is nothing here to wrap. Registering it
+  // anyway would install a hook that fires, reads nothing and returns nothing,
+  // while showing up in the config as protection that exists.
+  //
+  // Consequence worth stating plainly: content Antigravity pulls in mid-turn
+  // (a fetched page, a file it read) is NOT untrusted-framed. Closing that
+  // needs framing applied in the provider's own event-stream parsing, the way
+  // the anthropic-api path does it — not a hook.
   return {
     PreToolUse: [{
       // Match-all. Gating only `run_command` would leave every file-mutating
@@ -129,15 +297,38 @@ function _buildHookEntry(
         timeout: DEFAULT_HOOK_TIMEOUTS.PreToolUse,
       }],
     }],
-    PostToolUse: [{
-      matcher: POSTTOOL_MATCHER || "*",
-      hooks: [{
-        type: "command",
-        command: post,
-        timeout: DEFAULT_HOOK_TIMEOUTS.PostToolUse,
-      }],
-    }],
   };
+}
+
+/**
+ * Recover the IPC socket baked into an installed hook entry, so cleanup can
+ * tell "the key I installed" from "a key another vault installed after me".
+ */
+function _socketOf(entry: unknown): string | null {
+  try {
+    const cmd = (entry as any)?.PreToolUse?.[0]?.hooks?.[0]?.command;
+    if (typeof cmd !== "string") return null;
+    const m = cmd.match(/GRYPHON_PERMISSION_SOCKET=(?:'((?:[^']|'\\'')*)'|"([^"]*)")/);
+    if (m) return (m[1] !== undefined ? m[1].replace(/'\\''/g, "'") : m[2]) || null;
+    // Windows: the command is a bare path to our shim, so the socket lives in
+    // the shim's body. Without this the multi-vault guard silently degrades to
+    // "no recoverable owner", and a cleanup would strip a live vault's key.
+    return _socketOfShim(cmd);
+  } catch {
+    return null;
+  }
+}
+
+/** Recover the socket from a shim file named by `cmd`, if that is what it is. */
+function _socketOfShim(cmd: string): string | null {
+  if (!/\.cmd$/i.test(cmd)) return null;
+  try {
+    const body = fs.readFileSync(cmd, "utf8");
+    const m = body.match(/set "GRYPHON_PERMISSION_SOCKET=([^"]*)"/);
+    return (m && m[1]) || null;
+  } catch {
+    return null;   // shim already gone; caller treats as unknown owner
+  }
 }
 
 /**
@@ -163,9 +354,24 @@ function _readHooks(file: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Write atomically: temp file in the same directory, then rename over the
+ * target. rename(2) is atomic within a filesystem, so a crash mid-write can
+ * never leave the user with a truncated hooks.json. This file is THEIRS and
+ * shared with their own interactive `agy` — corrupting it would be a worse
+ * outcome than never installing the hook.
+ */
 function _writeHooks(file: string, json: Record<string, unknown>) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(json, null, 2), { mode: 0o600 });
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.gryphon-hooks-${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(json, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
+    throw e;
+  }
 }
 
 /**
@@ -183,7 +389,9 @@ function _installInto(
     return false;
   }
   const json = existing || {};
-  json[HOOK_KEY] = _buildHookEntry({ pluginDir, nodePath, ipcSocketPath });
+  const entry = _buildHookEntry({ pluginDir, nodePath, ipcSocketPath });
+  if (!entry) return false;   // unquotable path — degrade, never emit an injectable command
+  json[HOOK_KEY] = entry;
   try {
     _writeHooks(file, json);
     return true;
@@ -194,13 +402,33 @@ function _installInto(
 }
 
 /**
- * Remove ONLY our key. Deletes the file when our key was its sole content,
- * so an install/uninstall cycle is a true no-op on the user's config.
+ * Remove ONLY our key. Deletes the file when our key was its sole content, so
+ * an install/uninstall cycle is a true no-op on the user's config.
+ *
+ * `ownedSocket` guards the multi-vault case. Two Obsidian windows share this
+ * one file: vault B's spawn overwrites the key with B's socket, then vault A
+ * finishes and cleans up. A blind delete would strip B's guardrail mid-turn,
+ * leaving a provider running with auto-approve and nothing gating it. So a
+ * per-spawn cleanup only removes the key if it is still the one it installed.
+ * Pass nothing to force removal (self-heal path).
  */
-function _uninstallFrom(file: string): boolean {
+function _uninstallFrom(file: string, ownedSocket?: string): boolean {
   const json = _readHooks(file);
   if (!json) return false;
   if (!(HOOK_KEY in json)) return false;
+  if (ownedSocket) {
+    const installed = _socketOf(json[HOOK_KEY]);
+    if (installed && installed !== ownedSocket) {
+      // Another live Gryphon owns the key now. Leave it alone.
+      return false;
+    }
+  }
+  // Remove the shim too, before dropping the key that names it — otherwise
+  // every spawn leaves a .cmd behind in LOCALAPPDATA forever.
+  const shim = (json[HOOK_KEY] as any)?.PreToolUse?.[0]?.hooks?.[0]?.command;
+  if (typeof shim === "string" && /\.cmd$/i.test(shim)) {
+    try { fs.unlinkSync(shim); } catch { /* already gone, or never ours */ }
+  }
   delete json[HOOK_KEY];
   try {
     if (Object.keys(json).length === 0) {
@@ -257,13 +485,21 @@ function buildSpawnExtras(
   // install below would overwrite it anyway, but doing it explicitly keeps
   // the "we only ever own one key" invariant auditable.
   _stripStaleFrom(file);
-  _installInto(file, { pluginDir, nodePath, ipcSocketPath });
+  // A failed install must not read as success. _installInto returns false for
+  // an unparseable user hooks.json, an unwritable config dir, or a path we
+  // refuse to build a command for -- in every one of those cases there is no
+  // guardrail, and the caller has to know that before it decides whether to
+  // pass --dangerously-skip-permissions.
+  if (!_installInto(file, { pluginDir, nodePath, ipcSocketPath })) return null;
 
   let cleaned = false;
   const cleanup = () => {
     if (cleaned) return;
     cleaned = true;
-    _uninstallFrom(file);
+    // Ownership-scoped: if another vault's spawn has since overwritten the
+    // key with its own socket, leave it — removing it would un-gate a live
+    // session in the other window.
+    _uninstallFrom(file, ipcSocketPath);
   };
 
   return {
@@ -287,6 +523,7 @@ module.exports = {
   stripStaleHooks,
   HOOK_KEY,
   _buildHookEntry,
+  _socketOf,
   _installInto,
   _uninstallFrom,
   _stripStaleFrom,
