@@ -28,6 +28,10 @@ exports.testCli = testCli;
 // accepts timer names that resolve to a local binding; window.* would throw in
 // the headless paths.
 const setTimeoutFn = setTimeout;
+// Same reason as setTimeoutFn: obsidianmd/prefer-window-timers accepts a
+// timer name that resolves to a local binding, and window.clearTimeout
+// would throw in the headless paths these probes run in.
+const clearTimeoutFn = clearTimeout;
 const { spawn } = require("child_process");
 const os = require("os");
 const { buildEnhancedPath } = require("../../utils");
@@ -83,7 +87,7 @@ function testCli(codexPath) {
             settled = true;
             if (timer) {
                 try {
-                    clearTimeout(timer);
+                    clearTimeoutFn(timer);
                 }
                 catch { }
                 timer = null;

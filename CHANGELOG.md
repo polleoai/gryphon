@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.4] — 2026-08-01
+
+### Security
+
+- **Bundled Anthropic SDK updated to clear a dependency advisory.** The `@anthropic-ai/sdk` dependency was moved off a version range carrying a moderate advisory (CVE-2026-41686), in which the SDK's optional local-filesystem memory tool created files with overly permissive permissions. Gryphon does not use that tool, so no Gryphon user was exposed — this update clears the advisory and brings the bundled SDK up to date.
+
 ## [2.9.3] — 2026-07-31
 
 ### Added

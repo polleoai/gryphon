@@ -28,6 +28,10 @@
 // accepts timer names that resolve to a local binding; window.* would throw in
 // the headless paths.
 const setTimeoutFn = setTimeout;
+// Same reason as setTimeoutFn: obsidianmd/prefer-window-timers accepts a
+// timer name that resolves to a local binding, and window.clearTimeout
+// would throw in the headless paths these probes run in.
+const clearTimeoutFn = clearTimeout;
 
 
 const { spawn } = require("child_process") as typeof import("child_process");
@@ -85,7 +89,7 @@ function testCli(geminiPath: any) {
     const finish = (result: any) => {
       if (settled) return;
       settled = true;
-      if (timer) { try { clearTimeout(timer); } catch {} timer = null; }
+      if (timer) { try { clearTimeoutFn(timer); } catch {} timer = null; }
       try { killProcessTree(proc, "SIGTERM"); } catch {}
       resolve(result);
     };

@@ -26,6 +26,10 @@ exports.testCli = testCli;
 // Bound the ambient timer to a module-local: these run in both the Obsidian
 // renderer and headless Node paths, where `window` is unavailable.
 const setTimeoutFn = setTimeout;
+// Same reason as setTimeoutFn: obsidianmd/prefer-window-timers accepts a
+// timer name that resolves to a local binding, and window.clearTimeout
+// would throw in the headless paths these probes run in.
+const clearTimeoutFn = clearTimeout;
 const { spawn } = require("child_process");
 const { buildEnhancedPath } = require("../../utils");
 const { killProcessTree } = require("../../subprocess-registry");
@@ -74,7 +78,7 @@ function testCli(claudePath) {
             settled = true;
             if (timer) {
                 try {
-                    clearTimeout(timer);
+                    clearTimeoutFn(timer);
                 }
                 catch { }
                 timer = null;
