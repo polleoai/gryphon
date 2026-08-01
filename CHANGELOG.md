@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.5] — 2026-08-01
+
+### Security
+
+- **Bundled dependencies updated to clear security advisories.** Seven advisories were reported against Gryphon's dependency tree, six of them high severity. One affected code that actually ships inside the plugin: the WebSocket library used by the Google and OpenAI clients could disclose uninitialised memory and could be forced into excessive memory use by malformed traffic. The rest were confined to build-time tooling that never reaches your vault. All seven are now resolved, with no change to how the plugin behaves.
+
 ## [2.9.4] — 2026-08-01
 
 ### Security
