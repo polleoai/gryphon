@@ -874,7 +874,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
             ? String(Math.round(stored / 1000))
             : "";
         text
-            .setPlaceholder("default")
+            .setPlaceholder("Default")
             .setValue(display)
             .onChange(async (value) => {
             const trimmed = (value || "").trim();

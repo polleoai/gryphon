@@ -767,7 +767,9 @@ class GryphonPlugin extends Plugin {
         pluginDir,
         truncateTraceLog: !!(this.settings && this.settings.devCliDebug),
       });
-      if (s.totalRemoved > 0) {
+      // Debug-gated: an orphan sweep is internal housekeeping a user cannot
+      // act on, and Obsidian's guidelines call for keeping the console quiet.
+      if (s.totalRemoved > 0 && this.settings && this.settings.devCliDebug) {
         console.log(
           `[gryphon] orphan sweep: removed ${s.totalRemoved} file(s) ` +
           `(hook-settings:${s.hookSettings.removed.length}, ` +
@@ -1782,7 +1784,9 @@ class GryphonPlugin extends Plugin {
     if (typeof sid !== "string" || !sid) return;
     if (sid.startsWith("codex-cli-") || sid.startsWith("gemini-cli-") ||
         sid.startsWith("antigravity-cli-")) {
-      console.log(
+      // Debug-gated for the same reason: the session reset is automatic and
+      // needs no user action; the detail matters only when diagnosing.
+      if (this.settings && this.settings.devCliDebug) console.log(
         `[gryphon] dropping stale CLI lastSessionId on plugin load: ${sid} ` +
         `(chat history preserved; next message starts a fresh CLI session ` +
         `to pick up any sandbox/hook config changes from the new plugin build)`,

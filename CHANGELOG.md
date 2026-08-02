@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.9.6] — 2026-08-02
+
+### Changed
+
+- **Quieter console, and a small settings-label fix.** Two internal housekeeping messages (clearing leftover files, resetting a stale session after an update) no longer print unless developer logging is enabled — they described internal state you could not act on. A timeout field's placeholder now reads "Default" rather than "default", matching Obsidian's conventions for settings text.
+
 ## [2.9.5] — 2026-08-01
 
 ### Security
