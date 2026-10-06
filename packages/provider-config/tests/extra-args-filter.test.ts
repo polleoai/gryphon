@@ -237,3 +237,13 @@ test("each provider's own flags pass through to it", () => {
     assert.deepEqual(dropped, []);
   }
 });
+
+test("#25 claude-code launch-scope flags are dropped from non-claude providers", () => {
+  const args = ["--setting-sources", "project,local", "--strict-mcp-config", "--mcp-config", "/v/.mcp.json"];
+  assert.deepEqual(filterExtraArgs(args, "claude-code").filtered, args);
+  for (const kind of ["codex-cli", "gemini-cli", "antigravity-cli"]) {
+    const { filtered, dropped } = filterExtraArgs(args, kind);
+    assert.deepEqual(filtered, [], `${kind} should receive none of the scope flags`);
+    assert.deepEqual(dropped, ["--setting-sources", "--strict-mcp-config", "--mcp-config"]);
+  }
+});

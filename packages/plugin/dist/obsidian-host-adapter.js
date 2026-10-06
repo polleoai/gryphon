@@ -8,6 +8,19 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 class ObsidianHostAdapter {
+    /**
+     * @param {object} [hooks]
+     * @param {Function} [hooks.onMcpApprovalsPending] — issue #25 rev 2: the
+     *   claude-code provider left out vault MCP servers nobody approved; the
+     *   plugin shows the Notice + review modal (see mcp-approval-ui.ts).
+     */
+    constructor(hooks) {
+        // Defined only when wired, so the provider's plain-Notice fallback
+        // applies to an adapter built without the hook.
+        const onPending = hooks && hooks.onMcpApprovalsPending;
+        if (typeof onPending === "function")
+            this.mcpApprovalsPending = (report) => onPending(report);
+    }
     notify(message, opts) {
         opts = opts || {};
         // opts.level (info|warn|error) is accepted for HostAdapter contract parity but

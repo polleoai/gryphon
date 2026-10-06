@@ -92,10 +92,10 @@ test("constructor passes through already-Gemini-shaped seed history unchanged", 
   assert.deepEqual(p.history[0].parts, [{ text: "hi" }]);
 });
 
-test("alias model resolves through pricing.resolveModel (sonnet → gemini-2.5-flash)", () => {
+test("alias model resolves through pricing.resolveModel (sonnet → gemini-3.7-flash)", () => {
   const client = new MockClient();
   const p = new GoogleProvider("AIza", "/cwd", { client, model: "sonnet" });
-  assert.equal(p.resolvedModel, "gemini-2.5-flash");
+  assert.equal(p.resolvedModel, "gemini-3.7-flash");
 });
 
 // ---------- streaming + send ----------

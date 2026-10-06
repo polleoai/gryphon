@@ -147,7 +147,7 @@ test("turn.completed records usage as contextTokens", () => {
 });
 
 test("end-to-end happy-path event sequence resolves _handleClose with computed cost", async () => {
-  const { provider, captured } = makeProvider({ model: "gpt-5-mini" });
+  const { provider, captured } = makeProvider({ model: "gpt-5.6-terra" });
   // Wire up the resolution path manually since we don't actually spawn.
   let resolved = null;
   provider._currentResolve = (r) => { resolved = r; };
@@ -172,9 +172,9 @@ test("end-to-end happy-path event sequence resolves _handleClose with computed c
   assert.equal(resolved.text, "OK");
   assert.equal(resolved.sessionId, "codex-cli-abc-123");
   assert.equal(resolved.contextTokens, 1000);
-  // Cost: gpt-5-mini = 0.25/M input, 2.00/M output
-  // = (1000/1e6) * 0.25 + (50/1e6) * 2.00 = 0.00025 + 0.0001 = 0.00035
-  assert.ok(resolved.cost > 0 && resolved.cost < 0.001, `cost=${resolved.cost}`);
+  // gpt-5.6-terra (Codex default): $2/M input, $12/M output
+  // (1000/1e6) * 2.00 + (50/1e6) * 12.00 = 0.002 + 0.0006 = 0.0026
+  assert.ok(Math.abs(resolved.cost - 0.0026) < 1e-9, `cost=${resolved.cost}`);
   assert.equal(captured.done, resolved);
 });
 
@@ -236,7 +236,7 @@ test("_buildArgs coerces unsupported ChatGPT-auth model id (gpt-5-mini) to defau
   // Defensive: a stale persisted id that worked for openai-api but not
   // for codex-cli's ChatGPT-account auth must NOT reach codex's spawn.
   // Otherwise codex 400s "model not supported." Coerced to the safe
-  // default (gpt-5.4-mini).
+  // default (gpt-5.6-terra).
   const p = new CodexProvider("/bin/codex", "/tmp/vault", {
     model: "gpt-5-mini",
     permissionMode: "default",
@@ -244,7 +244,7 @@ test("_buildArgs coerces unsupported ChatGPT-auth model id (gpt-5-mini) to defau
   const args = p._buildArgs("hello");
   const idx = args.indexOf("-m");
   assert.notEqual(idx, -1, "-m must be present");
-  assert.equal(args[idx + 1], "gpt-5.4-mini",
+  assert.equal(args[idx + 1], "gpt-5.6-terra",
     "unsupported model coerced to CODEX_CLI_DEFAULT_MODEL");
 });
 

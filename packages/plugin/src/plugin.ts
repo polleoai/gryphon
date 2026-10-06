@@ -15,7 +15,7 @@ const { GryphonChatView } = require("./chat-view");
 // hand-mirroring rows (which drifted and dropped the API-key inputs). The tab
 // delegates its shared render helpers to the same module for a single source.
 const { renderGryphonSettings, renderSectionHeading, descToTooltip } = require("./settings-view");
-const { DEFAULT_SETTINGS, MODEL_ALIAS_MIGRATION, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
+const { DEFAULT_SETTINGS, MODEL_ALIAS_MIGRATION, MODEL_RETIREMENT_MIGRATION, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
 const { SkillRegistry } = require("./skills");
 const {
   isObsidianRestApiUrl,
@@ -815,7 +815,10 @@ class GryphonPlugin extends Plugin {
     // Passed to createProvider() and createProtectionContext() so runtime/
     // protect internals stay headless and never require("obsidian") directly.
     const { ObsidianHostAdapter } = require("./obsidian-host-adapter");
-    this.hostAdapter = new ObsidianHostAdapter();
+    const { handlePendingApprovals } = require("./mcp-approval-ui");
+    this.hostAdapter = new ObsidianHostAdapter({
+      onMcpApprovalsPending: (report) => handlePendingApprovals(this, report),
+    });
 
     this.skillRegistry = new SkillRegistry(this.app);
     // Init asynchronously — folder seeding + scan. The view consults the
@@ -1717,6 +1720,23 @@ class GryphonPlugin extends Plugin {
     const userData = (await this.loadData()) || {};
     this.settings = Object.assign({}, DEFAULT_SETTINGS, userData);
     this._migrateSettings(userData);
+    const retired = this._migrateRetiredModels();
+    // Persist so the rewrite (and any Notice below) happens once, not on
+    // every load. saveData, not saveSettings: no settings-changed event
+    // during load.
+    if (retired.length > 0) {
+      // A failed write must not stop the plugin loading (read-only vault,
+      // sync lock): the migrated values are already in memory, and the
+      // rewrite simply runs again on the next load.
+      try { await this.saveData(this.settings); }
+      catch (e) { console.warn("[gryphon] could not persist retired-model migration:", e); }
+    }
+    const retiredMsg = this._describeModelRetirement(retired);
+    if (retiredMsg && typeof window !== "undefined") {
+      // Deferred like the provider-unready notice: settings load runs before
+      // the workspace paints, and a Notice created that early can be lost.
+      window.setTimeout(() => new Notice(retiredMsg, 10000), 0);
+    }
     this._dropStalePerReloadSessionIds();
     this._stripStaleAntigravityHooks();
   }
@@ -1867,16 +1887,57 @@ class GryphonPlugin extends Plugin {
     // "Prompt is too long" errors in long-context vaults.
     // Pinning to concrete IDs eliminates that drift.
     //
-    // Carry intent forward:
+    // Carry intent forward (targets live in registry LEGACY_ALIAS_MIGRATION
+    // and move with each lineup refresh):
     //   haiku    → claude-haiku-4-5     (fast)
-    //   sonnet   → claude-sonnet-4-6    (balanced, now 1M)
-    //   opus     → claude-opus-4-7      (most capable, 1M)
-    //   opus[1m] → claude-opus-4-7      (same — Opus 4.7 is intrinsically 1M)
+    //   sonnet   → claude-sonnet-5-5    (balanced, 1M)
+    //   opus     → claude-opus-5-5      (top Opus tier, 1M)
+    //   opus[1m] → claude-opus-5-5      (same — intrinsically 1M)
     const aliased = this.settings.model;
     if (typeof aliased === "string"
         && Object.prototype.hasOwnProperty.call(MODEL_ALIAS_MIGRATION, aliased)) {
       this.settings.model = MODEL_ALIAS_MIGRATION[aliased];
     }
+  }
+
+  /**
+   * Rewrite persisted model ids that have been retired from the dropdown
+   * to their successor (registry RETIRED_MODEL_MIGRATION). Runs after the
+   * alias migration, so a legacy alias lands on a current id in one load.
+   *
+   * Covers every settings field that stores a model id. A retired id left
+   * in place would spawn that model while the toolbar shows the vendor
+   * default's label (the label falls back for ids outside the dropdown).
+   *
+   * Idempotent: successors are current ids, so a second load changes
+   * nothing. Returns what changed so the caller can tell the user.
+   */
+  _migrateRetiredModels(): Array<{ key: string; from: string; to: string }> {
+    const changes: Array<{ key: string; from: string; to: string }> = [];
+    for (const key of ["model", "fallbackModel"]) {
+      const from = this.settings[key];
+      if (typeof from === "string"
+          && Object.prototype.hasOwnProperty.call(MODEL_RETIREMENT_MIGRATION, from)) {
+        const to = MODEL_RETIREMENT_MIGRATION[from];
+        this.settings[key] = to;
+        changes.push({ key, from, to });
+      }
+    }
+    return changes;
+  }
+
+  /**
+   * Build the one-time Notice text for a retired-model migration, or null
+   * for no Notice.
+   *
+   * @param changes  output of _migrateRetiredModels — each entry is
+   *                 { key: "model" | "fallbackModel", from, to } (raw ids).
+   */
+  _describeModelRetirement(_changes: Array<{ key: string; from: string; to: string }>): string | null {
+    // Silent for now, matching the legacy alias migration. Open question
+    // (owner's call): announce the switch — e.g. louder for a removed id
+    // than a hidden one — at the cost of an upgrade-time Notice.
+    return null;
   }
 
   /**

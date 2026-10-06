@@ -26,7 +26,7 @@ test("pricing/anthropic re-exports MODEL_PRICES derived from registry", () => {
   assert.equal(anthropic.MODEL_PRICES["claude-sonnet-4-6"].input, 3.00);
   assert.equal(anthropic.MODEL_PRICES["claude-opus-4-8"].output, 25.00);
   assert.ok(anthropic.MODEL_PRICES._default, "must keep _default fallback");
-  assert.equal(anthropic.MODEL_PRICES._default.input, 3.00, "Sonnet pricing for unknown ids");
+  assert.equal(anthropic.MODEL_PRICES._default.input, 2.00, "Sonnet-tier (default) pricing for unknown ids");
 });
 
 test("MODEL_PRICES includes all known Anthropic model IDs", () => {
@@ -45,9 +45,9 @@ test("MODEL_PRICES includes all known Anthropic model IDs", () => {
 // ---------- MODEL_ALIAS ----------
 
 test("MODEL_ALIAS maps cross-vendor aliases to current Anthropic flagships", () => {
-  assert.equal(anthropic.MODEL_ALIAS["opus"], "claude-opus-4-8");
-  assert.equal(anthropic.MODEL_ALIAS["opus[1m]"], "claude-opus-4-8");
-  assert.equal(anthropic.MODEL_ALIAS["sonnet"], "claude-sonnet-4-6");
+  assert.equal(anthropic.MODEL_ALIAS["opus"], "claude-opus-5-5");
+  assert.equal(anthropic.MODEL_ALIAS["opus[1m]"], "claude-opus-5-5");
+  assert.equal(anthropic.MODEL_ALIAS["sonnet"], "claude-sonnet-5-5");
   assert.equal(anthropic.MODEL_ALIAS["haiku"], "claude-haiku-4-5");
 });
 
@@ -59,17 +59,17 @@ test("MODEL_ALIAS passes through native concrete ids", () => {
 
 // ---------- DEFAULT_MODEL ----------
 
-test("DEFAULT_MODEL is claude-sonnet-5", () => {
-  assert.equal(anthropic.DEFAULT_MODEL, "claude-sonnet-5");
+test("DEFAULT_MODEL is claude-sonnet-5-5", () => {
+  assert.equal(anthropic.DEFAULT_MODEL, "claude-sonnet-5-5");
 });
 
 // ---------- resolveModel ----------
 
 test("resolveModel returns concrete id for alias", () => {
-  assert.equal(anthropic.resolveModel("opus"), "claude-opus-4-8");
+  assert.equal(anthropic.resolveModel("opus"), "claude-opus-5-5");
   assert.equal(anthropic.resolveModel("claude-sonnet-4-6"), "claude-sonnet-4-6");
-  assert.equal(anthropic.resolveModel(undefined), "claude-sonnet-5", "default fallback");
-  assert.equal(anthropic.resolveModel(null), "claude-sonnet-5", "null also defaults");
+  assert.equal(anthropic.resolveModel(undefined), "claude-sonnet-5-5", "default fallback");
+  assert.equal(anthropic.resolveModel(null), "claude-sonnet-5-5", "null also defaults");
 });
 
 test("resolveModel passes unknown ids through (priceFor handles fallback)", () => {
@@ -126,12 +126,12 @@ test("computeCost applies cache-write 1.25x and cache-read 0.1x", () => {
 });
 
 test("computeCost falls back to _default for unknown model", () => {
-  // Unknown model uses _default { input: 3.00, output: 15.00 } (Sonnet rates)
+  // Unknown model uses _default { input: 2.00, output: 10.00 } (Sonnet 5.5 rates)
   const r = anthropic.computeCost(
     { input_tokens: 1_000_000, output_tokens: 0 },
     "claude-future-9-9",
   );
-  assert.ok(Math.abs(r - 3.00) < 0.0001, `expected ~3.00, got ${r}`);
+  assert.ok(Math.abs(r - 2.00) < 0.0001, `expected ~2.00, got ${r}`);
 });
 
 // Fix 3: MODEL_ALIAS IIFE loaded without collision

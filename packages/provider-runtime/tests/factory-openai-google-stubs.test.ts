@@ -511,14 +511,14 @@ test("F23-1 — when persisted model is already an OpenAI id, all three surfaces
     resolveModel: resolveOpenAIModel,
   } = require("@gryphon/provider-config").pricing.openai;
 
-  const settings = { providerPreference: "openai-api", model: "gpt-4o-mini" };
+  const settings = { providerPreference: "openai-api", model: "gpt-6-luna" };
 
   const toolbarLabel = modelButtonText(settings);
   const runtimeModel = resolveOpenAIModel(settings.model);
   const options = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
   const runtimeLabel = labelForLocal(options, runtimeModel);
 
-  assert.equal(runtimeModel, "gpt-4o-mini");
+  assert.equal(runtimeModel, "gpt-6-luna");
   assert.equal(toolbarLabel, runtimeLabel);
 });
 
@@ -554,7 +554,7 @@ test("F23-1 successor (Gemini, issue #27) — cross-vendor model id leak coerces
     `Toolbar shows "${toolbarLabel}" but runtime is "${runtimeModel}" (label "${runtimeLabel}"). Must agree.`);
 });
 
-test("F23-1 successor (Gemini) — anthropic alias 'sonnet' resolves to gemini-2.5-flash and surfaces consistently", () => {
+test("F23-1 successor (Gemini) — anthropic alias 'sonnet' resolves to gemini-3.7-flash and surfaces consistently", () => {
   const {
     resolveModel: resolveGeminiModel,
   } = require("@gryphon/provider-config").pricing.google;
@@ -564,9 +564,9 @@ test("F23-1 successor (Gemini) — anthropic alias 'sonnet' resolves to gemini-2
   const toolbarLabel = modelButtonText(settings);
   const runtimeModel = resolveGeminiModel(settings.model);
 
-  assert.equal(runtimeModel, "gemini-2.5-flash",
-    "anthropic alias 'sonnet' must cross-vendor to gemini-2.5-flash (the new balanced default)");
-  assert.match(toolbarLabel, /Gemini 2\.5 Flash/i,
+  assert.equal(runtimeModel, "gemini-3.7-flash",
+    "anthropic alias 'sonnet' must cross-vendor to gemini-3.7-flash (the balanced default)");
+  assert.match(toolbarLabel, /Gemini 3\.7 Flash/i,
     `toolbar must show the Gemini 2.5 Flash label; got "${toolbarLabel}"`);
   assert.doesNotMatch(toolbarLabel, /Sonnet/);
 });
@@ -577,14 +577,14 @@ test("F23-1 successor (Gemini) — when persisted model is already a Gemini id, 
     resolveModel: resolveGeminiModel,
   } = require("@gryphon/provider-config").pricing.google;
 
-  const settings = { providerPreference: "google-api", model: "gemini-2.5-pro" };
+  const settings = { providerPreference: "google-api", model: "gemini-3.8-flash" };
 
   const toolbarLabel = modelButtonText(settings);
   const runtimeModel = resolveGeminiModel(settings.model);
   const options = getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
   const runtimeLabel = labelForLocal(options, runtimeModel);
 
-  assert.equal(runtimeModel, "gemini-2.5-pro");
+  assert.equal(runtimeModel, "gemini-3.8-flash");
   assert.equal(toolbarLabel, runtimeLabel);
 });
 
@@ -623,4 +623,39 @@ test("F22 fix — auto with both OpenAI AND Anthropic keys set: Anthropic wins (
   const provider = factory.createProvider(plugin, "/tmp");
   assert.notEqual(provider, null);
   assert.equal(provider.constructor.name, "AnthropicAPIProvider");
+});
+
+// 2026-10 lineup refresh: a persisted id that is hidden from the dropdown
+// (retired from view, still served) is spawned untouched — Gryphon never
+// silently swaps a model a caller asked for — so the toolbar must name THAT
+// model, not the vendor default. Load-time migration normally rewrites the
+// setting; this covers an id set afterwards (consumer code, hand-edited
+// data.json). Checked for every vendor.
+test("F23-1 (hidden ids) — hidden model runs untouched and the toolbar names it", () => {
+  const pc = require("@gryphon/provider-config").pricing;
+  const { MODELS } = require("../../plugin/src/constants");
+  const cases = [
+    { pref: "openai-api",  model: "gpt-4o-mini",      want: "gpt-4o-mini",
+      resolve: pc.openai.coerceToVendorModel, opts: pc.openai.getModelDropdownOptions() },
+    { pref: "google-api",  model: "gemini-2.5-pro",   want: "gemini-2.5-pro",
+      resolve: pc.google.coerceToVendorModel, opts: pc.google.getModelDropdownOptions() },
+    { pref: "anthropic-api", model: "claude-opus-4-8", want: "claude-opus-4-8",
+      resolve: pc.anthropic.resolveModel,
+      opts: MODELS.map((m) => ({ id: m.value, label: m.label })) },
+  ];
+  for (const c of cases) {
+    const runtimeModel = c.resolve(c.model);
+    assert.equal(runtimeModel, c.want, `${c.model} must pass through untouched`);
+    const toolbarLabel = modelButtonText({ providerPreference: c.pref, model: c.model });
+    const runtimeLabel = labelForLocal(c.opts.map((o) => ({ value: o.id, label: o.label })), runtimeModel);
+    assert.equal(toolbarLabel, runtimeLabel, `${c.pref}: toolbar must name the model that runs`);
+  }
+});
+
+test("defaultModelForKind gives subset CLIs their own default", () => {
+  const { defaultModelForKind } = require("../src/index");
+  assert.equal(defaultModelForKind("codex-cli"), "gpt-5.6-terra");
+  assert.equal(defaultModelForKind("antigravity-cli"), "gemini-3.7-flash");
+  assert.equal(defaultModelForKind("openai-api"), "gpt-6.1-sol");
+  assert.equal(defaultModelForKind("claude-code"), "claude-sonnet-5-5");
 });

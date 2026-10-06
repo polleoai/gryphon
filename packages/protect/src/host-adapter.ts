@@ -9,6 +9,13 @@
  *     (non-string `message` is coerced via template-literal interpolation)
  *   fetch(url: string, opts?: object): Promise<{ status, text(), json(), ...}>
  *
+ * Optional:
+ *   mcpApprovalsPending({ cwd, vaultKey, pending: [{ name, spec, specHash, reason }] }): void
+ *     Issue #25 rev 2 — the claude-code provider left out vault `.mcp.json`
+ *     servers no out-of-vault approval matches. Hosts with UI offer review
+ *     (approve via @gryphon/protect mcpApprovals); without it the provider
+ *     falls back to a plain notify().
+ *
  * Hosts:
  *   - Obsidian plugin → ObsidianHostAdapter (uses Notice + requestUrl)
  *   - Peitho / headless Node → HeadlessHostAdapter (console.log + globalThis.fetch)

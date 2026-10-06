@@ -256,20 +256,38 @@ test("_buildArgs forwards Antigravity's OWN model vocabulary untouched", () => {
 });
 
 test("_buildArgs adds --effort alongside --model only when options.effort is explicitly set", () => {
-  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.5-flash", effort: "medium" });
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash", effort: "medium" });
   const args = p._buildArgs("hello");
   const modelIdx = args.indexOf("--model");
   assert.ok(modelIdx >= 0);
-  assert.equal(args[modelIdx + 1], "gemini-3.5-flash");
+  assert.equal(args[modelIdx + 1], "gemini-3.8-flash");
   const effortIdx = args.indexOf("--effort");
   assert.ok(effortIdx >= 0, "--effort should be present when options.effort is set");
   assert.equal(args[effortIdx + 1], "medium");
 });
 
 test("_buildArgs never invents a default --effort when options.effort is unset", () => {
-  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.5-flash" });
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash" });
   const args = p._buildArgs("hello");
   assert.equal(args.indexOf("--effort"), -1);
+});
+
+// 2026-10: agy's own catalog (`agy models`) does not accept every Gemini id
+// in the registry. Registry ids it rejects must coerce to the agy default;
+// ids outside the registry are agy vocabulary and must pass through.
+test("_buildArgs coerces registry ids agy rejects to the agy default", () => {
+  for (const rejected of ["gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]) {
+    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: rejected });
+    const args = p._buildArgs("hello");
+    assert.equal(args[args.indexOf("--model") + 1], "gemini-3.7-flash", `${rejected} must not reach agy`);
+    assert.equal(p.resolvedModel, "gemini-3.7-flash", "resolvedModel agrees with the spawn");
+  }
+});
+
+test("_buildArgs forwards agy-only vocabulary untouched", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash-low" });
+  const args = p._buildArgs("hello");
+  assert.equal(args[args.indexOf("--model") + 1], "gemini-3.8-flash-low");
 });
 
 test("_buildArgs adds --conversation with raw conversation_id (prefix stripped) — real resume flag, not --resume", () => {

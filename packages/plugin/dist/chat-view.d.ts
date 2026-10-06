@@ -25,6 +25,20 @@
  *                            filter (entries are already targeted). Use
  *                            this for clean per-provider routing instead
  *                            of relying on the filter.
+ *   - claudeCodeScope      — { inheritUserConfig, settingSources, mcpServers,
+ *                            includeProjectMcp, autoMemory } — which Claude
+ *                            Code config a claude-code chat launches with
+ *                            (issue #25; default: the vault's, not the
+ *                            user's personal plugins/hooks/MCP servers).
+ *                            When supplied — ANY field — it REPLACES the
+ *                            user's Settings → Advanced toggle outright (no
+ *                            per-field merge). Object-form `mcpServers` are
+ *                            executed WITHOUT approval: build them from your
+ *                            plugin's own code, never from files inside the
+ *                            vault. Vault `.mcp.json` servers run only once
+ *                            the user approves them. Ignored by every
+ *                            provider except claude-code. See provider-runtime
+ *                            providers/claude-code/scope.ts.
  *   - onBeforeSend         — callback(text) => boolean. Return true to
  *                            "consume" a message (intercept domain-specific
  *                            commands before they reach the provider).

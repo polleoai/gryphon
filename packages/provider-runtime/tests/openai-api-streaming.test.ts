@@ -62,10 +62,10 @@ test("constructor seeds initialHistory defensively (caller's array is not mutate
   assert.equal(p.history.length, 2);
 });
 
-test("alias model resolves through pricing.resolveModel (sonnet → gpt-5.4-mini, the new balanced tier)", () => {
+test("alias model resolves through pricing.resolveModel (sonnet → gpt-6.1-sol, the balanced tier)", () => {
   const client = new MockClient();
   const p = new OpenAIProvider("sk-test", "/cwd", { client, model: "sonnet" });
-  assert.equal(p.resolvedModel, "gpt-5.4-mini");
+  assert.equal(p.resolvedModel, "gpt-6.1-sol");
 });
 
 // ---------- streaming + send ----------

@@ -847,6 +847,12 @@ const DEFAULT_SETTINGS = {
     // console-only; never written to a user file or sent off-device.
     // Default off; opt-in for bug reports and cross-platform debugging.
     devCliDebug: false,
+    // Issue #25: Claude Code chats launch with the vault's config only —
+    // the user's personal plugins (and their hooks / skills / output
+    // styles), personal MCP servers and auto-memory stay out. true = launch
+    // with the user's full personal config, as before. A consumer's
+    // `claudeCodeScope` view option overrides this.
+    claudeCodeInheritUserConfig: false,
     // Issue #5 / v1.1.0: SDK-mode auto-compact at AUTO_COMPACT_SDK_THRESHOLD_PCT
     // (95%). When true, Gryphon automatically summarizes the conversation and
     // resets to a fresh session seeded with the summary. When false, the user
@@ -921,6 +927,9 @@ const MODELS = _registry.modelsByVendor("anthropic")
     desc: m.dropdown.desc,
 }));
 const MODEL_ALIAS_MIGRATION = _registry.legacyAliasMigrationFor("anthropic");
+// Retired model id → successor, all vendors. Applied at plugin load to
+// every persisted model field (see plugin.ts _migrateRetiredModels).
+const MODEL_RETIREMENT_MIGRATION = _registry.RETIRED_MODEL_MIGRATION;
 const EFFORTS = [
     { value: "low", label: "Low", desc: "Quick answers" },
     { value: "medium", label: "Medium", desc: "Standard" },
@@ -1119,7 +1128,7 @@ module.exports = {
     TOOL_STATUS_CORE, DEFAULT_SETTINGS, DEFAULT_PROVIDER_PREFERENCE,
     DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
     PROTECTED_CATEGORIES,
-    MODELS, MODEL_ALIAS_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
+    MODELS, MODEL_ALIAS_MIGRATION, MODEL_RETIREMENT_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
     CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS,
     visibleProviderPrefs,
     CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,

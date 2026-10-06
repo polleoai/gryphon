@@ -16,10 +16,24 @@
  */
 
 class Modal {
-  constructor() { this.titleEl = _el(); this.contentEl = _el(); }
-  open() {}
-  close() {}
+  constructor() { this.titleEl = _el(); this.contentEl = _el(); Modal.opened.push(this); }
+  open() { this.isOpen = true; }
+  close() { this.isOpen = false; }
 }
+Modal.opened = [] as any[];
+
+// Records every Notice so tests can assert on the message and its DOM.
+class Notice {
+  constructor(message, timeout) {
+    this.message = message;
+    this.timeout = timeout;
+    this.noticeEl = _el();
+    this.hidden = false;
+    Notice.shown.push(this);
+  }
+  hide() { this.hidden = true; }
+}
+Notice.shown = [] as any[];
 
 // One captured component (text input / dropdown / toggle / button) inside a
 // Setting row. `value` is the last `setValue`; `changeHandler` is the last
@@ -42,6 +56,7 @@ function _control(type) {
     setButtonText(t) { c.buttonText = t; return c; },
     setTooltip() { return c; },
     setCta() { return c; },
+    setWarning() { return c; },
     setIcon() { return c; },
     addOption(id, label) { c.options.push({ id, label }); return c; },
     onChange(fn) { c.changeHandler = fn; return c; },
@@ -105,6 +120,8 @@ function _el() {
   const el: any = {
     __settings: [],
     __created: [],
+    __listeners: {} as Record<string, Function[]>,
+    __removed: false,
     style: {},
     get className() { return [..._classes].join(" "); },
     set className(v) {
@@ -132,8 +149,9 @@ function _el() {
       if (want) _classes.add(c); else _classes.delete(c);
       return el;
     },
-    addEventListener() {},
+    addEventListener(type: string, fn: Function) { (el.__listeners[type] = el.__listeners[type] || []).push(fn); },
     removeEventListener() {},
+    remove() { el.__removed = true; },
     setCssStyles(obj: any) { if (obj) Object.assign(el.style, obj); return el; },
     setTooltip() { return el; },
     appendChild() {},
@@ -220,7 +238,7 @@ class Plugin {
 }
 
 module.exports = {
-  Modal, Setting, TFile, TFolder,
+  Modal, Notice, Setting, TFile, TFolder,
   ItemView, MarkdownView, Menu, MarkdownRenderer,
   Plugin, PluginSettingTab,
   setTooltip, requestUrl,

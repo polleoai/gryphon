@@ -45,6 +45,8 @@ const {
   PACKAGE_INSTALL_COMMAND_PATTERNS,
 } = require("./constants");
 const { resolveActivePatterns } = require("./path-utils");
+const { approvalsDir } = require("./mcp-approvals");
+const os = require("os") as typeof import("os");
 
 // Default Obsidian config-folder name. Held as a const (not an inline literal)
 // so the deny-glob below reads as the intentional pattern it is — this is a
@@ -442,6 +444,25 @@ function _globsForCommand(entry: unknown): string[] {
 }
 
 /**
+ * Issue #25: the vault-MCP approval store (outside the vault, so not a
+ * DEFAULT_PROTECTED_PATHS entry). Always denied in the no-hooks fallback —
+ * the hook path's classify() covers it too; see attack-detector.ts. With
+ * Protected Mode off the claude-code provider still emits these on their
+ * own: Claude Code enforces permissions.deny without any hooks.
+ * Claude Code permission rules take `//abs/path` for an absolute path and
+ * `~/path` for one under home; we emit both forms.
+ */
+function buildApprovalsStoreDenyGlobs(): string[] {
+  const dir = approvalsDir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m: string, d: string) => `/${d.toLowerCase()}`);
+  const home = os.homedir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m: string, d: string) => `/${d.toLowerCase()}`);
+  const forms = [`/${dir}`];
+  if (dir.toLowerCase().startsWith(home.toLowerCase() + "/")) forms.push(`~${dir.slice(home.length)}`);
+  const out = ["Bash(*mcp-approvals*)", "Bash(*.config/gryphon*)"];
+  for (const f of forms) out.push(`Write(${f}/**)`, `Edit(${f}/**)`);
+  return out;
+}
+
+/**
  * Build the full CC `--disallowedTools` glob array for the user's
  * active protected-pattern selections.
  *
@@ -468,6 +489,7 @@ function buildDisallowedTools(settings: Record<string, unknown> | null | undefin
     ? activeCommands.filter((c: string) => !installSet.has(c))
     : activeCommands;
   for (const c of cmds) out.push(..._globsForCommand(c));
+  out.push(...buildApprovalsStoreDenyGlobs());
   // Dedupe while preserving order (CC accepts dupes but the command
   // line stays readable without them).
   return [...new Set(out)];
@@ -475,6 +497,7 @@ function buildDisallowedTools(settings: Record<string, unknown> | null | undefin
 
 module.exports = {
   buildDisallowedTools,
+  buildApprovalsStoreDenyGlobs,
   // Exported for unit tests only:
   _globsForPath,
   _globsForCommand,

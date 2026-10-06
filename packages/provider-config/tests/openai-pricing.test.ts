@@ -40,10 +40,12 @@ test("resolveModel maps Anthropic-style aliases (haiku/sonnet/opus) to GPT-5-tie
   // Updated 2026-05-02: aliases re-pointed from gpt-4o family to gpt-5
   // family when the gpt-5 line became GA. Switching providers should land
   // a user on the current-tier OpenAI model, not a 4o-era one.
-  assert.equal(resolveModel("haiku"), "gpt-5-mini");
-  assert.equal(resolveModel("sonnet"), "gpt-5.4-mini");
-  assert.equal(resolveModel("opus"), "gpt-5.4");
-  assert.equal(resolveModel("opus[1m]"), "gpt-5.4");
+  // Updated 2026-10-05: re-pointed to the GPT-6 lineup; `opus` stays on
+  // the balanced tier (gpt-6.1-sol), not gpt-6-astra — cost ceiling.
+  assert.equal(resolveModel("haiku"), "gpt-6-luna");
+  assert.equal(resolveModel("sonnet"), "gpt-6.1-sol");
+  assert.equal(resolveModel("opus"), "gpt-6.1-sol");
+  assert.equal(resolveModel("opus[1m]"), "gpt-6.1-sol");
 });
 
 test("resolveModel passes OpenAI native model IDs through unchanged", () => {
@@ -139,16 +141,16 @@ test("computeCost: breakdown reports input + output costs separately", () => {
   assert.equal(cost, breakdown.input + breakdown.output);
 });
 
-test("computeCost: unknown model falls back to _default pricing (mirrors gpt-5.4-mini)", () => {
+test("computeCost: unknown model falls back to _default pricing (mirrors gpt-6.1-sol)", () => {
   const { cost: known } = computeCost(
     { prompt_tokens: 1_000_000, completion_tokens: 0 },
-    "gpt-5.4-mini",
+    "gpt-6.1-sol",
   );
   const { cost: unknown } = computeCost(
     { prompt_tokens: 1_000_000, completion_tokens: 0 },
     "gpt-mystery",
   );
-  // _default mirrors gpt-5.4-mini pricing (the new general-purpose mid-tier)
+  // _default mirrors the vendor default's pricing (gpt-6.1-sol)
   assert.equal(known, unknown);
 });
 
@@ -177,7 +179,9 @@ test("computeCost: cached_tokens missing from prompt_tokens_details is fine", ()
 test("getModelDropdownOptions returns array of {id, label}", () => {
   const opts = getModelDropdownOptions();
   assert.ok(Array.isArray(opts));
-  assert.ok(opts.length >= 5, "should include at least 5 production-grade models");
+  // The dropdown shows only the current lineup (2026-10 policy) — superseded
+  // models are hidden, so this is a floor on the lineup, not on history.
+  assert.ok(opts.length >= 3, "should include at least the current GPT lineup");
   for (const o of opts) {
     assert.equal(typeof o.id, "string");
     assert.equal(typeof o.label, "string");

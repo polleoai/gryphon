@@ -144,12 +144,14 @@ function getModelDropdownOptions() {
 function getCodexCliModelDropdownOptions() {
     return getModelDropdownOptions().filter((opt) => CODEX_CLI_SUPPORTED_MODELS.has(opt.id));
 }
-const CODEX_CLI_DEFAULT_MODEL = "gpt-5.4-mini";
+// gpt-5.6-terra, not the API default gpt-6.1-sol: ChatGPT-account Codex
+// rejects every GPT-6 id on older clients (see registry.ts OpenAI header).
+const CODEX_CLI_DEFAULT_MODEL = "gpt-5.6-terra";
 /**
  * Codex-CLI-specific resolver — like `coerceToVendorModel` but further
  * restricts to the ChatGPT-account-supported subset. Cross-vendor stale
  * ids (`sonnet`, `gemini-2.5-flash`), API-only ids (`gpt-5-mini`,
- * `gpt-4o`), and unknowns all fall through to `gpt-5.4-mini` rather
+ * `gpt-4o`), and unknowns all fall through to `gpt-5.6-terra` rather
  * than reaching codex's spawn arg and getting a 400 at request time.
  */
 function coerceToCodexCliModel(alias) {

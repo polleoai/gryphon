@@ -96,7 +96,7 @@
  *     — first line of every turn. No `model` field is present (unlike
  *     gemini-cli's init event), so this provider cannot learn the
  *     resolved model from the stream; `resolvedModel` stays whatever
- *     `coerceToVendorModel(options.model)` produced at construction.
+ *     `coerceToAntigravityCliModel(options.model)` produced at construction.
  *
  *   { event: "step_update", step_update: { conversation_id, step_index,
  *     state: "ACTIVE"|"DONE", step_type, text_delta?, tool_name?,

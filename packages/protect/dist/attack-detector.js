@@ -16,9 +16,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * tool calls only; downstream threat intel is a separate concern.
  */
 const path = require("path");
+const os = require("os");
 const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PROTECTED_CATEGORIES, } = require("./constants");
 const { matchProtectedPath, resolveVaultPath, PathOutsideVaultError, } = require("./path-utils");
 const { checkPermission } = require("./permission-gate");
+const { isApprovalsStorePath, mentionsApprovalsStore } = require("./mcp-approvals");
 /**
  * Per-pattern de-duplication so a user with one broken regex doesn't
  * get a Notice / console warning on every classify call. First time
@@ -123,6 +125,8 @@ const TOOL_ALIASES = {
     // File mutation
     "Write": "Write",
     "Edit": "Edit",
+    "MultiEdit": "Edit", // Claude Code — {file_path, edits[]}
+    "NotebookEdit": "Edit", // Claude Code — {notebook_path, ...}; see classify()
     "write_file": "Write", // Gemini CLI / SDK
     "replace": "Edit", // Gemini CLI / SDK
     "edit_file": "Edit", // Gemini variant
@@ -191,6 +195,20 @@ function classify(tool, input, ctx) {
     // the per-tool branches below understand. Unknown names pass through
     // and hit the "not currently gated" branch (correct default).
     const canonical = TOOL_ALIASES[tool] || tool;
+    // NotebookEdit names its target `notebook_path`; the file branch reads
+    // `file_path`.
+    if (typeof input.file_path !== "string" && typeof input.notebook_path === "string") {
+        input = { ...input, file_path: input.notebook_path };
+    }
+    // Issue #25: the vault-MCP approval store. Checked before every master
+    // toggle on purpose — it's a fixed invariant, not a user pattern — and
+    // for ANY tool that isn't read-only, so a tool missing from TOOL_ALIASES
+    // can't write it by default.
+    if (!READ_ONLY_TOOLS.has(canonical) && canonical !== "Bash" && canonical !== "PowerShell") {
+        const store = _classifyApprovalsStoreWrite(canonical, input, ctx);
+        if (store)
+            return store;
+    }
     if (canonical === "Write" || canonical === "Edit") {
         // Master toggle — when the user turns off Protected file paths
         // entirely, return null so gate() treats it as non-protected and
@@ -211,6 +229,9 @@ function classify(tool, input, ctx) {
     // CC's cwd-restriction happened to catch obvious cases but missed any
     // destructive command targeting a path inside the vault.
     if (canonical === "Bash" || canonical === "PowerShell") {
+        const store = _classifyApprovalsStoreCommand(canonical, input);
+        if (store)
+            return store;
         if (settings.protectedCommandsEnabled === false)
             return null;
         return _classifyCommand(canonical, input, ctx, settings);
@@ -220,6 +241,73 @@ function classify(tool, input, ctx) {
     // here keeps the detector a no-op for them (permission-gate still
     // handles its existing policy for tools that call it).
     return null;
+}
+/**
+ * Issue #25 (Design rev 2): Gryphon runs a vault-defined MCP server only
+ * when an approval in the user-profile store matches it. If the chat could
+ * write that store, it could approve its own servers — so writes, edits
+ * and shell commands aimed at it are protected: the modal (a user click),
+ * even in YOLO, and denied outright under auto-deny.
+ *
+ * This is BEST-EFFORT against the model, not a guarantee. File tools are
+ * gated on the resolved path of any path-like argument; shell commands
+ * only lexically (globs, quoting inside a word, a staged `cd`, or
+ * `python -c` assembling the path all get past it). A model with a shell
+ * can already run commands directly, so that isn't an escalation past what
+ * the shell grants. The property issue #25 guarantees is narrower: no
+ * unapproved vault server starts automatically at spawn.
+ *
+ * The store lives OUTSIDE the vault, so it can't be a vault-relative
+ * DEFAULT_PROTECTED_PATHS entry (those resolve inside the vault and are
+ * user-toggleable). No per-pattern or master toggle switches this off.
+ * With Protected Mode off there are no hooks, but the claude-code provider
+ * still emits the store's permissions.deny rules.
+ */
+const APPROVALS_STORE_RISK = "This is where Gryphon records which of a vault's MCP servers you've approved to run. " +
+    "A change here could approve a server on your behalf — and an MCP server is a program " +
+    "that runs on your computer. Approve servers from Gryphon's own prompt instead.";
+function _approvalsStoreVerdict(tool, what) {
+    return {
+        tool,
+        matchedPattern: "gryphon MCP approval store",
+        category: "modifies-gryphon",
+        title: _categoryTitle("modifies-gryphon"),
+        userRisk: APPROVALS_STORE_RISK,
+        technicalDetail: `Tool:            ${tool}\n` +
+            `${what}\n` +
+            `Matched pattern: gryphon MCP approval store`,
+    };
+}
+/** Read-only tools: never gated, even when they name the store. */
+const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
+/** Top-level argument names that may carry a target path, across CLIs. */
+// Content-ish names (`new_source`, `content`) are left out on purpose.
+const PATH_ARG_RE = /path|file|target|dest|dir|^(?:source|src|to|from|output|out)$/i;
+function _classifyApprovalsStoreWrite(tool, input, ctx) {
+    const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
+    for (const [key, value] of Object.entries(input)) {
+        if (typeof value !== "string" || !value || !PATH_ARG_RE.test(key))
+            continue;
+        let abs = value;
+        if (/^~(?=$|[\\/])/.test(abs))
+            abs = path.join(os.homedir(), abs.slice(1));
+        else if (!path.isAbsolute(abs)) {
+            if (!vaultRoot)
+                continue;
+            abs = path.resolve(vaultRoot, abs);
+        }
+        if (isApprovalsStorePath(abs))
+            return _approvalsStoreVerdict(tool, `Target path:     ${value}`);
+    }
+    return null;
+}
+function _classifyApprovalsStoreCommand(tool, input) {
+    const raw = input && typeof input.command === "string" ? input.command : "";
+    if (!raw)
+        return null;
+    return mentionsApprovalsStore(_normalizeForMatch(raw))
+        ? _approvalsStoreVerdict(tool, `Command:         ${raw}`)
+        : null;
 }
 function _classifyFilePath(tool, input, ctx, settings) {
     const vaultRoot = ctx && ctx.vaultRoot;

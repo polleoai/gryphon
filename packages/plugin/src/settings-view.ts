@@ -53,7 +53,7 @@ function _resetModelForProvider(plugin) {
 
   if (kind === "openai-api" || kind === "codex-cli") {
     // codex-cli's ChatGPT-account auth supports a smaller subset
-    // (gpt-5.5 / gpt-5.4 / gpt-5.4-mini); openai-api supports the full
+    // (see CODEX_CLI_SUPPORTED_MODELS); openai-api supports the full
     // dropdown. Pick the right resolver + default per provider so a stale
     // persisted id (e.g. gpt-5-mini after switching from openai-api to
     // codex-cli) is corrected to a working default.
@@ -68,16 +68,18 @@ function _resetModelForProvider(plugin) {
     return options.some((o) => o.id === current) ? current : fallback;
   }
   if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
-    // gemini-cli and antigravity-cli reuse the Gemini model dropdown — all
-    // three go to the same Google models, and pricing tables/aliases are
-    // identical.
-    const { getModelDropdownOptions, DEFAULT_MODEL } =
-      require("@gryphon/provider-runtime").pricing.google;
-    const options = getModelDropdownOptions();
-    return options.some((o) => o.id === current) ? current : DEFAULT_MODEL;
+    // All three reuse Google's pricing tables, but antigravity-cli serves
+    // only the ids agy's own catalog accepts — same shape as codex-cli above.
+    const googlePricing = require("@gryphon/provider-runtime").pricing.google;
+    const isAgy = kind === "antigravity-cli";
+    const options = isAgy
+      ? googlePricing.getAntigravityCliModelDropdownOptions()
+      : googlePricing.getModelDropdownOptions();
+    const fallback = isAgy ? googlePricing.ANTIGRAVITY_CLI_DEFAULT_MODEL : googlePricing.DEFAULT_MODEL;
+    return options.some((o) => o.id === current) ? current : fallback;
   }
   // claude-code / anthropic-api / null → Anthropic MODELS list.
-  return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-5";
+  return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-5-5";
 }
 
 /**
@@ -93,11 +95,26 @@ function _fallbackModelOptions(kind) {
   if (kind === "codex-cli") {
     return runtime.pricing.openai.getCodexCliModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
   }
-  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
+  if (kind === "antigravity-cli") {
+    return runtime.pricing.google.getAntigravityCliModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
+  }
+  if (kind === "google-api" || kind === "gemini-cli") {
     return runtime.pricing.google.getModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
   }
   // anthropic-api / claude-code → Anthropic MODELS list.
   return MODELS.map((m) => ({ id: m.value, label: m.label }));
+}
+
+/**
+ * Model to pre-select for a fallback provider: that kind's own default when
+ * it is offered, else the first option. Not simply `opts[0]` — dropdowns are
+ * in registry order, so the first entry is the cheapest tier (Haiku) or,
+ * for Codex, a model older clients reject.
+ */
+function _defaultFallbackModel(kind, opts) {
+  const preferred = require("@gryphon/provider-runtime").defaultModelForKind(kind);
+  if (preferred && opts.some((o) => o.id === preferred)) return preferred;
+  return opts[0] ? opts[0].id : "";
 }
 
 /**
@@ -572,7 +589,7 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
           const opts = _fallbackModelOptions(value);
           const current = hostPlugin.settings.fallbackModel;
           hostPlugin.settings.fallbackModel =
-            opts.some((o) => o.id === current) ? current : (opts[0] ? opts[0].id : "");
+            opts.some((o) => o.id === current) ? current : _defaultFallbackModel(value, opts);
         }
         await hostPlugin.saveSettings();
         ctx.rerenderSelf();
@@ -584,7 +601,7 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
   if (fbPref !== "none" && fbPref !== "auto") {
     const fbModels = _fallbackModelOptions(fbPref);
     if (fbModels.length && !fbModels.some((o) => o.id === hostPlugin.settings.fallbackModel)) {
-      hostPlugin.settings.fallbackModel = fbModels[0].id;
+      hostPlugin.settings.fallbackModel = _defaultFallbackModel(fbPref, fbModels);
       hostPlugin.saveSettings();
     }
     new Setting(panelEl)
@@ -805,6 +822,32 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
           hostPlugin._resetActiveSessions?.();
         });
     });
+
+  // Issue #25: off by default — a Gryphon chat runs with the vault's
+  // Claude Code config, not the user's personal plugins / hooks / MCP
+  // servers. The signature check in chat-view respawns on next message.
+  descToTooltip(
+    new Setting(panelEl).setName("Use my personal Claude Code configuration (plugins, hooks, MCP servers)"),
+    "Claude Code mode only. Off (default): chats use this vault's Claude " +
+    "Code configuration and approved MCP servers only, so your personal " +
+    "plugins, hooks, MCP servers and auto-memory stay out of the chat. Your " +
+    "personal permission allow/deny rules don't apply either; Gryphon's " +
+    "protected patterns still do. On: chats load your full personal " +
+    "Claude Code configuration. Either way, MCP servers defined in the " +
+    "vault run only after you approve them. Takes effect on your next " +
+    "message. Plugins that embed Gryphon may set this for you, and their " +
+    "setting overrides this toggle.",
+  )
+    .addToggle((toggle) =>
+      toggle.setValue(hostPlugin.settings.claudeCodeInheritUserConfig === true).onChange(async (value) => {
+        hostPlugin.settings.claudeCodeInheritUserConfig = value;
+        await hostPlugin.saveSettings();
+      })
+    );
+
+  // Issue #25 rev 2: vault .mcp.json servers run only once approved, and
+  // the approvals live outside the vault. List + revoke for this vault.
+  require("./mcp-approval-ui").renderApprovedServersSetting(hostPlugin, panelEl, descToTooltip);
 
   descToTooltip(
     new Setting(panelEl).setName("Auto-compact at 95% (SDK mode)"),
@@ -1096,7 +1139,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx) {
     // rejects API-only ids (gpt-5-mini, gpt-4*, o3, o4-mini) with a
     // 400 at request time. Filter the dropdown + use the codex-specific
     // resolver/default so users on codex-cli see only the empirically-
-    // supported subset (gpt-5.5 / gpt-5.4 / gpt-5.4-mini).
+    // supported subset (see CODEX_CLI_SUPPORTED_MODELS).
     const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
     const isCodex = activePref === "codex-cli";
     const openaiModels = isCodex
@@ -1242,6 +1285,7 @@ module.exports = {
   // Exported for unit testing only.
   _resetModelForProvider,
   _fallbackModelOptions,
+  _defaultFallbackModel,
   renderSectionHeading,
   descToTooltip,
 };

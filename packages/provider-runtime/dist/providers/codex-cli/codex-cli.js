@@ -305,7 +305,7 @@ class CodexProvider {
         this.sessionId = _wrapSession(options.resumeSessionId) || null;
         // Codex CLI's ChatGPT-account auth rejects API-only ids
         // (gpt-5-mini, gpt-4o, o3, etc.) at request time. Coerce to the
-        // empirically-supported subset (`gpt-5.5`/`gpt-5.4`/`gpt-5.4-mini`)
+        // empirically-supported subset (CODEX_CLI_SUPPORTED_MODELS in the registry)
         // so a stale persisted id from API mode falls back to a working
         // default rather than 400-ing on every spawn. See pricing/openai.js
         // CODEX_CLI_SUPPORTED_MODELS for the rationale.

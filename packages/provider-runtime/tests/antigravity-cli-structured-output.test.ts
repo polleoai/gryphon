@@ -30,11 +30,13 @@ Module._load = function (request, ...args) {
     const pricing = {
       google: {
         computeCost: () => ({ cost: 0 }),
-        coerceToVendorModel: (m: any) => m || "gemini-2.5-flash",
-        DEFAULT_MODEL: "gemini-2.5-flash",
+        coerceToVendorModel: (m: any) => m || "gemini-3.7-flash",
+        coerceToAntigravityCliModel: (m: any) => m || "gemini-3.7-flash",
+        DEFAULT_MODEL: "gemini-3.7-flash",
       },
     };
-    return { filterExtraArgs: (a: any) => ({ filtered: a, dropped: [] }), pricing };
+    const registry = { isKnownModel: () => false };
+    return { filterExtraArgs: (a: any) => ({ filtered: a, dropped: [] }), pricing, registry };
   }
   return origLoad.call(this, request, ...args);
 };

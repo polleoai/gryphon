@@ -56,10 +56,16 @@ const MIN_ANTIGRAVITY_VERSION = "0.0.0";
 // Parse the first dotted numeric version (2- or 3-part) out of arbitrary
 // CLI `--version` output. Returns [major, minor, patch] or null.
 //   "2.1.181 (Claude Code)" → [2,1,181] ; "codex 0.9" → [0,9,0]
+// The version must be a whole token (start/space/"v"/"(" before it; end,
+// space, ")", "," or a prerelease/build suffix after it). A bare decimal
+// buried in log noise — e.g. the Chromium timestamp in
+// "[12345:1005/163012.345678:INFO…]" an Electron app prints — is NOT a
+// version; accepting it once ranked the Claude desktop app above the CLI
+// (issue #24).
 function parseVersion(raw) {
     if (typeof raw !== "string")
         return null;
-    const m = raw.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
+    const m = raw.match(/(?:^|[\s(v])(\d+)\.(\d+)(?:\.(\d+))?(?=$|[\s),+-])/m);
     if (!m)
         return null;
     return [Number(m[1]), Number(m[2]), Number(m[3] || 0)];
@@ -148,18 +154,34 @@ function _runVersion(binPath) {
         shell: isWinShim,
     });
 }
+// Per-CLI signature a `--version` line must carry to count as that CLI.
+// Only `claude` has one today: the Claude desktop app shares the name (and,
+// on case-insensitive APFS, the path) and prints its own dotted version
+// (`2.19675.1`), which would otherwise outrank the CLI (issue #24). The CLI
+// has printed "<ver> (Claude Code)" since its first release.
+const _VERSION_SIGNATURES = {
+    claude: /\(Claude Code\)/,
+};
+function _versionSignatureFor(binName) {
+    return _VERSION_SIGNATURES[binName];
+}
 // Probe a binary's version synchronously and cache by absolute path. Returns
 // [maj,min,patch] or null (missing / non-responding / garbage output). `run`
 // is injectable for tests; production uses the real execFileSync wrapper.
-function probeVersion(binPath, run = _runVersion) {
+// With a `signature`, the output must match it and the run must succeed —
+// output scraped from a failed run is never trusted as a signed CLI's.
+function probeVersion(binPath, run = _runVersion, signature) {
     if (Object.prototype.hasOwnProperty.call(_versionCache, binPath)) {
         return _versionCache[binPath];
     }
     let parsed = null;
     try {
-        parsed = parseVersion(run(binPath));
+        const out = run(binPath);
+        parsed = (!signature || signature.test(out)) ? parseVersion(out) : null;
     }
     catch (e) {
+        if (signature)
+            return null;
         // execFileSync throws on nonzero exit / timeout but attaches the captured
         // streams; some CLIs print `--version` to stderr.
         const tail = (e && e.stdout && e.stdout.toString()) ||
@@ -178,11 +200,11 @@ function probeVersion(binPath, run = _runVersion) {
 }
 // From a list of existing executable paths, return the newest whose
 // `--version` parses and is >= floor, as { path, version }, or null.
-function _pickNewestValid(present, minVersion) {
+function _pickNewestValid(present, minVersion, signature) {
     const floor = parseVersion(minVersion) || [0, 0, 0];
     let best = null;
     for (const p of present) {
-        const v = probeVersion(p);
+        const v = probeVersion(p, _runVersion, signature);
         if (!v)
             continue; // unparseable / dead → discard
         if (compareVersions(v, floor) < 0)
@@ -227,6 +249,8 @@ function _collectPresentBinaries(candidates, binName, isWindows) {
     const add = (c) => {
         if (!c || seen.has(c))
             return;
+        if (_isAppBundleMainExecutable(c))
+            return;
         try {
             fs.accessSync(c, fs.constants.X_OK);
             seen.add(c);
@@ -251,6 +275,22 @@ function _collectPresentBinaries(candidates, binName, isWindows) {
         add(_findViaLoginShell(binName));
     return present;
 }
+// A macOS app bundle's `Contents/MacOS/` holds the app's own launcher, not a
+// CLI: running `<it> --version` opens the app (issue #24 — the Claude desktop
+// app came to the foreground on every detection). Such paths are never
+// candidates, including via a symlink. CLIs shipped inside a bundle live
+// elsewhere (Codex.app/Contents/Resources/codex) and are unaffected.
+function _isAppBundleMainExecutable(p) {
+    const re = /\.app\/Contents\/MacOS\//i;
+    if (re.test(p))
+        return true;
+    try {
+        return re.test(fs.realpathSync(p));
+    }
+    catch {
+        return false;
+    }
+}
 function _findClaudeBinaryUncached() {
     const home = os.homedir();
     const isWindows = process.platform === "win32";
@@ -271,7 +311,9 @@ function _findClaudeBinaryUncached() {
         "/usr/local/opt/claude/bin/claude", // macOS Intel Homebrew variant
         "/snap/bin/claude", // Snap package
         "/var/lib/flatpak/exports/bin/claude", // Flatpak-installed CLI
-        "/Applications/Claude.app/Contents/MacOS/claude",
+        // Deliberately no candidate inside the Claude desktop app bundle: on
+        // case-insensitive APFS it resolves to the app's own executable, not the
+        // CLI (issue #24).
         // Windows common install locations:
         path.join(process.env.APPDATA || "", "npm", "claude.cmd"),
         path.join(process.env.APPDATA || "", "npm", "claude.exe"),
@@ -284,7 +326,7 @@ function _findClaudeBinaryUncached() {
     // A stale binary that exists (or sorts earlier) no longer shadows a current
     // install elsewhere on the system (R2/R3).
     const present = _collectPresentBinaries(candidates, "claude", isWindows);
-    const best = _pickNewestValid(present, MIN_CLAUDE_VERSION);
+    const best = _pickNewestValid(present, MIN_CLAUDE_VERSION, _versionSignatureFor("claude"));
     return best ? best.path : null;
 }
 /**
@@ -678,6 +720,8 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride) {
     const min = minVersionOverride || _MIN_BY_KIND[kind] || "0.0.0";
     const floor = parseVersion(min) || [0, 0, 0];
     const label = _LABEL_BY_KIND[kind] || kind;
+    const signature = _versionSignatureFor(label);
+    const probe = (p) => probeVersion(p, _runVersion, signature);
     // R7: an explicit, valid, version-OK configured path wins outright.
     if (typeof configuredPath === "string" && configuredPath) {
         let executable = false;
@@ -687,7 +731,7 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride) {
         }
         catch { }
         if (executable) {
-            const v = probeVersion(configuredPath);
+            const v = probe(configuredPath);
             if (v && compareVersions(v, floor) >= 0) {
                 return { ok: true, path: configuredPath, version: v };
             }
@@ -700,7 +744,7 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride) {
     // detected binary against the (possibly overridden) floor here.
     const detected = _detectFor(kind);
     if (detected) {
-        const v = probeVersion(detected) || [0, 0, 0];
+        const v = probe(detected) || [0, 0, 0];
         if (compareVersions(v, floor) >= 0) {
             return { ok: true, path: detected, version: v };
         }
@@ -708,8 +752,8 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride) {
     }
     // Nothing valid anywhere. Report too-old when a present binary (configured
     // or detected) parses but sits below the floor; else not-found.
-    const cfgV = (typeof configuredPath === "string" && configuredPath) ? probeVersion(configuredPath) : null;
-    const detV = detected ? probeVersion(detected) : null;
+    const cfgV = (typeof configuredPath === "string" && configuredPath) ? probe(configuredPath) : null;
+    const detV = detected ? probe(detected) : null;
     const belowFloor = (cfgV && compareVersions(cfgV, floor) < 0 && cfgV) ||
         (detV && compareVersions(detV, floor) < 0 && detV) ||
         null;
@@ -737,5 +781,6 @@ module.exports = {
     // Exported for unit tests (internal ranking primitives).
     _pickNewestValid,
     _collectPresentBinaries,
+    _versionSignatureFor,
     _findViaLoginShell,
 };

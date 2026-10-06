@@ -135,3 +135,32 @@ test("_providerSignatureChanged detects a mismatch and ignores an unstamped proc
   view._providerSpawnSignature = { kind: "codex-cli", model: "x", effort: null, permissionMode: null };
   assert.equal(view._providerSignatureChanged(), false, "stamped + identical signature should report no change");
 });
+
+// ── Issue #25: Claude Code launch scope ──────────────────────────────
+
+function scopeView({ consumerScope = null, inherit = false } = {}) {
+  const view = Object.create(GryphonChatView.prototype);
+  view.claudeCodeScope = consumerScope;
+  view.plugin = { settings: { claudeCodeInheritUserConfig: inherit } };
+  return view;
+}
+
+test("#25 scope: default (toggle off, no consumer option) → provider default (vault config only)", () => {
+  assert.equal(scopeView()._resolveClaudeCodeScope(), undefined);
+});
+
+test("#25 scope: Advanced toggle on → inherit user config + user MCP servers", () => {
+  assert.deepEqual(scopeView({ inherit: true })._resolveClaudeCodeScope(),
+    { inheritUserConfig: true, mcpServers: "inherit" });
+});
+
+test("#25 scope: a consumer's claudeCodeScope overrides the Advanced toggle", () => {
+  const consumerScope = { mcpServers: "project" };
+  assert.equal(scopeView({ consumerScope, inherit: true })._resolveClaudeCodeScope(), consumerScope);
+});
+
+test("#25 scope: flipping the toggle changes the spawn signature → live process torn down", () => {
+  const view = makeStubView({ spawnSignature: { kind: "claude-code", scope: "null" }, current: { kind: "claude-code", scope: JSON.stringify({ inheritUserConfig: true, mcpServers: "inherit" }) } });
+  view._teardownLiveProcessIfSettingsChanged();
+  assert.equal(view._aborts.length, 1);
+});

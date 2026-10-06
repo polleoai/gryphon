@@ -80,6 +80,7 @@ const hookAdapters = require("./hook-adapters");
 const pathUtils = require("./path-utils");
 const permissionGate = require("./permission-gate");
 const constants = require("./constants");
+const mcpApprovals = require("./mcp-approvals");
 module.exports = {
     // Namespace exports — whole modules
     attackDetector,
@@ -97,6 +98,7 @@ module.exports = {
     pathUtils,
     permissionGate,
     constants,
+    mcpApprovals,
     // Promoted named exports — frequent destructure targets
     classify: attackDetector.classify,
     normalizeToolName: attackDetector.normalizeToolName,
@@ -106,6 +108,7 @@ module.exports = {
     ProvenanceStore: provenanceStore.ProvenanceStore,
     sweepGryphonOrphans: tmpfileSweeper.sweepGryphonOrphans,
     buildDisallowedTools: ccDisallowTranslator.buildDisallowedTools,
+    buildApprovalsStoreDenyGlobs: ccDisallowTranslator.buildApprovalsStoreDenyGlobs,
     // Promoted from path-utils — heavily used by SDK tools (bash/edit/etc.)
     resolveVaultPath: pathUtils.resolveVaultPath,
     PathOutsideVaultError: pathUtils.PathOutsideVaultError,

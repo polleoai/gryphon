@@ -43,6 +43,22 @@ declare class ClaudeCodeProvider {
     _handleStaleSession(): void;
     _handleStdout(data: any): void;
     _processEvent(raw: any): void;
+    /**
+     * Issue #25 (Design rev 2): the vault defines MCP servers nothing outside
+     * the vault has approved, so they were left out of this launch. The host
+     * owns the UX (a Notice with a Review action → approval modal) via the
+     * optional `hostAdapter.mcpApprovalsPending`; a host without it still gets
+     * a plain Notice, so a server never goes missing silently.
+     */
+    _reportPendingMcpApprovals(scope: any): void;
+    /**
+     * Issue #25: tell the user when a server on Gryphon's MCP allowlist didn't
+     * come up (e.g. the vault's `python3 -m <server>` errors at launch) — the
+     * realistic way a consumer's tools go missing. Only our allowlist is
+     * checked: under "inherit" the user's own servers are their business.
+     * Once per spawn; "pending" is still connecting, not a failure.
+     */
+    _checkScopedMcpServers(servers: any): void;
     _handleStderr(data: any): void;
     _handleClose(code: any): void;
     /**
@@ -71,12 +87,14 @@ declare class ClaudeCodeProvider {
     _redactStderrForDisplay(text: any): any;
     _handleProcessError(err: any): void;
     /**
-     * Remove the per-spawn hook settings file. Best-effort: a leftover
-     * file in tmpdir is not a security or correctness issue (the file
-     * doesn't auto-load anywhere — CC only sees it when we pass
-     * --settings explicitly), so a failed unlink is logged and swallowed.
+     * Remove the per-spawn temp files (--settings and, issue #25,
+     * --mcp-config). Best-effort: neither auto-loads anywhere (CC only sees
+     * them when we pass the flags explicitly), both are owner-only (0600) —
+     * the MCP file can carry server env such as tokens — and the onload
+     * orphan sweeper reaps stragglers, so a failed unlink is logged and
+     * swallowed.
      */
-    _cleanupHookSettingsFile(): void;
+    _cleanupSpawnFiles(): void;
     abort(): void;
     isAlive(): any;
     get costIsEstimate(): boolean;

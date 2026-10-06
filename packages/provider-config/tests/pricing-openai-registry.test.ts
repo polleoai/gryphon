@@ -9,19 +9,21 @@ test("MODEL_PRICES keys still include the gpt-5 family", () => {
 });
 
 test("MODEL_ALIAS cross-vendor mappings preserved", () => {
-  assert.equal(openai.MODEL_ALIAS["opus"], "gpt-5.4");
-  assert.equal(openai.MODEL_ALIAS["sonnet"], "gpt-5.4-mini");
-  assert.equal(openai.MODEL_ALIAS["haiku"], "gpt-5-mini");
+  assert.equal(openai.MODEL_ALIAS["opus"], "gpt-6.1-sol");
+  assert.equal(openai.MODEL_ALIAS["sonnet"], "gpt-6.1-sol");
+  assert.equal(openai.MODEL_ALIAS["haiku"], "gpt-6-luna");
 });
 
 test("MODEL_ALIAS native passthrough preserved", () => {
   assert.equal(openai.MODEL_ALIAS["gpt-5.5"], "gpt-5.5");
   assert.equal(openai.MODEL_ALIAS["gpt-4o"], "gpt-4o");
-  assert.equal(openai.MODEL_ALIAS["o3"], "o3");
+  // Hidden (superseded) ids still pass through — a pinned one must keep
+  // resolving until the load-time migration rewrites it.
+  assert.equal(openai.MODEL_ALIAS["gpt-6-luna"], "gpt-6-luna");
 });
 
-test("DEFAULT_MODEL is gpt-5.4-mini", () => {
-  assert.equal(openai.DEFAULT_MODEL, "gpt-5.4-mini");
+test("DEFAULT_MODEL is gpt-6.1-sol", () => {
+  assert.equal(openai.DEFAULT_MODEL, "gpt-6.1-sol");
 });
 
 test("CODEX_CLI_SUPPORTED_MODELS subset matches prior surface", () => {
@@ -35,7 +37,8 @@ test("CODEX_CLI_SUPPORTED_MODELS subset matches prior surface", () => {
 test("getModelDropdownOptions returns OpenAI entries with id+label", () => {
   const opts = openai.getModelDropdownOptions();
   assert.ok(opts.length > 0);
-  assert.ok(opts.some((o) => o.id === "gpt-5.5"));
+  assert.ok(opts.some((o) => o.id === "gpt-6.1-sol"));
+  assert.ok(!opts.some((o) => o.id === "gpt-5.5"), "superseded gpt-5.5 is hidden");
   for (const o of opts) {
     assert.equal(typeof o.id, "string");
     assert.equal(typeof o.label, "string");

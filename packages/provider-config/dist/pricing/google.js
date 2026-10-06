@@ -127,7 +127,33 @@ function getModelDropdownOptions() {
         label: o.desc ? `${o.label} · ${o.desc}` : o.label,
     }));
 }
+// ANTIGRAVITY_CLI_SUPPORTED_MODELS — ids agy's own catalog accepts (registry
+// `antigravityCliSupported`). The antigravity-cli provider reuses this
+// vendor's dropdown; this is its filter, mirroring Codex's in pricing/openai.
+const ANTIGRAVITY_CLI_SUPPORTED_MODELS = registry.antigravityCliSupportedModels();
+const ANTIGRAVITY_CLI_DEFAULT_MODEL = DEFAULT_MODEL;
+function getAntigravityCliModelDropdownOptions() {
+    return getModelDropdownOptions().filter((opt) => ANTIGRAVITY_CLI_SUPPORTED_MODELS.has(opt.id));
+}
+/**
+ * antigravity-cli resolver. A REGISTRY id agy is known to reject coerces to
+ * the agy default; an id outside the registry passes through untouched,
+ * because agy has its own vocabulary (`gemini-3.8-flash-low`, `auto`) that
+ * Gryphon only partly knows.
+ */
+function coerceToAntigravityCliModel(alias) {
+    const resolved = coerceToVendorModel(alias);
+    if (ANTIGRAVITY_CLI_SUPPORTED_MODELS.has(resolved))
+        return resolved;
+    if (registry.isKnownModel(resolved))
+        return ANTIGRAVITY_CLI_DEFAULT_MODEL;
+    return resolved;
+}
 module.exports = {
+    ANTIGRAVITY_CLI_SUPPORTED_MODELS,
+    ANTIGRAVITY_CLI_DEFAULT_MODEL,
+    getAntigravityCliModelDropdownOptions,
+    coerceToAntigravityCliModel,
     MODEL_PRICES,
     MODEL_ALIAS,
     DEFAULT_MODEL,

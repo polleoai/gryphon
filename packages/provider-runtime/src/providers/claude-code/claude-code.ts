@@ -25,12 +25,15 @@ const path = require("path") as typeof import("path");
 const { buildEnhancedPath, findNodeBinary, resolveCliBinary } = require("../../utils");
 const { buildDisallowedTools } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
+const { mcpApprovals, buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
 const {
   buildHookSettings,
   buildPermissionsOnlySettings,
   writeHookSettingsFile,
   HOOK_FILES,
 } = require("./hook-settings-builder") as typeof import("./hook-settings-builder");
+const { resolveClaudeCodeScope } = require("./scope") as typeof import("./scope");
+const { writeMcpConfigFile } = require("../../passive/mcp-config-builder") as typeof import("../../passive/mcp-config-builder");
 
 // The system-prompt hints (anti-leak directives + fallback deny copy)
 // were promoted to src/providers/shared/system-prompt-hints.js in
@@ -124,6 +127,10 @@ class ClaudeCodeProvider {
   spawn() {
     if (this.alive) return;
     this._lastSpawnError = null;
+    // A superseded / stale-session process was killed with this.process
+    // nulled first, so its `close` handler (guarded by forThisProcess) never
+    // ran its cleanup. Reap its temp files before writing this spawn's.
+    this._cleanupSpawnFiles();
 
     // Preflight (R1/R4/R5): resolve to the NEWEST valid claude binary on disk,
     // self-healing a stale/empty configured path — or fail fast with an
@@ -202,6 +209,19 @@ class ClaudeCodeProvider {
     if (this.options.resumeSessionId && _looksLikeUUID(this.options.resumeSessionId)) {
       args.push("--resume", this.options.resumeSessionId);
     }
+
+    // Issue #25: launch with the vault's Claude Code config, not the user's
+    // personal one (plugins + their hooks/skills, personal MCP servers,
+    // auto-memory). Resolved up front because its settings keys merge into
+    // the single --settings object composed below. See ./scope.ts.
+    // Vault MCP servers run only when the out-of-vault approval store
+    // matches their exact spec (Design rev 2). Read fresh on every spawn, so
+    // an approval made in the review modal applies on the next message.
+    const scope = resolveClaudeCodeScope(this.options.claudeCodeScope, {
+      cwd: this.cwd,
+      extraArgs: this.options.extraArgs,
+      approvals: this.options._mcpApprovals || mcpApprovals.reader(),
+    });
 
     // Protected Mode decides whether we instrument CC at all:
     //   protectedMode=false → no settings file, no hooks, no deny-list.
@@ -333,11 +353,14 @@ class ClaudeCodeProvider {
         }
 
         hookSocketPath = plugin.ipcServer.socketPath();
-        const settings = buildHookSettings({
-          pluginDir: plugin.absolutePluginDir(),
-          socketPath: hookSocketPath,
-          nodePath: hookNodePath,
-        });
+        const settings = {
+          ...buildHookSettings({
+            pluginDir: plugin.absolutePluginDir(),
+            socketPath: hookSocketPath,
+            nodePath: hookNodePath,
+          }),
+          ...scope.settingsKeys,
+        };
         hookSettingsFile = writeHookSettingsFile(settings);
         args.push("--settings", hookSettingsFile);
       } catch (e) {
@@ -420,7 +443,7 @@ class ClaudeCodeProvider {
     if (!hooksActive && protectedModeOn) {
       if (denyGlobs.length > 0) {
         try {
-          const permSettings = buildPermissionsOnlySettings(denyGlobs);
+          const permSettings = { ...buildPermissionsOnlySettings(denyGlobs), ...scope.settingsKeys };
           hookSettingsFile = writeHookSettingsFile(permSettings);
           args.push("--settings", hookSettingsFile);
         } catch (e) {
@@ -452,9 +475,63 @@ class ClaudeCodeProvider {
         }
       }
     }
+    // Issue #25: scope keys (e.g. autoMemoryEnabled) still need a flag-
+    // settings file when neither hooks nor the deny-list wrote one
+    // (Protected Mode off, or an empty deny-list). With Protected Mode off
+    // it also carries the approval store's deny rules — Claude Code
+    // enforces permissions.deny without hooks, and a vault-resident
+    // data.json can switch Protected Mode off.
+    const storeDeny = protectedModeOn ? [] : buildApprovalsStoreDenyGlobs();
+    if (!hookSettingsFile && (storeDeny.length > 0 || Object.keys(scope.settingsKeys).length > 0)) {
+      try {
+        const own = storeDeny.length > 0 ? buildPermissionsOnlySettings(storeDeny) : {};
+        hookSettingsFile = writeHookSettingsFile({ ...own, ...scope.settingsKeys });
+        args.push("--settings", hookSettingsFile);
+      } catch (e) {
+        console.error("[gryphon/cli] scope settings file write failed:", (e && (e as Error).message) || String(e));
+      }
+    }
     // Track for cleanup in _handleClose so we don't litter tmpdir.
-    // Applies to both hook-mode and fallback-mode settings files.
+    // Applies to hook-mode, fallback-mode and scope-only settings files.
     this._hookSettingsFile = hookSettingsFile;
+
+    // Issue #25: strict MCP with a Gryphon-written allowlist (default: the
+    // vault's own .mcp.json servers). A missing or malformed allowlist
+    // launches strict with zero servers rather than failing the spawn, but
+    // says so — otherwise the consumer's tools vanish silently.
+    const scopeWarnings = [...scope.warnings];
+    // Inherit mode is non-strict: Claude Code loads the vault's .mcp.json
+    // itself, and only the disabledMcpjsonServers key in OUR --settings
+    // keeps unapproved servers off. No file, no guard — never spawn
+    // non-strict without it.
+    if (scope.settingsKeys.disabledMcpjsonServers && !hookSettingsFile) {
+      args.push("--strict-mcp-config");
+      scopeWarnings.push(
+        "couldn't write the setting that keeps unapproved vault MCP servers off; " +
+        "your personal MCP servers are off this session too, to be safe",
+      );
+    }
+    this._scopeMcpServerNames = [];
+    this._mcpInitChecked = false;
+    if (scope.mcpServers) {
+      try {
+        this._mcpConfigFile = writeMcpConfigFile(scope.mcpServers, "gryphon-cc-mcp");
+        args.push("--mcp-config", this._mcpConfigFile);
+        this._scopeMcpServerNames = Object.keys(scope.mcpServers);
+      } catch (e) {
+        scopeWarnings.push(`couldn't write the MCP server list (${(e && (e as Error).message) || String(e)})`);
+      }
+    }
+    args.push(...scope.args);
+    if (scope.pendingApprovals.length > 0) this._reportPendingMcpApprovals(scope);
+    if (scopeWarnings.length > 0) {
+      console.error("[gryphon/cli] launch scope:", scopeWarnings.join("; "));
+      this.hostAdapter.notify(
+        `Gryphon: ${scopeWarnings.join("; ")}. Claude Code is starting without ` +
+        `the vault's MCP servers, so their tools won't be available this session.`,
+        { level: "warn", timeoutMs: 15000 },
+      );
+    }
 
     // Compose --append-system-prompt. Deferred to here (rather than
     // earlier with the rest of args) because the fallback-mode hint
@@ -538,6 +615,7 @@ class ClaudeCodeProvider {
       // not firing" report is diagnosable from the log alone. Cheap —
       // a single line per spawn when debug logging is on.
       console.error("[gryphon/cli] hook preflight:", JSON.stringify(hookPreflight));
+      console.error("[gryphon/cli] launch scope:", JSON.stringify(scope.summary));
     }
 
     const spawnEnv: Record<string, any> = { ...process.env, PATH: buildEnhancedPath() };
@@ -911,6 +989,7 @@ class ClaudeCodeProvider {
         // CLI resolved our alias ("opus") to. Lets the UI show the real
         // version without hardcoding anything.
         if (raw.model) this.resolvedModel = raw.model;
+        this._checkScopedMcpServers(raw.mcp_servers);
         if (this.onMessage) this.onMessage("", "init");
       }
       return;
@@ -1065,6 +1144,58 @@ class ClaudeCodeProvider {
     }
   }
 
+  /**
+   * Issue #25 (Design rev 2): the vault defines MCP servers nothing outside
+   * the vault has approved, so they were left out of this launch. The host
+   * owns the UX (a Notice with a Review action → approval modal) via the
+   * optional `hostAdapter.mcpApprovalsPending`; a host without it still gets
+   * a plain Notice, so a server never goes missing silently.
+   */
+  _reportPendingMcpApprovals(scope: any) {
+    const pending = scope.pendingApprovals;
+    const host = this.hostAdapter;
+    if (host && typeof host.mcpApprovalsPending === "function") {
+      try {
+        host.mcpApprovalsPending({ cwd: this.cwd, vaultKey: scope.vaultKey, pending });
+        return;
+      } catch (e) {
+        console.error("[gryphon/cli] mcpApprovalsPending host hook failed:", (e && (e as Error).message) || e);
+      }
+    }
+    const shown = (n: unknown) => mcpApprovals.displaySafe(n);
+    const names = pending.map((p: any) => (p.reason === "changed" ? `${shown(p.name)} (changed since you approved it)` : shown(p.name)));
+    const many = pending.length > 1;
+    host.notify(
+      `Gryphon: this vault defines MCP server${many ? "s" : ""} ${names.join(", ")} that ` +
+      `${many ? "haven't" : "hasn't"} been approved, so ${many ? "they" : "it"} won't run.`,
+      { level: "warn", timeoutMs: 15000 },
+    );
+  }
+
+  /**
+   * Issue #25: tell the user when a server on Gryphon's MCP allowlist didn't
+   * come up (e.g. the vault's `python3 -m <server>` errors at launch) — the
+   * realistic way a consumer's tools go missing. Only our allowlist is
+   * checked: under "inherit" the user's own servers are their business.
+   * Once per spawn; "pending" is still connecting, not a failure.
+   */
+  _checkScopedMcpServers(servers: any) {
+    if (this._mcpInitChecked) return;
+    this._mcpInitChecked = true;
+    const wanted = new Set(this._scopeMcpServerNames || []);
+    if (wanted.size === 0 || !Array.isArray(servers)) return;
+    const down = servers
+      .filter((s: any) => s && wanted.has(s.name) && s.status !== "connected" && s.status !== "pending")
+      .map((s: any) => mcpApprovals.displaySafe(`${s.name} (${s.status || "unknown"})`));
+    if (down.length === 0) return;
+    const many = down.length > 1;
+    this.hostAdapter.notify(
+      `Gryphon: MCP server${many ? "s" : ""} ${down.join(", ")} didn't connect — ` +
+      `${many ? "their" : "its"} tools aren't available this session. Check the server command in the vault's .mcp.json.`,
+      { level: "warn", timeoutMs: 15000 },
+    );
+  }
+
   _handleStderr(data: any) {
     const raw = data.toString();
     // Keep a rolling tail so _handleClose has something to surface if CC
@@ -1088,7 +1219,7 @@ class ClaudeCodeProvider {
   _handleClose(code: any) {
     this.alive = false;
     this.process = null;
-    this._cleanupHookSettingsFile();
+    this._cleanupSpawnFiles();
     if (this.pendingReject) {
       this.pendingReject(new Error(this._formatCloseError(code)));
       this.pendingResolve = null;
@@ -1191,7 +1322,7 @@ class ClaudeCodeProvider {
 
   _handleProcessError(err: any) {
     this.alive = false;
-    this._cleanupHookSettingsFile();
+    this._cleanupSpawnFiles();
     // Log the full spawn context on any proc error. EINVAL in particular
     // is uninformative on its own (it just means the OS refused the exec
     // call) — without the claudePath, shell flag, platform, and arg
@@ -1229,19 +1360,23 @@ class ClaudeCodeProvider {
   }
 
   /**
-   * Remove the per-spawn hook settings file. Best-effort: a leftover
-   * file in tmpdir is not a security or correctness issue (the file
-   * doesn't auto-load anywhere — CC only sees it when we pass
-   * --settings explicitly), so a failed unlink is logged and swallowed.
+   * Remove the per-spawn temp files (--settings and, issue #25,
+   * --mcp-config). Best-effort: neither auto-loads anywhere (CC only sees
+   * them when we pass the flags explicitly), both are owner-only (0600) —
+   * the MCP file can carry server env such as tokens — and the onload
+   * orphan sweeper reaps stragglers, so a failed unlink is logged and
+   * swallowed.
    */
-  _cleanupHookSettingsFile() {
-    if (!this._hookSettingsFile) return;
-    const file = this._hookSettingsFile;
-    this._hookSettingsFile = null;
-    try {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
-    } catch (e) {
-      console.warn(`[gryphon/cli] failed to remove hook settings file ${file}: ${(e as Error).message}`);
+  _cleanupSpawnFiles() {
+    for (const key of ["_hookSettingsFile", "_mcpConfigFile"]) {
+      const file = this[key];
+      if (!file) continue;
+      this[key] = null;
+      try {
+        if (fs.existsSync(file)) fs.unlinkSync(file);
+      } catch (e) {
+        console.warn(`[gryphon/cli] failed to remove temp file ${file}: ${(e as Error).message}`);
+      }
     }
   }
 
@@ -1269,7 +1404,7 @@ class ClaudeCodeProvider {
     // this explicit cleanup the settings file would leak on every
     // plugin disable/re-enable cycle (observed during Stage-8 QA as
     // growing accumulation in $TMPDIR).
-    this._cleanupHookSettingsFile();
+    this._cleanupSpawnFiles();
     if (this.pendingReject) {
       this.pendingReject(new Error("Aborted"));
       this.pendingResolve = null;

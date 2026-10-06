@@ -9,9 +9,9 @@ test("MODEL_PRICES preserved across v2.2 refactor", () => {
 });
 
 test("MODEL_ALIAS cross-vendor mappings preserved", () => {
-  assert.equal(google.MODEL_ALIAS["opus"], "gemini-2.5-pro");
-  assert.equal(google.MODEL_ALIAS["sonnet"], "gemini-2.5-flash");
-  assert.equal(google.MODEL_ALIAS["haiku"], "gemini-2.5-flash-lite");
+  assert.equal(google.MODEL_ALIAS["opus"], "gemini-3.1-pro-preview");
+  assert.equal(google.MODEL_ALIAS["sonnet"], "gemini-3.7-flash");
+  assert.equal(google.MODEL_ALIAS["haiku"], "gemini-3.5-flash-lite");
 });
 
 test("MODEL_ALIAS native passthrough preserved", () => {
@@ -19,13 +19,13 @@ test("MODEL_ALIAS native passthrough preserved", () => {
   assert.equal(google.MODEL_ALIAS["gemini-3.1-pro-preview"], "gemini-3.1-pro-preview");
 });
 
-test("DEFAULT_MODEL is gemini-2.5-flash", () => {
-  assert.equal(google.DEFAULT_MODEL, "gemini-2.5-flash");
+test("DEFAULT_MODEL is gemini-3.7-flash", () => {
+  assert.equal(google.DEFAULT_MODEL, "gemini-3.7-flash");
 });
 
-test("getModelDropdownOptions has gemini-2.5-flash labelled default", () => {
+test("getModelDropdownOptions has gemini-3.7-flash labelled default", () => {
   const opts = google.getModelDropdownOptions();
-  const flash = opts.find((o) => o.id === "gemini-2.5-flash");
+  const flash = opts.find((o) => o.id === "gemini-3.7-flash");
   assert.ok(flash);
   assert.match(flash.label, /default/i);
 });

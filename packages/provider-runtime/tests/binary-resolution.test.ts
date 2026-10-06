@@ -471,3 +471,81 @@ test("an unstattable path falls back to the default budget rather than throwing"
   // hung binary would block the renderer thread forever).
   assert.ok(Number.isFinite(ms) && ms > 0, `expected a finite positive budget, got ${ms}`);
 });
+
+// --- issue #24: the Claude desktop app must never be selected or executed ---
+
+// Electron/Chromium log line — the shape the desktop app's executable prints
+// when launched with `--version` it doesn't understand.
+const ELECTRON_OUTPUT = "[12345:1005/163012.345678:INFO:CONSOLE(1)] starting";
+
+test("parseVersion ignores decimals embedded in log noise (issue #24)", () => {
+  assert.equal(utils.parseVersion(ELECTRON_OUTPUT), null);
+  // Real CLI shapes still parse.
+  assert.deepEqual(utils.parseVersion("2.1.290 (Claude Code)"), [2, 1, 290]);
+  assert.deepEqual(utils.parseVersion("codex-cli 0.46.0"), [0, 46, 0]);
+  assert.deepEqual(utils.parseVersion("0.41.2-preview.1"), [0, 41, 2]);
+});
+
+test("probeVersion rejects claude candidates without the (Claude Code) marker (issue #24)", () => {
+  utils.clearBinaryDiscoveryCache();
+  const sig = utils._versionSignatureFor("claude");
+  assert.equal(utils.probeVersion("/App/claude-electron", () => ELECTRON_OUTPUT, sig), null);
+  assert.equal(utils.probeVersion("/App/claude-desktop", () => "2.19675.1", sig), null);
+  const failedRun = () => { const e: any = new Error("exit 1"); e.stdout = "2.1.290 (Claude Code)"; throw e; };
+  assert.equal(utils.probeVersion("/App/claude-failed", failedRun, sig), null, "non-zero exit output rejected");
+  assert.deepEqual(utils.probeVersion("/cli/claude", () => "2.1.290 (Claude Code)", sig), [2, 1, 290]);
+});
+
+test("_pickNewestValid returns the CLI, not the desktop app (issue #24)", { skip: isWindows }, () => {
+  utils.clearBinaryDiscoveryCache();
+  const dir = tmpDir();
+  const app = fakeCli(dir, "claude-app", "2.19675.1");
+  const appLog = fakeCli(dir, "claude-applog", ELECTRON_OUTPUT);
+  const cli = fakeCli(dir, "claude", "2.1.290 (Claude Code)");
+  const best = utils._pickNewestValid([app, appLog, cli], "0.0.0", utils._versionSignatureFor("claude"));
+  assert.equal(best.path, cli);
+});
+
+test("no macOS app-bundle main executable is a claude candidate or probed (issue #24)", { skip: isWindows }, () => {
+  utils.clearBinaryDiscoveryCache();
+  const dir = tmpDir();
+  const macosDir = path.join(dir, "Claude.app", "Contents", "MacOS");
+  fs.mkdirSync(macosDir, { recursive: true });
+  const marker = path.join(dir, "launched");
+  const appExe = path.join(macosDir, "claude");
+  fs.writeFileSync(appExe, `#!/bin/sh\ntouch "${marker}"\necho "2.1.999 (Claude Code)"\n`);
+  fs.chmodSync(appExe, 0o755);
+  // A symlink elsewhere pointing into the bundle must be excluded too.
+  const link = path.join(dir, "claude-link");
+  fs.symlinkSync(appExe, link);
+  const present = utils._collectPresentBinaries([appExe, link], "claude-not-on-path-xyz", false);
+  assert.ok(!present.includes(appExe), "bundle executable excluded");
+  assert.ok(!present.includes(link), "symlink into bundle excluded");
+  assert.equal(fs.existsSync(marker), false, "the app executable was never run");
+  // A CLI shipped in a bundle's Resources dir (Codex.app) is still a candidate.
+  const resDir = path.join(dir, "Codex.app", "Contents", "Resources");
+  fs.mkdirSync(resDir, { recursive: true });
+  const codex = fakeCli(resDir, "codex", "codex-cli 0.46.0");
+  assert.deepEqual(utils._collectPresentBinaries([codex], "codex-not-on-path-xyz", false).filter((p: string) => p === codex), [codex]);
+});
+
+test("the Claude.app candidate is gone from claude auto-detection source (issue #24)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "utils.ts"), "utf8");
+  assert.ok(!/Claude\.app\/Contents\/MacOS/.test(src), "Claude.app/Contents/MacOS candidate must not be listed");
+});
+
+test("resolveCliBinary rejects a configured claude path that isn't the CLI (issue #24)", { skip: isWindows }, () => {
+  utils.clearBinaryDiscoveryCache();
+  const dir = tmpDir();
+  const app = fakeCli(dir, "claude-app", "2.19675.1");
+  const cli = fakeCli(dir, "claude", "2.1.290 (Claude Code)");
+  const orig = utils.findClaudeBinary;
+  utils.findClaudeBinary = () => cli;
+  try {
+    const res = utils.resolveCliBinary("claude-code", app);
+    assert.equal(res.ok, true);
+    assert.equal(res.path, cli, "falls through to the detected CLI");
+  } finally {
+    utils.findClaudeBinary = orig;
+  }
+});

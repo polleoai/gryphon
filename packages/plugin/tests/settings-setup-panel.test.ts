@@ -103,3 +103,12 @@ test("_credentialFieldsFor maps providers correctly", () => {
   assert.equal(_credentialFieldsFor("auto"), null);
   assert.equal(_credentialFieldsFor("something-unknown"), null);
 });
+
+test("fallback model pre-selects the kind's default, not the first (cheapest) entry", () => {
+  const { _fallbackModelOptions, _defaultFallbackModel } = require("../src/settings-view");
+  const pick = (kind) => _defaultFallbackModel(kind, _fallbackModelOptions(kind));
+  assert.equal(pick("claude-code"), "claude-sonnet-5-5", "not Haiku");
+  assert.equal(pick("codex-cli"), "gpt-5.6-terra");
+  assert.equal(pick("antigravity-cli"), "gemini-3.7-flash");
+  assert.equal(pick("openai-api"), "gpt-6.1-sol");
+});

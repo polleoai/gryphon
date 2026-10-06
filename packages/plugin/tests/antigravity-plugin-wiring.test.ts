@@ -116,14 +116,27 @@ test("antigravity-cli uses the Gemini model dropdown, not Anthropic's", () => {
   );
 });
 
-test("_fallbackModelOptions offers Gemini models for antigravity-cli", () => {
+test("_fallbackModelOptions offers only agy-catalog Gemini models for antigravity-cli", () => {
   const { _fallbackModelOptions } = require("../src/settings-view");
-  const opts = _fallbackModelOptions("antigravity-cli");
-  const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+  const ids = _fallbackModelOptions("antigravity-cli").map((o) => o.id);
+  assert.deepEqual(ids, ["gemini-3.8-flash", "gemini-3.7-flash"]);
+  // agy rejects these outright — offering them was a dead option.
+  assert.ok(!ids.includes("gemini-3.5-flash-lite"));
+  assert.ok(!ids.includes("gemini-3.1-pro-preview"));
+});
+
+test("model menu, toolbar and provider-switch reset agree on agy's subset", () => {
+  const { _modelOptionsForKind, modelButtonText } = require("../src/chat-view");
+  const { _resetModelForProvider } = require("../src/settings-view");
   assert.deepEqual(
-    opts.map((o) => o.id),
-    getModelDropdownOptions().map((o) => o.id),
+    _modelOptionsForKind("antigravity-cli").map((o) => o.value),
+    ["gemini-3.8-flash", "gemini-3.7-flash"],
   );
+  // A persisted id agy rejects: the runtime coerces it to gemini-3.7-flash,
+  // so the toolbar must say so and a provider switch must pick it.
+  const settings = { providerPreference: "antigravity-cli", model: "gemini-3.5-flash-lite" };
+  assert.match(modelButtonText(settings), /Gemini 3\.7 Flash/);
+  assert.equal(_resetModelForProvider({ settings }), "gemini-3.7-flash");
 });
 
 test("toolbar Model button is brand-labelled Gemini for antigravity-cli", () => {

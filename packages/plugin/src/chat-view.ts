@@ -25,6 +25,20 @@
  *                            filter (entries are already targeted). Use
  *                            this for clean per-provider routing instead
  *                            of relying on the filter.
+ *   - claudeCodeScope      — { inheritUserConfig, settingSources, mcpServers,
+ *                            includeProjectMcp, autoMemory } — which Claude
+ *                            Code config a claude-code chat launches with
+ *                            (issue #25; default: the vault's, not the
+ *                            user's personal plugins/hooks/MCP servers).
+ *                            When supplied — ANY field — it REPLACES the
+ *                            user's Settings → Advanced toggle outright (no
+ *                            per-field merge). Object-form `mcpServers` are
+ *                            executed WITHOUT approval: build them from your
+ *                            plugin's own code, never from files inside the
+ *                            vault. Vault `.mcp.json` servers run only once
+ *                            the user approves them. Ignored by every
+ *                            provider except claude-code. See provider-runtime
+ *                            providers/claude-code/scope.ts.
  *   - onBeforeSend         — callback(text) => boolean. Return true to
  *                            "consume" a message (intercept domain-specific
  *                            commands before they reach the provider).
@@ -65,6 +79,14 @@ interface GryphonChatViewOptions {
   extraProcessArgs?: string[];
   /** Per-provider extra CLI args, keyed by provider kind. */
   extraProcessArgsByProvider?: Record<string, string[]>;
+  /** Claude Code launch scope (issue #25). Overrides the Advanced-tab toggle when set. */
+  claudeCodeScope?: {
+    inheritUserConfig?: boolean;
+    settingSources?: Array<"user" | "project" | "local">;
+    mcpServers?: "project" | "inherit" | Record<string, any>;
+    includeProjectMcp?: boolean;
+    autoMemory?: boolean;
+  };
   /** Callback invoked before each send. Return true to consume the message. */
   onBeforeSend?: ((text: string) => boolean) | null;
   /** Autocomplete sources extending the core slash-command source. */
@@ -638,6 +660,20 @@ function labelFor(list, value) {
  * Anthropic list). Tests that only have a settings object can pass it as
  * `plugin` directly — the helper just needs `.settings`.
  */
+/**
+ * True when `id` is a registry model of `vendor` that is NOT offered in its
+ * dropdown (retired from view but still served). Providers spawn such an id
+ * untouched, so the toolbar must name it — falling back to the default's
+ * label would show one model while another runs (Round 18 F23-1). The
+ * load-time migration normally rewrites these; this covers ids set after
+ * load (consumer code, a hand-edited data.json).
+ */
+function _isHiddenVendorModel(id, vendor) {
+  if (typeof id !== "string") return false;
+  const { registry } = require("@gryphon/provider-config");
+  return registry.modelsByVendor(vendor).some((m) => m.id === id && !m.dropdown);
+}
+
 function modelButtonText(settingsOrPlugin) {
   const settings = settingsOrPlugin && settingsOrPlugin.settings
     ? settingsOrPlugin.settings : settingsOrPlugin;
@@ -674,33 +710,45 @@ function modelButtonText(settingsOrPlugin) {
     const resolved = resolver(requested);
     const fitsDropdown = options.some((o) => o.value === resolved);
     const fallback = isCodex ? CODEX_CLI_DEFAULT_MODEL : OPENAI_DEFAULT_MODEL;
+    // A known-but-hidden id (retired from the dropdown, still served) is
+    // spawned as-is, so name it rather than claiming the default.
+    if (!fitsDropdown && _isHiddenVendorModel(resolved, "openai")) return resolved;
     return labelFor(options, fitsDropdown ? resolved : fallback);
   }
   if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
-    // gemini-cli / antigravity-cli reuse Google's pricing tables + dropdown.
-    const {
-      getModelDropdownOptions: getGeminiOptions,
-      resolveModel: resolveGeminiModel,
-      DEFAULT_MODEL: GEMINI_DEFAULT_MODEL,
-    } = require("@gryphon/provider-runtime").pricing.google;
-    const options = getGeminiOptions().map((o) => ({ value: o.id, label: o.label }));
+    // All three reuse Google's pricing tables; antigravity-cli has its own
+    // dropdown + coercion (agy's catalog), mirroring codex-cli above.
+    const googlePricing = require("@gryphon/provider-runtime").pricing.google;
+    const isAgy = kind === "antigravity-cli";
+    const options = (isAgy
+      ? googlePricing.getAntigravityCliModelDropdownOptions()
+      : googlePricing.getModelDropdownOptions())
+      .map((o) => ({ value: o.id, label: o.label }));
     const requested = settings && settings.model;
     if (options.some((o) => o.value === requested)) {
       return labelFor(options, requested);
     }
-    const resolved = resolveGeminiModel(requested);
+    // Mirror the runtime: agy coerces registry ids it rejects to its
+    // default; the API / gemini-cli paths use the plain Gemini resolver.
+    const resolved = isAgy
+      ? googlePricing.coerceToAntigravityCliModel(requested)
+      : googlePricing.resolveModel(requested);
     const fitsDropdown = options.some((o) => o.value === resolved);
-    return labelFor(options, fitsDropdown ? resolved : GEMINI_DEFAULT_MODEL);
+    if (!fitsDropdown && _isHiddenVendorModel(resolved, "google")) return resolved;
+    const fallback = isAgy ? googlePricing.ANTIGRAVITY_CLI_DEFAULT_MODEL : googlePricing.DEFAULT_MODEL;
+    return labelFor(options, fitsDropdown ? resolved : fallback);
   }
+
   // Anthropic / Claude Code: same fallback shape as the OpenAI branch — if
   // settings.model isn't in MODELS (e.g. user just switched FROM openai-api
-  // and persisted "gpt-5.4-mini" carries over), use Sonnet 4.6 as the
+  // and persisted "gpt-5.4-mini" carries over), use the Sonnet tier as the
   // default so the toolbar doesn't show a raw OpenAI id like "gpt-5.4-mini".
   const requested = settings && settings.model;
   if (MODELS.some((m) => m.value === requested)) {
     return labelFor(MODELS, requested);
   }
-  return labelFor(MODELS, "claude-sonnet-5");
+  if (_isHiddenVendorModel(requested, "anthropic")) return requested;
+  return labelFor(MODELS, "claude-sonnet-5-5");
 }
 
 /**
@@ -723,8 +771,12 @@ function _modelOptionsForKind(kind) {
       : openaiPricing.getModelDropdownOptions();
     return opts.map((o) => ({ value: o.id, label: o.label }));
   }
-  if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
-    // gemini-cli / antigravity-cli reuse the Gemini model list.
+  if (kind === "antigravity-cli") {
+    // Only the ids agy's own catalog accepts (registry antigravityCliSupported).
+    const { getAntigravityCliModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+    return getAntigravityCliModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
+  }
+  if (kind === "google-api" || kind === "gemini-cli") {
     const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
     return getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
   }
@@ -777,6 +829,7 @@ class GryphonChatView extends ItemView {
   declare toolStatusMap: any;
   declare extraProcessArgs: string[];
   declare extraProcessArgsByProvider: any;
+  declare claudeCodeScope: GryphonChatViewOptions["claudeCodeScope"] | null;
   declare onBeforeSend: any;
   declare viewType: string;
   declare viewDisplayText: string;
@@ -902,6 +955,7 @@ class GryphonChatView extends ItemView {
     // receives only its own bucket merged with the legacy extraProcessArgs
     // (which is filtered for cross-provider compatibility).
     this.extraProcessArgsByProvider = options.extraProcessArgsByProvider || {};
+    this.claudeCodeScope = options.claudeCodeScope || null;
     // Round 4 review (SFH-2): validate the keys at construction so a
     // typo like "claude_code" or "claudeCode" surfaces during the
     // consumer's integration test instead of silently no-op'ing every
@@ -1420,7 +1474,25 @@ class GryphonChatView extends ItemView {
       model: s.model || null,
       effort: s.effort || null,
       permissionMode: s.permissionMode || null,
+      scope: JSON.stringify(this._resolveClaudeCodeScope() || null),
+      // Issue #25 rev 2: bumped on every vault-MCP approve / revoke, so the
+      // next message respawns (with --resume) under the new server set.
+      mcpApprovals: (this.plugin && this.plugin.mcpApprovalsGeneration) || 0,
     };
+  }
+
+  /**
+   * Issue #25: the Claude Code launch scope for the next spawn. A consumer's
+   * `claudeCodeScope` option wins outright (embedders own their chat's
+   * config surface); otherwise the Advanced-tab toggle decides. Undefined ⇒
+   * the provider default (vault config only).
+   */
+  _resolveClaudeCodeScope() {
+    if (this.claudeCodeScope) return this.claudeCodeScope;
+    const s = (this.plugin && this.plugin.settings) || {};
+    return s.claudeCodeInheritUserConfig === true
+      ? { inheritUserConfig: true, mcpServers: "inherit" as const }
+      : undefined;
   }
 
   /**
@@ -1439,7 +1511,9 @@ class GryphonChatView extends ItemView {
     return have.kind !== want.kind
       || have.model !== want.model
       || have.effort !== want.effort
-      || have.permissionMode !== want.permissionMode;
+      || have.permissionMode !== want.permissionMode
+      || have.scope !== want.scope
+      || (have.mcpApprovals || 0) !== (want.mcpApprovals || 0);
   }
 
   /**
@@ -1821,7 +1895,7 @@ class GryphonChatView extends ItemView {
   }
 
   updateContextMeter(contextTokens) {
-    const model = this.plugin.settings.model || "claude-sonnet-5";
+    const model = this.plugin.settings.model || "claude-sonnet-5-5";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     const pct = Math.min(Math.round(contextTokens / windowSize * 100), 100);
     // v1.7.0 — persist the absolute token count so a model switch
@@ -1969,7 +2043,7 @@ class GryphonChatView extends ItemView {
     try {
       const userInput = (this.inputEl && this.inputEl.value) || "";
       const settings = (this.plugin && this.plugin.settings) || {};
-      const modelId = settings.model || "claude-sonnet-5";
+      const modelId = settings.model || "claude-sonnet-5-5";
       const windowSize = MODEL_CONTEXT[modelId] || 200000;
 
       // Lazy-load the filesystem snapshot. Repopulated on session boundary
@@ -2166,7 +2240,7 @@ class GryphonChatView extends ItemView {
   _currentContextPct() {
     const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
     if (!tokens) return 0;
-    const model = this.plugin.settings.model || "claude-sonnet-5";
+    const model = this.plugin.settings.model || "claude-sonnet-5-5";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     return Math.min(100, Math.round(tokens / windowSize * 100));
   }
@@ -2566,7 +2640,7 @@ class GryphonChatView extends ItemView {
    */
   _cmdShowContext() {
     const contextTokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-    const model = this.plugin.settings.model || "claude-sonnet-5";
+    const model = this.plugin.settings.model || "claude-sonnet-5-5";
     const windowSize = MODEL_CONTEXT[model] || 200000;
 
     if (contextTokens === 0) {
@@ -2865,7 +2939,7 @@ class GryphonChatView extends ItemView {
       return settings.providerPreference || "auto";
     })();
     const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
-    const model = settings.model || "claude-sonnet-5";
+    const model = settings.model || "claude-sonnet-5-5";
     const windowSize = MODEL_CONTEXT[model] || 200000;
     const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
     let obsidianVersion = "unknown";
@@ -6202,6 +6276,7 @@ class GryphonChatView extends ItemView {
         compactionSummary: compactionPreamble,
         extraArgs,
         extraArgsByProvider: this.extraProcessArgsByProvider,
+        claudeCodeScope: this._resolveClaudeCodeScope(),
         initialHistory: sdkInitialHistory,
         hostAdapter: this.plugin.hostAdapter,
       };
@@ -6406,6 +6481,7 @@ class GryphonChatView extends ItemView {
         effort: this.plugin.settings.effort || undefined,
         permissionMode: this.plugin.settings.permissionMode || undefined,
         extraArgsByProvider: this.extraProcessArgsByProvider,
+        claudeCodeScope: this._resolveClaudeCodeScope(),
         hostAdapter: this.plugin.hostAdapter,
       };
 
@@ -6442,6 +6518,8 @@ class GryphonChatView extends ItemView {
                   model: modelOverride || null,
                   effort: this.plugin.settings.effort || null,
                   permissionMode: this.plugin.settings.permissionMode || null,
+                  scope: JSON.stringify(this._resolveClaudeCodeScope() || null),
+                  mcpApprovals: this.plugin.mcpApprovalsGeneration || 0,
                 };
           if (!provider) return { ok: false, provider: null, error: null };
         }
@@ -6638,7 +6716,7 @@ class GryphonChatView extends ItemView {
       // error body that names the active model + window, calls out
       // input size vs. history size, and recommends the concrete fix
       // (switch to a 1M-context model, or trim the system-prompt side).
-      const meterModel = this.plugin.settings.model || "claude-sonnet-5";
+      const meterModel = this.plugin.settings.model || "claude-sonnet-5-5";
       const meterWindow = MODEL_CONTEXT[meterModel] || 200000;
       const msgDepth = (this.messages || []).length;
       const inputChars = (originalRawText || "").length;
@@ -6780,6 +6858,7 @@ module.exports = {
   nextContextWarningState,
   modelButtonText,
   modelButtonTitle,
+  _modelOptionsForKind,
   _providerLabelFor,
   _separateCanonicalBlocks,
   _dedupeConsecutiveParagraphs,

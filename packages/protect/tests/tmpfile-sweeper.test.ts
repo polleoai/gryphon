@@ -84,6 +84,19 @@ test("sweepHookSettingsOrphans removes files older than cutoff, preserves fresh 
   } finally { rmrf(dir); }
 });
 
+test("#25 sweepHookSettingsOrphans also removes stale claude-code --mcp-config files", () => {
+  const dir = tempDir();
+  try {
+    const stale = path.join(dir, "gryphon-cc-mcp-12345-1234567890-3.json");
+    const fresh = path.join(dir, "gryphon-cc-mcp-67890-9999999999-4.json");
+    for (const p of [stale, fresh]) fs.writeFileSync(p, "{}");
+    backdate(stale, 48 * 60 * 60 * 1000);
+    const { removed } = sweepHookSettingsOrphans({ tmpDir: dir });
+    assert.deepEqual(removed, [stale]);
+    assert.ok(fs.existsSync(fresh));
+  } finally { rmrf(dir); }
+});
+
 test("sweepHookSettingsOrphans tolerates a missing dir", () => {
   const { removed } = sweepHookSettingsOrphans({ tmpDir: "/definitely/does/not/exist/xyz" });
   assert.deepEqual(removed, []);

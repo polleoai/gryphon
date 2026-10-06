@@ -12,6 +12,7 @@
  *   | File shape                              | Location        | Orphan when            |
  *   |-----------------------------------------|-----------------|------------------------|
  *   | gryphon-cc-settings-<pid>-<ts>-<hex>.json| os.tmpdir()     | 24h+ since last mtime  |
+ *   | gryphon-cc-mcp-<pid>-<ts>-<n>.json      | os.tmpdir()     | 24h+ since last mtime  |
  *   | gryphon-<pid>-<hex>.sock                 | os.tmpdir()     | pid-in-name dead       |
  *   | provenance.json.<pid>.<hex>.tmp         | pluginDir       | 60s+ since last mtime  |
  *   | chat-history.json.tmp-<pid>-<ts>-<rand> | pluginDir       | pid-in-name dead       |
@@ -35,6 +36,10 @@ const pathMod = require("path") as typeof import("path");
 const os = require("os") as typeof import("os");
 
 const HOOK_SETTINGS_RE = /^gryphon-cc-settings-\d+-\d+-[0-9a-f]+\.json$/;
+// Issue #25: the claude-code provider's per-spawn --mcp-config file. Same
+// lifecycle as the settings file (unlinked on CLI close), so a crash leaves
+// it behind the same way — and it can carry MCP server env (tokens).
+const MCP_CONFIG_RE = /^gryphon-cc-mcp-\d+-\d+-\d+\.json$/;
 const SOCKET_RE = /^gryphon-(\d+)-[0-9a-f]+\.sock$/;
 const PROVENANCE_TMP_RE = /^provenance\.json\.\d+\.[0-9a-f]+\.tmp$/;
 const CHAT_HISTORY_TMP_RE = /^chat-history\.json\.tmp-(\d+)-\d+-[0-9a-z]+$/;
@@ -68,7 +73,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
   try { entries = fs.readdirSync(dir); } catch (_) { return { removed: [] }; }
   const removed = [];
   for (const name of entries) {
-    if (!HOOK_SETTINGS_RE.test(name)) continue;
+    if (!HOOK_SETTINGS_RE.test(name) && !MCP_CONFIG_RE.test(name)) continue;
     const full = pathMod.join(dir, name);
     try {
       const stat = fs.statSync(full);
@@ -187,6 +192,7 @@ module.exports = {
   truncateHookTraceLog,
   _isPidAlive,
   HOOK_SETTINGS_RE,
+  MCP_CONFIG_RE,
   SOCKET_RE,
   PROVENANCE_TMP_RE,
   CHAT_HISTORY_TMP_RE,

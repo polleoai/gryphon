@@ -4,6 +4,28 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.10.0] — 2026-10-06
+
+### Security
+
+- **Bundled network library updated to clear two denial-of-service advisories.** The HTTP library that Gryphon's web-fetch tool uses could be made to crash or hang by malformed server responses. It's now on a fixed version. Three other advisories in the same update affected only build tools that never ship in the plugin.
+
+### Added
+
+- **The current models from all three providers.** Claude Opus 5.5, Sonnet 5.5 and Fable 5.1; OpenAI's GPT-6 Astra, GPT-6.1 Sol and GPT-6 Luna; and Google's Gemini 3.8 Flash, 3.7 Flash and 3.5 Flash-Lite. Each model was checked with a real reply before being added. New defaults: **Sonnet 5.5** for Claude, **GPT-6.1 Sol** for OpenAI, and **Gemini 3.7 Flash** for Google.
+- **Approval for MCP servers defined inside a vault.** A vault can declare its own MCP servers in a `.mcp.json` file. An MCP server is a program that runs on your computer, so Gryphon now runs a vault-defined server only after you approve it. When a vault defines one you haven't approved, a notice names it, and **Review** shows exactly what it would run before you decide. Approvals are stored on your computer, outside the vault, and are tied to the server's exact configuration, so a server whose command changes has to be approved again. Plugins that build on Gryphon can still supply their own servers. You can see and revoke approvals in **Settings → Advanced**.
+
+### Changed
+
+- **Claude Code chats now use your vault's configuration, not your personal Claude Code setup.** Until now, chats in Gryphon picked up everything installed in your own Claude Code: plugins, their hooks, output styles, memory and every MCP server you'd configured. That could change how the assistant behaved and made each chat start slower and cost more. Chats now start with a scope that Gryphon controls. The vault's own Claude Code settings still apply, and Gryphon's protections are unchanged. To get your personal setup back, turn on **Settings → Advanced → Use my personal Claude Code configuration**. One consequence: personal allow/deny permission rules from your own Claude Code settings no longer apply inside Gryphon chats. Gryphon's own protected paths and commands still do. For plugins that embed Gryphon, their scope options take precedence over this setting.
+- **Older models are retired from the model menus.** Each menu now lists only that provider's current models. If you had chosen a model that's been superseded, Gryphon switches you to its successor the next time it starts. Models that their provider is shutting down (o3, o3-mini, o4-mini, GPT-5, GPT-5 mini, GPT-4.1 nano) are removed entirely.
+- **Codex and Antigravity show only models their own sign-in can use.** The Codex menu offers models that work with a ChatGPT account. The Antigravity menu offers models that the Antigravity CLI accepts. Choosing a fallback provider now pre-selects that provider's default model rather than the first one in the list.
+
+### Fixed
+
+- **Gryphon no longer opens the Claude desktop app when it looks for the Claude Code command-line tool.** On a Mac with the Claude desktop app installed and no Claude Code path set, detecting the CLI could launch the desktop app, pick it as the CLI, and leave the chat unable to connect. Detection now recognises only the real Claude Code CLI and never runs other applications. If you set a custom Claude Code path that points to your own wrapper script, the wrapper must pass through Claude Code's own `--version` output. Otherwise Gryphon ignores it and falls back to finding the CLI itself.
+- **Corrected model prices.** Claude Haiku 4.5, Opus 4.6 and Opus 4.7, and Sonnet 5 now use their current published rates, so cost estimates for them are accurate.
+
 ## [2.9.6] — 2026-08-02
 
 ### Changed

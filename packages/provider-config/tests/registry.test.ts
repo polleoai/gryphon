@@ -25,25 +25,25 @@ test("priceFor('claude-sonnet-4-6', 'anthropic') returns the pricing object", ()
 
 test("priceFor unknown id falls back to vendor default", () => {
   const p = registry.priceFor("claude-future-9-9", "anthropic");
-  assert.equal(p.input, 3.00, "Anthropic _default uses Sonnet 4.6 pricing");
+  assert.equal(p.input, 2.00, "Anthropic _default uses the default (Sonnet 5.5) pricing");
 });
 
-test("aliasFor('opus', 'anthropic') returns claude-opus-4-8", () => {
-  assert.equal(registry.aliasFor("opus", "anthropic"), "claude-opus-4-8");
+test("aliasFor('opus', 'anthropic') returns claude-opus-5-5", () => {
+  assert.equal(registry.aliasFor("opus", "anthropic"), "claude-opus-5-5");
 });
 
-test("aliasFor('opus', 'openai') returns gpt-5.4 (current cost-ceiling decision)", () => {
-  assert.equal(registry.aliasFor("opus", "openai"), "gpt-5.4");
+test("aliasFor('opus', 'openai') returns gpt-6.1-sol (cost-ceiling: not gpt-6-astra)", () => {
+  assert.equal(registry.aliasFor("opus", "openai"), "gpt-6.1-sol");
 });
 
-test("aliasFor('opus', 'google') returns gemini-2.5-pro", () => {
-  assert.equal(registry.aliasFor("opus", "google"), "gemini-2.5-pro");
+test("aliasFor('opus', 'google') returns gemini-3.1-pro-preview", () => {
+  assert.equal(registry.aliasFor("opus", "google"), "gemini-3.1-pro-preview");
 });
 
 test("defaultModelFor returns the marked default per vendor", () => {
-  assert.equal(registry.defaultModelFor("anthropic"), "claude-sonnet-5");
-  assert.equal(registry.defaultModelFor("openai"), "gpt-5.4-mini");
-  assert.equal(registry.defaultModelFor("google"), "gemini-2.5-flash");
+  assert.equal(registry.defaultModelFor("anthropic"), "claude-sonnet-5-5");
+  assert.equal(registry.defaultModelFor("openai"), "gpt-6.1-sol");
+  assert.equal(registry.defaultModelFor("google"), "gemini-3.7-flash");
 });
 
 test("dropdownFor('anthropic') returns ordered {id,label,desc} entries", () => {
@@ -74,9 +74,9 @@ test("coldStartMsFor returns 90s for Sonnet 4.6", () => {
 test("legacyAliasMigrationFor('anthropic') returns the old-alias map", () => {
   const m = registry.legacyAliasMigrationFor("anthropic");
   assert.equal(m["haiku"], "claude-haiku-4-5");
-  assert.equal(m["sonnet"], "claude-sonnet-4-6");
-  assert.equal(m["opus"], "claude-opus-4-8");
-  assert.equal(m["opus[1m]"], "claude-opus-4-8");
+  assert.equal(m["sonnet"], "claude-sonnet-5-5");
+  assert.equal(m["opus"], "claude-opus-5-5");
+  assert.equal(m["opus[1m]"], "claude-opus-5-5");
 });
 
 test("codexCliSupported subset of OpenAI models", () => {
@@ -174,4 +174,75 @@ test("contextTokensFor returns value when present, null when absent (Fix 11)", (
 test("coldStartMsFor returns value when present, null when absent (Fix 11)", () => {
   assert.equal(registry.coldStartMsFor("claude-sonnet-4-6"), 90_000);
   assert.equal(registry.coldStartMsFor("nonexistent-id"), null);
+});
+
+// ---------- retired-model migration (2026-10 lineup refresh) ----------
+
+const _dropdownIds = () => new Set(
+  ["anthropic", "openai", "google"].flatMap((v) => registry.dropdownFor(v).map((o) => o.id)),
+);
+
+test("every retirement successor is a current dropdown model", () => {
+  // A successor that is itself hidden would leave the user on a model the
+  // toolbar cannot label — the exact mismatch the migration exists to stop.
+  const shown = _dropdownIds();
+  for (const [from, to] of Object.entries(registry.RETIRED_MODEL_MIGRATION)) {
+    assert.ok(shown.has(to), `${from} → ${to}, but ${to} is not in any dropdown`);
+  }
+});
+
+test("no retired id is still offered in a dropdown", () => {
+  const shown = _dropdownIds();
+  for (const from of Object.keys(registry.RETIRED_MODEL_MIGRATION)) {
+    assert.ok(!shown.has(from), `${from} is retired but still in a dropdown`);
+  }
+});
+
+test("every hidden registry model has a retirement successor", () => {
+  // Hidden = in the registry (priced) but not in a dropdown. Without a
+  // successor, a user pinned to it would run it under the default's label.
+  const shown = _dropdownIds();
+  for (const m of registry.allModels()) {
+    if (shown.has(m.id)) continue;
+    assert.ok(registry.retiredModelSuccessor(m.id), `hidden ${m.id} has no successor`);
+  }
+});
+
+test("retirement successors stay within the same vendor", () => {
+  for (const [from, to] of Object.entries(registry.RETIRED_MODEL_MIGRATION)) {
+    const toEntry = registry.allModels().find((m) => m.id === to);
+    const fromEntry = registry.allModels().find((m) => m.id === from);
+    // Removed ids have no entry — check by prefix family instead.
+    const family = (id) => (id.startsWith("claude-") ? "anthropic"
+      : id.startsWith("gemini-") ? "google" : "openai");
+    assert.equal(toEntry.vendor, fromEntry ? fromEntry.vendor : family(from), `${from} → ${to} crosses vendors`);
+  }
+});
+
+test("vendor-shutdown ids are removed from the registry but still migrated", () => {
+  for (const id of ["o3", "o3-mini", "o4-mini", "gpt-5", "gpt-5-mini", "gpt-4.1-nano"]) {
+    assert.equal(registry.isKnownModel(id), false, `${id} should be removed`);
+    assert.ok(registry.retiredModelSuccessor(id), `${id} needs a successor`);
+  }
+});
+
+test("retiredModelSuccessor leaves current and unknown ids alone", () => {
+  assert.equal(registry.retiredModelSuccessor("claude-sonnet-5-5"), null);
+  assert.equal(registry.retiredModelSuccessor("gpt-future-9"), null, "forward-compat: unknown ids pass");
+  assert.equal(registry.retiredModelSuccessor("constructor"), null, "no prototype-key leakage");
+});
+
+test("Codex ChatGPT-auth set keeps only ids verified on every probed client", () => {
+  const set = registry.codexCliSupportedModels();
+  assert.ok(set.has("gpt-5.6-terra"), "Codex default must be supported");
+  // gpt-6-luna worked on codex 0.160.1 but was rejected on 0.145.0, and
+  // Gryphon cannot see the client version — it must not be offered.
+  assert.equal(set.has("gpt-6-luna"), false);
+  assert.equal(set.has("gpt-6.1-sol"), false);
+  assert.equal(set.has("gpt-6-astra"), false);
+});
+
+test("antigravity-cli set is exactly the ids agy's catalog accepts", () => {
+  const set = registry.antigravityCliSupportedModels();
+  assert.deepEqual([...set].sort(), ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]);
 });

@@ -38,6 +38,11 @@ const PROVIDER_FLAGS: Record<string, Set<string>> = {
     "--input-format",
     "--output-format",
     "--print",
+    // Issue #25 launch-scope flags — Gryphon emits these for claude-code
+    // and honours a consumer-supplied value; meaningless to other CLIs.
+    "--setting-sources",
+    "--strict-mcp-config",
+    "--mcp-config",
   ]),
   "codex-cli": new Set([
     // `--disable` is Codex's structured-disable flag, distinct from

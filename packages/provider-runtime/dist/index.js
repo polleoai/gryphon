@@ -40,6 +40,9 @@ module.exports = {
     classifyProviderFailure: failover.classifyProviderFailure,
     resolveFallback: factory.resolveFallback,
     createProviderForKind: factory.createProviderForKind,
+    // Per-kind default model (CLI kinds with a model subset have their own) —
+    // the Settings fallback picker pre-selects it.
+    defaultModelForKind: factory.defaultModelForKind,
     // Readiness kernel (issue #16) — the proactive, before-send companion to
     // the #15 failover signal. describeProviderReadiness answers "is the
     // selected provider usable, and if not why" from presence alone (no

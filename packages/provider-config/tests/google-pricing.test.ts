@@ -28,18 +28,18 @@ const {
 
 // ---------- alias resolution ----------
 
-test("resolveModel returns DEFAULT_MODEL (gemini-2.5-flash) for null/undefined/empty", () => {
+test("resolveModel returns DEFAULT_MODEL (gemini-3.7-flash) for null/undefined/empty", () => {
   assert.equal(resolveModel(null), DEFAULT_MODEL);
   assert.equal(resolveModel(undefined), DEFAULT_MODEL);
   assert.equal(resolveModel(""), DEFAULT_MODEL);
-  assert.equal(DEFAULT_MODEL, "gemini-2.5-flash");
+  assert.equal(DEFAULT_MODEL, "gemini-3.7-flash");
 });
 
 test("resolveModel maps Anthropic-style aliases (haiku/sonnet/opus) to Gemini counterparts", () => {
-  assert.equal(resolveModel("haiku"), "gemini-2.5-flash-lite");
-  assert.equal(resolveModel("sonnet"), "gemini-2.5-flash");
-  assert.equal(resolveModel("opus"), "gemini-2.5-pro");
-  assert.equal(resolveModel("opus[1m]"), "gemini-2.5-pro");
+  assert.equal(resolveModel("haiku"), "gemini-3.5-flash-lite");
+  assert.equal(resolveModel("sonnet"), "gemini-3.7-flash");
+  assert.equal(resolveModel("opus"), "gemini-3.1-pro-preview");
+  assert.equal(resolveModel("opus[1m]"), "gemini-3.1-pro-preview");
 });
 
 test("resolveModel passes Gemini native ids through unchanged", () => {
@@ -131,10 +131,10 @@ test("computeCost: breakdown reports input + output costs separately", () => {
   assert.equal(cost, breakdown.input + breakdown.output);
 });
 
-test("computeCost: unknown model falls back to _default pricing (mirrors gemini-2.5-flash)", () => {
+test("computeCost: unknown model falls back to _default pricing (mirrors gemini-3.7-flash)", () => {
   const { cost: known } = computeCost(
     { promptTokenCount: 1_000_000, candidatesTokenCount: 0 },
-    "gemini-2.5-flash",
+    "gemini-3.7-flash",
   );
   const { cost: unknown } = computeCost(
     { promptTokenCount: 1_000_000, candidatesTokenCount: 0 },

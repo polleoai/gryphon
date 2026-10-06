@@ -235,6 +235,14 @@ function _firstAvailableKind(settings: any): ProviderKind | null {
  * resolveFallback when `settings.fallbackModel` is unset.
  */
 function defaultModelForKind(kind: string): string {
+  // CLI kinds that serve only a subset of their vendor's models have their
+  // own default — the vendor default (gpt-6.1-sol) is rejected by Codex's
+  // ChatGPT auth, and agy has its own catalog.
+  try {
+    const pricing = require("@gryphon/provider-config").pricing;
+    if (kind === "codex-cli") return pricing.openai.CODEX_CLI_DEFAULT_MODEL;
+    if (kind === "antigravity-cli") return pricing.google.ANTIGRAVITY_CLI_DEFAULT_MODEL;
+  } catch (_) { /* fall through to the vendor default */ }
   const vendor =
     (kind === "anthropic-api" || kind === "claude-code") ? "anthropic" :
     (kind === "openai-api" || kind === "codex-cli") ? "openai" :

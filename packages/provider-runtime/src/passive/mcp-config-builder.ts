@@ -21,6 +21,17 @@ function uniqueTmp(prefix: string, ext: string): string {
   return path.join(os.tmpdir(), `${prefix}-${process.pid}-${Date.now()}-${_counter}${ext}`);
 }
 
+// Write an `{ mcpServers }` map to a fresh temp file for `--mcp-config` and
+// return its path. `wx` refuses to write through a pre-planted file/symlink;
+// `0600` keeps server commands + env (which may carry tokens) owner-only.
+// Shared by the passive backend and the claude-code provider's scoped
+// launch (issue #25). The caller owns unlinking the file.
+function writeMcpConfigFile(mcpServers: Record<string, any>, prefix = "gryphon-mcp"): string {
+  const jsonPath = uniqueTmp(prefix, ".json");
+  fs.writeFileSync(jsonPath, JSON.stringify({ mcpServers }), { encoding: "utf8", flag: "wx", mode: 0o600 });
+  return jsonPath;
+}
+
 // declaredTools: Array<{name, description, input_schema}>
 // opts: { shimEntry: string, socketPath: string }
 function buildMcpConfig(declaredTools: any[], opts: any): any {
@@ -36,9 +47,8 @@ function buildMcpConfig(declaredTools: any[], opts: any): any {
       },
     },
   };
-  const jsonPath = uniqueTmp("gryphon-passive-mcp", ".json");
-  fs.writeFileSync(jsonPath, JSON.stringify(json), "utf8");
+  const jsonPath = writeMcpConfigFile(json.mcpServers, "gryphon-passive-mcp");
   return { json, jsonPath };
 }
 
-export { buildMcpConfig, namespacedToolName, MCP_SERVER_NAME };
+export { buildMcpConfig, writeMcpConfigFile, namespacedToolName, MCP_SERVER_NAME };

@@ -97,7 +97,7 @@
  *     — first line of every turn. No `model` field is present (unlike
  *     gemini-cli's init event), so this provider cannot learn the
  *     resolved model from the stream; `resolvedModel` stays whatever
- *     `coerceToVendorModel(options.model)` produced at construction.
+ *     `coerceToAntigravityCliModel(options.model)` produced at construction.
  *
  *   { event: "step_update", step_update: { conversation_id, step_index,
  *     state: "ACTIVE"|"DONE", step_type, text_delta?, tool_name?,
@@ -163,8 +163,9 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
 const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
-const { computeCost, coerceToVendorModel, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.google;
+const { computeCost, coerceToAntigravityCliModel, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.google;
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
+const { registry } = require("@gryphon/provider-config");
 const { hookDispatcher: dispatcher } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
 // Default hard client-side timeout for a single `agy` turn. Antigravity's
@@ -277,9 +278,10 @@ class AntigravityCliProvider {
         this.alive = false;
         this.sessionId = _wrapSession(options.resumeSessionId) || null;
         // Antigravity is the Gemini-based Antigravity suite (per issue #19),
-        // so it reuses the google pricing table + model coercion — same as
-        // GeminiCliProvider.
-        this.resolvedModel = coerceToVendorModel(options.model);
+        // so it reuses the google pricing table — but NOT the plain Gemini
+        // coercion: registry ids agy rejects (gemini-3.5-flash-lite,
+        // gemini-3.1-pro-preview) coerce to the agy default.
+        this.resolvedModel = coerceToAntigravityCliModel(options.model);
         this.contextTokens = 0;
         this.lastCumulativeCost = 0;
         this._buffer = "";
@@ -317,7 +319,12 @@ class AntigravityCliProvider {
         const raw = this.options.model;
         if (!raw)
             return null;
-        return FOREIGN_MODEL_RE.test(String(raw)) ? this.resolvedModel : raw;
+        // Registry ids go through the agy coercion (resolvedModel); anything
+        // else is agy's own vocabulary and is forwarded untouched.
+        if (FOREIGN_MODEL_RE.test(String(raw)) || registry.isKnownModel(String(raw))) {
+            return this.resolvedModel;
+        }
+        return raw;
     }
     /**
      * Decide whether this spawn may auto-approve, and whether a failure to
