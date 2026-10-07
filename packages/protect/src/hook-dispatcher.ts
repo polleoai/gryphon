@@ -34,9 +34,9 @@
 
 const path = require("path") as typeof import("path");
 const fs = require("fs") as typeof import("fs");
-const { findNodeBinary } = require("../../provider-runtime/src/utils");
+const { findNodeBinary } = require("../../provider-runtime/dist/utils");
 const { getAdapter, listSupportedKinds } = require("./hook-adapters");
-const { HOOK_FILES } = require("../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 
 /**
  * Run pre-flight diagnostics. Returns `{ ok, reason, details }`.

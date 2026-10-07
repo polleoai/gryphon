@@ -51,7 +51,7 @@ const crypto = require("crypto") as typeof import("crypto");
 const {
   DEFAULT_HOOK_TIMEOUTS,
   HOOK_FILES,
-} = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 
 const KIND = "antigravity-cli";
 

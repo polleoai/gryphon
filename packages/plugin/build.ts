@@ -317,6 +317,23 @@ const GRYPHON_SRC_ALIASES = {
   "@gryphon/provider-runtime": path.resolve(REPO_ROOT, "packages", "provider-runtime", "src", "index.ts"),
 };
 
+// protect's cross-package reach-ins name `../../provider-runtime/dist/...` so
+// its compiled dist/ resolves for plain-node consumers (gryphon-dev#23). The
+// bundle must stay on src/ like the aliases above — one module instance, and
+// no dependency on a prebuilt dist/ (release CI runs `npm run build` only).
+const PROVIDER_RUNTIME_DIST_TO_SRC = {
+  name: "provider-runtime-dist-to-src",
+  setup(build) {
+    build.onResolve({ filter: /provider-runtime\/dist\// }, (args) => {
+      const target = path.resolve(args.resolveDir, args.path.replace("/provider-runtime/dist/", "/provider-runtime/src/"));
+      for (const candidate of [`${target}.ts`, path.join(target, "index.ts")]) {
+        if (fs.existsSync(candidate)) return { path: candidate };
+      }
+      return { errors: [{ text: `provider-runtime src counterpart not found for ${args.path}` }] };
+    });
+  },
+};
+
 const config = {
   entryPoints: [path.resolve(PLUGIN_SRC, "plugin.ts")],
   outfile: "main.js",
@@ -343,7 +360,7 @@ const config = {
   // mostly by collapsing the @anthropic-ai/sdk's internal layers.
   minify: !watch,
   logLevel: "info",
-  plugins: [installToVaultPlugin],
+  plugins: [PROVIDER_RUNTIME_DIST_TO_SRC, installToVaultPlugin],
 };
 
 async function run() {

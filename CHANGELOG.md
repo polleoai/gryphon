@@ -4,6 +4,12 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.10.3] — 2026-10-07
+
+### Fixed
+
+- **Gryphon's building blocks now load outside Obsidian.** Gryphon's source includes ready-built libraries (its provider and protection packages) that other programs can embed. Loaded directly with Node.js, they failed with "Cannot find module", because one of them reached into the other's source files instead of its built output. Every such reference now points at the built output, so a program embedding Gryphon can create any of its command-line providers without a workaround. Nothing changes for the Obsidian plugin itself.
+
 ## [2.10.2] — 2026-10-06
 
 ### Security

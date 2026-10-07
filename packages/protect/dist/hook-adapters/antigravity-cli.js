@@ -48,7 +48,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
-const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, } = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 const KIND = "antigravity-cli";
 /**
  * Top-level key we own inside the shared hooks.json. Antigravity keys hook

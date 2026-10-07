@@ -14,7 +14,7 @@ const {
   buildHookSettings,
   buildPermissionsOnlySettings,
   writeHookSettingsFile,
-} = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 
 const KIND = "claude-code";
 

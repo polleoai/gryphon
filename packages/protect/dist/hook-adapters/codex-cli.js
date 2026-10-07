@@ -24,7 +24,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
-const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 const { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT, } = require("../system-prompt-hints");
 const KIND = "codex-cli";
 // Files we symlink from the real ~/.codex/ into our overlay so Codex

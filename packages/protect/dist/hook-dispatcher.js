@@ -34,9 +34,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 const path = require("path");
 const fs = require("fs");
-const { findNodeBinary } = require("../../provider-runtime/src/utils");
+const { findNodeBinary } = require("../../provider-runtime/dist/utils");
 const { getAdapter, listSupportedKinds } = require("./hook-adapters");
-const { HOOK_FILES } = require("../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 /**
  * Run pre-flight diagnostics. Returns `{ ok, reason, details }`.
  * `details` is the per-component breakdown so a debug log can show

@@ -10,7 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * into the HookDispatcher's contract.
  */
 const fs = require("fs");
-const { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile, } = require("../../../provider-runtime/src/providers/claude-code/hook-settings-builder");
+const { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 const KIND = "claude-code";
 /**
  * Translate a canonical-ish hook-config request into Claude Code spawn

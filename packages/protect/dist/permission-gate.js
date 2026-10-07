@@ -225,10 +225,11 @@ function _getAssistantName(ctx) {
     try {
         // factory.js is owned by the runtime layer (Stage 3) which currently
         // lives under packages/provider-runtime/. Cross-package relative reach
-        // is the interim shape; Stage 4's provider-config extraction moves
+        // is the interim shape (dist/, not src/, so the compiled tree resolves
+        // under plain node — gryphon-dev#23); Stage 4's provider-config extraction moves
         // getActiveProviderKind to its proper home and we'll switch to a
         // package import then.
-        const { getActiveProviderKind } = require("../../provider-runtime/src/factory");
+        const { getActiveProviderKind } = require("../../provider-runtime/dist/factory");
         const kind = getActiveProviderKind(ctx && ctx.plugin);
         if (kind === "openai-api" || kind === "codex-cli")
             return "Codex";
