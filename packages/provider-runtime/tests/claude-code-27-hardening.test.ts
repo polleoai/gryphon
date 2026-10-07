@@ -120,3 +120,82 @@ test("#27h: liveness probe spawns claude scoped, in a neutral cwd", { skip: proc
   assert.ok(lines.includes("--setting-sources="), "probe must load no settings files");
   assert.ok(lines.includes("--strict-mcp-config"), "probe must ignore ambient MCP config");
 });
+
+// ── Symlink hops (review of 2.10.1): realpathSync follows a link before its
+//    target can be checked; on Windows a link to \\host\share leaks NTLM. ──
+
+/** Record every path handed to the fs calls that can reach a link target. */
+function recordAllFsPaths(fn: () => void): string[] {
+  const seen: string[] = [];
+  const names = ["realpathSync", "statSync", "lstatSync", "readFileSync", "readlinkSync", "openSync"];
+  const orig: Record<string, any> = {};
+  for (const n of names) {
+    orig[n] = fs[n];
+    fs[n] = function (p: any, ...rest: any[]) { seen.push(String(p)); return orig[n].call(this, p, ...rest); };
+  }
+  try { fn(); } finally { for (const n of names) fs[n] = orig[n]; }
+  return seen;
+}
+
+test("#27h: a vault symlinked folder pointing outside is never followed", { skip: process.platform === "win32" }, () => {
+  const parent = tmpRoot();
+  const outside = path.join(parent, "outside");
+  const root = path.join(parent, "vault");
+  fs.mkdirSync(outside); fs.mkdirSync(root);
+  fs.writeFileSync(path.join(outside, "secret.md"), "SECRET");
+  fs.symlinkSync(outside, path.join(root, "sub"));
+  const mem = path.join(root, "CLAUDE.md");
+  fs.writeFileSync(mem, "Top.\n@sub/secret.md\n");
+  let res: any;
+  const touched = recordAllFsPaths(() => { res = buildMemoryAppendix([mem]); });
+  assert.ok(!touched.some((p) => p.startsWith(outside)), `fs touched outside: ${touched.filter((p) => p.startsWith(outside))}`);
+  assert.doesNotMatch(res.text, /SECRET/);
+  assert.ok(res.warnings.some((w: string) => /points outside the memory folder/.test(w)));
+});
+
+test("#27h: a symlink whose target is a network path is rejected unopened", { skip: process.platform === "win32" }, () => {
+  const root = tmpRoot();
+  fs.symlinkSync("//attacker.example/share/x.md", path.join(root, "net.md"));
+  const mem = path.join(root, "CLAUDE.md");
+  fs.writeFileSync(mem, "Top.\n@net.md\n");
+  let res: any;
+  const touched = recordAllFsPaths(() => { res = buildMemoryAppendix([mem]); });
+  assert.ok(!touched.some((p) => /attacker\.example/.test(p)), "network target must never be passed to fs");
+  assert.ok(res.warnings.some((w: string) => /symlink to a network location/.test(w)));
+});
+
+test("#27h: a top-level CLAUDE.md symlinked outside is not loaded, and not opened", { skip: process.platform === "win32" }, () => {
+  const parent = tmpRoot();
+  const root = path.join(parent, "vault");
+  fs.mkdirSync(root);
+  const target = path.join(parent, "elsewhere.md");
+  fs.writeFileSync(target, "ELSEWHERE");
+  const mem = path.join(root, "CLAUDE.md");
+  fs.symlinkSync(target, mem);
+  let res: any;
+  const touched = recordAllFsPaths(() => { res = buildMemoryAppendix([mem]); });
+  assert.ok(!touched.includes(target), "outside target must never be opened");
+  assert.deepEqual(res.missing, [mem]);
+  assert.doesNotMatch(res.text, /ELSEWHERE/);
+});
+
+test("#27h: an in-vault symlink still resolves (regression guard)", { skip: process.platform === "win32" }, () => {
+  const root = tmpRoot();
+  fs.writeFileSync(path.join(root, "real.md"), "CHARLIE-2210");
+  fs.symlinkSync("real.md", path.join(root, "alias.md"));
+  const mem = path.join(root, "CLAUDE.md");
+  fs.writeFileSync(mem, "Top.\n@alias.md\n");
+  const res = buildMemoryAppendix([mem]);
+  assert.match(res.text, /CHARLIE-2210/);
+});
+
+test("#27h: a symlink loop terminates", { skip: process.platform === "win32" }, () => {
+  const root = tmpRoot();
+  fs.symlinkSync("b.md", path.join(root, "a.md"));
+  fs.symlinkSync("a.md", path.join(root, "b.md"));
+  const mem = path.join(root, "CLAUDE.md");
+  fs.writeFileSync(mem, "Top.\n@a.md\n");
+  const res = buildMemoryAppendix([mem]);
+  assert.match(res.text, /Top\./);
+  assert.ok(res.warnings.some((w: string) => /too many symlinks/.test(w)));
+});

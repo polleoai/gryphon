@@ -54,6 +54,74 @@ function isUnder(child, root) {
     const rel = path.relative(root, child);
     return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
+function isUnderOrEq(child, root) {
+    return path.relative(root, child) === "" || isUnder(child, root);
+}
+const MAX_LINK_HOPS = 40;
+/** A link target naming a network location (incl. Windows `\\?\UNC\` form). */
+const NETWORK_LINK = /^(?:\\\\\?\\UNC\\|\\\\|\/\/)/i;
+/**
+ * Resolve `abs` (lexically under `root`) to a real path WITHOUT ever touching
+ * the filesystem outside `root`. `fs.realpathSync` follows a symlink before
+ * anyone can check where it points — a vault symlink/junction to
+ * `\\host\share` would open SMB and leak the user's NTLM credentials on
+ * Windows. So walk one component at a time with lstat (inspects the link
+ * itself) and readlink (reads its target as text), rejecting any link whose
+ * target is a network path or lands outside `root` before following it.
+ * Returns null when the path is missing or rejected (`why` set if rejected).
+ */
+function resolveWithin(root, abs) {
+    let pending = path.relative(root, abs).split(/[\\/]+/).filter((c) => c !== "" && c !== ".");
+    let cur = root;
+    let hops = 0;
+    while (pending.length > 0) {
+        const comp = pending.shift();
+        if (comp === "..") {
+            cur = path.dirname(cur);
+            if (!isUnderOrEq(cur, root))
+                return { path: null, why: "it resolves outside the memory folder" };
+            continue;
+        }
+        const next = path.join(cur, comp);
+        let st;
+        try {
+            st = fs.lstatSync(next);
+        }
+        catch (_) {
+            return { path: null };
+        } // missing → plain "@word"
+        if (!st.isSymbolicLink()) {
+            cur = next;
+            continue;
+        }
+        if (++hops > MAX_LINK_HOPS)
+            return { path: null, why: "too many symlinks" };
+        let link;
+        try {
+            link = fs.readlinkSync(next);
+        }
+        catch (_) {
+            return { path: null };
+        }
+        // Order matters: `\\?\UNC\host` is network; `\\?\C:\...` is a local
+        // long-path target — strip that prefix before the UNC test, or a
+        // legitimate in-vault junction would be rejected as "network".
+        if (/^\\\\\?\\UNC\\/i.test(link))
+            return { path: null, why: "it is a symlink to a network location" };
+        if (/^\\\\\?\\/.test(link))
+            link = link.slice(4);
+        if (NETWORK_LINK.test(link))
+            return { path: null, why: "it is a symlink to a network location" };
+        const resolved = path.resolve(path.dirname(next), link);
+        if (NETWORK_LINK.test(resolved))
+            return { path: null, why: "it is a symlink to a network location" };
+        if (!isUnderOrEq(resolved, root))
+            return { path: null, why: "it is a symlink that points outside the memory folder" };
+        pending = path.relative(root, resolved).split(/[\\/]+/).filter((c) => c !== "" && c !== ".").concat(pending);
+        cur = root;
+    }
+    return { path: cur };
+}
 /** `@path` tokens outside fenced and inline code, in document order. */
 function findImports(text) {
     const out = [];
@@ -113,14 +181,21 @@ function buildMemoryAppendix(files) {
                 warnings.push(`skipped memory import @${ref} in ${path.basename(real)}: it resolves outside ${root}`);
                 continue;
             }
-            let targetReal;
+            // Never realpath an untrusted path: it follows symlinks before the
+            // target can be checked (see resolveWithin).
+            const r = resolveWithin(root, target);
+            if (r.path === null) {
+                if (r.why)
+                    warnings.push(`skipped memory import @${ref} in ${path.basename(real)}: ${r.why}`);
+                continue; // missing → an ordinary "@word", not an import
+            }
+            const targetReal = r.path;
             try {
-                targetReal = fs.realpathSync(target);
                 if (!fs.statSync(targetReal).isFile())
                     continue;
             }
             catch (_) {
-                continue; // not a file → an ordinary "@word", not an import
+                continue;
             }
             if (!isUnder(targetReal, root)) {
                 warnings.push(`skipped memory import @${ref} in ${path.basename(real)}: it resolves outside ${root}`);
@@ -144,7 +219,15 @@ function buildMemoryAppendix(files) {
             // CLAUDE.md as a symlink (git keeps them); following it would move
             // the containment root out of the vault.
             root = fs.realpathSync(path.dirname(f));
-            real = fs.realpathSync(f);
+            // The FILE is vault content (git keeps symlinks): resolve it inside
+            // the named folder only — never realpath it (see resolveWithin).
+            const r = resolveWithin(root, path.join(root, path.basename(f)));
+            if (r.path === null) {
+                if (r.why)
+                    warnings.push(`memory file ${f}: ${r.why}; not loaded`);
+                throw new Error(r.why || "missing");
+            }
+            real = r.path;
             if (!fs.statSync(real).isFile())
                 throw new Error("not a file");
         }
