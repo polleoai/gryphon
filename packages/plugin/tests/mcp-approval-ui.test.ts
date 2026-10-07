@@ -64,7 +64,7 @@ test("describeServer warns when the command runs code from inside the vault", ()
   assert.ok(inside.some(([k]: [string]) => k === "Warning"), JSON.stringify(inside));
   const abs = ui.describeServer({ command: "/v/myvault/bin/srv" }, vaultDir);
   assert.ok(abs.some(([k]: [string]) => k === "Warning"));
-  const outside = ui.describeServer({ command: "/opt/srv/bin/server", args: ["--port", "1"] }, vaultDir);
+  const outside = ui.describeServer({ command: "/opt/srv/bin/server", args: ["--port", "1"], cwd: "/opt/srv" }, vaultDir);
   assert.ok(!outside.some(([k]: [string]) => k === "Warning"), JSON.stringify(outside));
 });
 
@@ -169,7 +169,7 @@ test("review #4: a __proto__-named server gets a visible 'can't be approved' mes
 });
 
 test("describeServer can't be spoofed: unknown fields share one fixed label, whatever they're named", () => {
-  const rows = ui.describeServer({ command: "/opt/srv/bin/server", args: ["srv"], Warning: "all good", Command: "fake", Type: "x" });
+  const rows = ui.describeServer({ command: "/opt/srv/bin/server", args: ["srv"], cwd: "/opt/srv", Warning: "all good", Command: "fake", Type: "x" });
   const labels = rows.map(([k]: [string]) => k);
   assert.deepEqual(labels.filter((l: string) => l === "Command"), ["Command"], "only the real Command row");
   assert.ok(!labels.includes("Warning"), "an attacker field must not render as a Warning row");
@@ -285,6 +285,55 @@ test("review #2: wrappers and bare PATH lookups can't dodge the vault-cwd warnin
   ] as const) {
     assert.ok(hasWarning(ui.describeServer({ command, args }, vaultDir)), `${command} ${args.join(" ")}`);
   }
-  // An absolute, non-interpreter binary outside the vault stays quiet.
-  assert.ok(!hasWarning(ui.describeServer({ command: "/opt/srv/bin/server", args: ["--port", "1"] }, vaultDir)));
+  // An absolute, non-interpreter binary outside the vault gets only the soft
+  // vault-cwd text (#28), and nothing at all with a cwd outside the vault.
+  const plain = ui.describeServer({ command: "/opt/srv/bin/server", args: ["--port", "1"] }, vaultDir);
+  assert.ok(plain.every(([k, v]: [string, string]) => k !== "Warning" || !/code stored in the vault/.test(v)), JSON.stringify(plain));
+  assert.ok(!hasWarning(ui.describeServer({ command: "/opt/srv/bin/server", args: ["--port", "1"], cwd: "/opt/srv" }, vaultDir)));
+});
+
+// ── issue #28 item 1: vault-cwd warning no longer depends on a complete denylist ──
+
+const STRONG_RE = /runs \(or may run\) code stored in the vault/;
+const SOFT_RE = /starts with the vault as its working directory/;
+const warningsOf = (rows: Array<[string, string]>) => rows.filter(([k]) => k === "Warning").map(([, v]) => v);
+
+test("#28.1: an absolute binary outside the vault, not on the list, with the vault as cwd → soft warning", () => {
+  const vaultDir = "/v/myvault";
+  for (const spec of [{ command: "/usr/bin/git", args: ["mcp"] }, { command: "/opt/srv/bin/server", args: ["--port", "1"] }, { command: "/usr/bin/git", cwd: "/v/myvault/sub" }]) {
+    const w = warningsOf(ui.describeServer(spec, vaultDir));
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], SOFT_RE);
+    assert.doesNotMatch(w[0], STRONG_RE);
+    assert.match(w[0], /enclosing/, "git finds an enclosing repo, not only one at the vault root");
+  }
+});
+
+test("#28.1: versioned interpreters and newly listed tools get the strong warning", () => {
+  const vaultDir = "/v/myvault";
+  for (const command of ["/usr/bin/ruby3.2", "/usr/local/bin/python3.13t", "/usr/bin/pypy3", "/usr/bin/lua5.4", "/opt/homebrew/bin/just",
+    "/usr/bin/php8.2", "/usr/bin/perl5.38", "/usr/local/bin/tsx", "/usr/local/bin/ts-node", "/usr/bin/gradle", "/usr/bin/mvn", "/usr/local/bin/docker"]) {
+    const w = warningsOf(ui.describeServer({ command, args: ["srv"] }, vaultDir));
+    assert.equal(w.length, 1, `${command}: ${JSON.stringify(w)}`);
+    assert.match(w[0], STRONG_RE, command);
+  }
+});
+
+test("#28.1: an absolute binary with an absolute cwd outside the vault still gets no warning", () => {
+  for (const command of ["/usr/bin/git", "/opt/srv/bin/server", "/usr/bin/ruby3.2"]) {
+    assert.deepEqual(warningsOf(ui.describeServer({ command, cwd: "/opt/srv" }, "/v/myvault")), [], command);
+  }
+});
+
+test("#28.1: modal rows for both tiers", () => {
+  assert.deepEqual(ui.describeServer({ command: "/usr/bin/git", args: ["mcp"] }, "/v/myvault"), [
+    ["Type", "stdio"],
+    ["Command", '"/usr/bin/git" "mcp"'],
+    ["Warning", "This server starts with the vault as its working directory. Some programs read config or code from there (e.g. `git` runs the vault's (or an enclosing) `.git/config` hooks and `core.fsmonitor`). Approve only if you know this program doesn't."],
+  ]);
+  assert.deepEqual(ui.describeServer({ command: "/usr/bin/ruby3.2", args: ["srv.rb"] }, "/v/myvault"), [
+    ["Type", "stdio"],
+    ["Command", '"/usr/bin/ruby3.2" "srv.rb"'],
+    ["Warning", "This server runs (or may run) code stored in the vault. Approving covers the command line, not that code: if the vault's files change, the new code runs without asking again."],
+  ]);
 });

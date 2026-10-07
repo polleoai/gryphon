@@ -138,10 +138,27 @@ test("_providerSignatureChanged detects a mismatch and ignores an unstamped proc
 
 // ── Issue #25: Claude Code launch scope ──────────────────────────────
 
-function scopeView({ consumerScope = null, inherit = false } = {}) {
+// Issue #29: the Advanced toggle is a security setting. Its value is the one
+// confirmed on this machine (the store outside the vault); `inherit` puts it
+// there, `fileOnly` leaves it only in data.json (which never applies alone).
+function scopeView({ consumerScope = null, inherit = false, fileOnly = false } = {}) {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { securitySettings } = require("@gryphon/protect");
+  process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "g25-scope-cfg-"));
+  const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g25-scope-vault-")));
   const view = Object.create(GryphonChatView.prototype);
   view.claudeCodeScope = consumerScope;
-  view.plugin = { settings: { claudeCodeInheritUserConfig: inherit } };
+  view.plugin = {
+    settings: { claudeCodeInheritUserConfig: inherit || fileOnly },
+    app: { vault: { adapter: { getBasePath: () => vault } } },
+    manifest: { id: "gryphon" },
+  };
+  view.app = view.plugin.app;
+  if (inherit) {
+    securitySettings.setMachineSecuritySetting({ vaultKey: vault, hostId: "gryphon" }, "claudeCodeInheritUserConfig", true);
+  }
   return view;
 }
 
@@ -152,6 +169,10 @@ test("#25 scope: default (toggle off, no consumer option) → provider default (
 test("#25 scope: Advanced toggle on → inherit user config + user MCP servers", () => {
   assert.deepEqual(scopeView({ inherit: true })._resolveClaudeCodeScope(),
     { inheritUserConfig: true, mcpServers: "inherit" });
+});
+
+test("#29 scope: the toggle on only in the vault's data.json → provider default until confirmed here", () => {
+  assert.equal(scopeView({ fileOnly: true })._resolveClaudeCodeScope(), undefined);
 });
 
 test("#25 scope: a consumer's claudeCodeScope overrides the Advanced toggle", () => {

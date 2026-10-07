@@ -47,9 +47,14 @@ const SCRIPT_EXT_RE = /\.(?:js|mjs|cjs|ts|py|rb|pl|sh|bash|zsh|ps1|bat|cmd|jar|p
  * `package.json` from it (`registry=` or `script-shell=` in a vault
  * `.npmrc` turns an innocent-looking `npx srv` into the vault's code),
  * build tools, and the shells / wrappers that could run any of them.
- * Used only for absolute commands: a bare name is warned regardless.
+ * Matched after a version suffix is stripped (`ruby3.2`, `python3.13t`,
+ * `pypy3`, `lua5.4`). It only picks the warning's WORDING: a vault-cwd
+ * server is warned either way, so a missing entry costs strength, not the
+ * warning (issue #28).
  */
-const CWD_LOADING_RE = /^(?:python[\d.]*|py|ruby|perl|php|node|nodejs|npx|npm|bun|bunx|deno|uv|uvx|pip[\d.]*|pipx|poetry|pipenv|conda|pnpm|pnpx|yarn|corepack|make|go|cargo|dotnet|java|sh|bash|zsh|dash|fish|env|cmd|powershell|pwsh|nice|nohup|time|xargs|sudo)$/;
+const CWD_LOADING_RE = /^(?:python|py|pypy|ruby|perl|php|lua|luajit|node|nodejs|npx|npm|bun|bunx|deno|tsx|ts-node|uv|uvx|pip|pipx|poetry|pipenv|conda|pnpm|pnpx|yarn|corepack|make|just|rake|go|cargo|dotnet|java|mvn|gradle|gradlew|cmake|ninja|docker|podman|sh|bash|zsh|dash|fish|env|cmd|powershell|pwsh|nice|nohup|time|xargs|sudo)$/;
+const STRONG_CWD_WARNING = "This server runs (or may run) code stored in the vault. Approving covers the command line, not that code: if the vault's files change, the new code runs without asking again.";
+const SOFT_CWD_WARNING = "This server starts with the vault as its working directory. Some programs read config or code from there (e.g. `git` runs the vault's (or an enclosing) `.git/config` hooks and `core.fsmonitor`). Approve only if you know this program doesn't.";
 
 /** Vault-supplied text → safe to display (Cc / bidi chars escaped). */
 const _clean: (v: unknown) => string = mcpApprovals.displaySafe;
@@ -99,19 +104,21 @@ function describeServer(spec: any, vaultDir: string | null = null): Array<[strin
   if (typeof s.command === "string") {
     const args = Array.isArray(s.args) ? s.args : [];
     rows.push(["Command", [s.command, ...args].map((a: unknown) => JSON.stringify(String(a))).join(" ")]);
-    // The cwd is the vault unless the spec sets one outside it. From there,
-    // warn unless the command is an absolute binary outside the vault that
-    // isn't an interpreter, package runner, build tool or wrapper (see
-    // CWD_LOADING_RE): a denylist of bare names is dodged by `env npx …`
-    // or `sh -c …`, and a bare name resolves through PATH to anything.
-    // Matched on the program, not its flags, since flags cluster (`-Im`,
-    // `-mpkg`) in too many forms.
+    // The cwd is the vault unless the spec sets one outside it, and any
+    // program may read config or code from its cwd — so a vault cwd is
+    // always warned. The strong text goes to interpreters, package runners,
+    // build tools and wrappers (CWD_LOADING_RE), to bare or relative names
+    // (PATH can resolve them to anything), to `-m`, and to anything pointing
+    // into the vault; an unlisted absolute binary outside it gets the softer
+    // text. Matched on the program, not its flags, since flags cluster
+    // (`-Im`, `-mpkg`) in too many forms.
     const cwdInVault = typeof s.cwd !== "string" || !_isAbsolute(s.cwd) || _pointsIntoVault(s.cwd, vaultDir);
-    const interp = String(s.command).replace(/\\/g, "/").split("/").pop()!.toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, "");
+    const interp = String(s.command).replace(/\\/g, "/").split("/").pop()!.toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, "").replace(/[\d.]+t?$/, "");
     const plainBinaryOutside = _isAbsolute(String(s.command)) && !_pointsIntoVault(s.command, vaultDir) && !CWD_LOADING_RE.test(interp);
-    const moduleFromCwd = cwdInVault && (!plainBinaryOutside || args.includes("-m"));
-    if (moduleFromCwd || [s.command, ...args].some((t) => _pointsIntoVault(t, vaultDir))) {
-      warnings.push("This server runs (or may run) code stored in the vault. Approving covers the command line, not that code: if the vault's files change, the new code runs without asking again.");
+    if ([s.command, ...args].some((t) => _pointsIntoVault(t, vaultDir)) || (cwdInVault && (!plainBinaryOutside || args.includes("-m")))) {
+      warnings.push(STRONG_CWD_WARNING);
+    } else if (cwdInVault) {
+      warnings.push(SOFT_CWD_WARNING);
     }
   }
   if (typeof s.url === "string") rows.push(["URL", s.url]);

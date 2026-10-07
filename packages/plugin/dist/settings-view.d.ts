@@ -23,6 +23,16 @@
  * so a minimal host never crashes. The standalone plugin is itself a valid
  * host, so standalone Gryphon behaves and looks exactly as before.
  *
+ * Security settings (issue #29): `claudeCodeInheritUserConfig`,
+ * `obsidianRestApiPolicy` and `permissionMode` show their EFFECTIVE value
+ * and write through `applySecuritySetting` (the machine-local store), never
+ * straight into `hostPlugin.settings`. That needs the optional `app`
+ * (vault path) and `manifest.id` (store namespace; or pass
+ * `options.securityHostId`); without them the controls show protected
+ * defaults and a write raises a visible error. `options.securityOverrides`
+ * shows host-set keys disabled, "Set by <host>". `_vaultRoot()` is never
+ * used for the security scope.
+ *
  * The Gryphon-plugin-only zone (Security / Protected-Mode / provenance /
  * diagnostics) stays in `GryphonSettingTab` — it depends on `provenanceStore`,
  * `@gryphon/protect`, and REST internals a generic host does not have.

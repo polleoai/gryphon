@@ -446,14 +446,31 @@ function _globsForCommand(entry) {
  * own: Claude Code enforces permissions.deny without any hooks.
  * Claude Code permission rules take `//abs/path` for an absolute path and
  * `~/path` for one under home; we emit both forms.
+ *
+ * Case (issue #28; live probe, Claude Code 2.1.292 on macOS APFS): Edit(...)
+ * rules matched case-insensitively, even for a directory that didn't exist
+ * yet, so `~/.Config/Gryphon/…` is denied with no extra rules. (Write(...)
+ * rules alone didn't deny the Write tool; Edit(...) is what covers it, and
+ * Write(...) is kept for older CLIs.) Bash(...) rules are case-sensitive and
+ * take `[cC]` literally, so the Bash globs spell out the case variants a
+ * user would type — lower, Title and UPPER per segment. A mixed-case
+ * spelling (`.cOnFiG`) still gets past the Bash fallback; the hook path
+ * lowercases and catches it.
  */
+const _caseVariants = (seg) => [...new Set([seg.toLowerCase(), seg.replace(/(^|[^A-Za-z])([a-z])/g, (_m, p, c) => p + c.toUpperCase()), seg.toUpperCase()])];
 function buildApprovalsStoreDenyGlobs() {
     const dir = approvalsDir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`);
     const home = os.homedir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`);
     const forms = [`/${dir}`];
     if (dir.toLowerCase().startsWith(home.toLowerCase() + "/"))
         forms.push(`~${dir.slice(home.length)}`);
-    const out = ["Bash(*mcp-approvals*)", "Bash(*.config/gryphon*)"];
+    const out = [];
+    // Both store files by name (#25 approvals, #29 security settings).
+    for (const name of [..._caseVariants("mcp-approvals"), ..._caseVariants("security-settings.json")])
+        out.push(`Bash(*${name}*)`);
+    for (const cfg of _caseVariants(".config"))
+        for (const g of _caseVariants("gryphon"))
+            out.push(`Bash(*${cfg}/${g}*)`);
     for (const f of forms)
         out.push(`Write(${f}/**)`, `Edit(${f}/**)`);
     return out;
@@ -462,18 +479,18 @@ function buildApprovalsStoreDenyGlobs() {
  * Build the full CC `--disallowedTools` glob array for the user's
  * active protected-pattern selections.
  *
- * @param {object} settings — plugin.settings
+ * @param {object} security — the spawn's security snapshot (issue #29)
  * @returns {string[]}        — CC glob rules, empty if nothing active
  */
-function buildDisallowedTools(settings) {
-    if (!settings)
+function buildDisallowedTools(security) {
+    if (!security)
         return [];
-    const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, settings.protectedPathsDisabled, settings.protectedPathsCustom);
-    const activeCommands = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, settings.protectedCommandsDisabled, settings.protectedCommandsCustom);
+    const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
+    const activeCommands = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
     const out = [];
     for (const p of activePaths)
         out.push(..._globsForPath(p));
-    const muteInstall = settings.blockPackageInstall === false;
+    const muteInstall = security.blockPackageInstall === false;
     const installSet = new Set(PACKAGE_INSTALL_COMMAND_PATTERNS);
     const cmds = muteInstall
         ? activeCommands.filter((c) => !installSet.has(c))

@@ -25,7 +25,7 @@ const path = require("path");
 const { buildEnhancedPath, findNodeBinary, resolveCliBinary } = require("../../utils");
 const { buildDisallowedTools } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
-const { mcpApprovals, buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
+const { mcpApprovals, buildApprovalsStoreDenyGlobs, securityInputsOf } = require("@gryphon/protect");
 const { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile, HOOK_FILES, } = require("./hook-settings-builder");
 const { resolveClaudeCodeScope } = require("./scope");
 const { buildMemoryAppendix, writeMemoryFile } = require("./memory-appendix");
@@ -243,8 +243,11 @@ class ClaudeCodeProvider {
         // as a hook command silently fails.
         const plugin = this.options.plugin;
         const hookNodePath = findNodeBinary();
-        const protectedModeOn = !!plugin && plugin.settings && plugin.settings.protectedMode !== false;
-        const autoDenyProtected = !!plugin && plugin.settings && plugin.settings.autoDenyProtected === true;
+        // Issue #29: the host's security snapshot for this spawn
+        // (options.security) decides protection, not the vault's data.json.
+        const security = plugin ? securityInputsOf({ security: this.options.security, plugin }) : null;
+        const protectedModeOn = !!security && security.protectedMode !== false;
+        const autoDenyProtected = !!security && security.autoDenyProtected === true;
         // Per-component visibility into enableHooks — the composite boolean
         // hides which specific check failed when hooks don't register, which
         // is exactly the diagnostic you need when debugging "hooks silently
@@ -396,9 +399,7 @@ class ClaudeCodeProvider {
         // denyGlobs FIRST, then decide what the Notice should say.
         let denyGlobs = [];
         if (!hooksActive && protectedModeOn) {
-            denyGlobs = plugin && plugin.settings
-                ? buildDisallowedTools(plugin.settings)
-                : [];
+            denyGlobs = security ? buildDisallowedTools(security) : [];
         }
         if (autoDenyProtected && protectedModeOn && !hooksActive) {
             {
@@ -499,8 +500,15 @@ class ClaudeCodeProvider {
         if (scope.pendingApprovals.length > 0)
             this._reportPendingMcpApprovals(scope);
         if (scopeWarnings.length > 0) {
-            console.error("[gryphon/cli] launch scope:", scopeWarnings.join("; "));
-            this.hostAdapter.notify(`Gryphon: ${scopeWarnings.join("; ")}. Claude Code is starting without ` +
+            // Issue #28: these can echo vault / ~/.claude.json content (V8's
+            // JSON.parse message quotes the input) — escape and cap each one here,
+            // the one sink they all reach. scope.warnings stays raw.
+            const shown = scopeWarnings.map((w) => {
+                const safe = mcpApprovals.displaySafe(w);
+                return safe.length > 300 ? safe.slice(0, 299) + "…" : safe;
+            });
+            console.error("[gryphon/cli] launch scope:", shown.join("; "));
+            this.hostAdapter.notify(`Gryphon: ${shown.join("; ")}. Claude Code is starting without ` +
                 `those MCP servers, so their tools won't be available this session.`, { level: "warn", timeoutMs: 15000 });
         }
         // Issue #27: the consumer's memory files (its vault CLAUDE.md, @-imports
@@ -602,7 +610,7 @@ class ClaudeCodeProvider {
                     console.error("[gryphon/cli] hook settings read-back failed:", e && e.message);
                 }
             }
-            else if (plugin && plugin.settings && plugin.settings.protectedMode !== false) {
+            else if (protectedModeOn) {
                 console.error("[gryphon/cli] hooks disabled — findNodeBinary:", hookNodePath, "pluginDir:", typeof plugin.absolutePluginDir === "function" ? plugin.absolutePluginDir() : null);
             }
             // Always dump the per-component preflight so a "hooks silently

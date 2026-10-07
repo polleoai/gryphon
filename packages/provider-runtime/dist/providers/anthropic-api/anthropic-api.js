@@ -213,6 +213,8 @@ class AnthropicAPIProvider {
             vaultRoot: this.cwd,
             permissionMode: this.options.permissionMode || "default",
             plugin: this.options.plugin || null,
+            // Issue #29: the host's security snapshot for this send.
+            security: this.options.security || null,
             hostAdapter: this.hostAdapter,
         };
         // L5 per-call budget cap: thread maxUsdBudget and the per-call cost

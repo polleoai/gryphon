@@ -120,8 +120,9 @@ interface ResolvedScope {
     };
 }
 /**
- * Read `<cwd>/.mcp.json`. Missing file → `{ servers: {} }` (not an error:
- * most vaults have none). Unreadable / malformed → `{ servers: {}, error }`.
+ * Read `<cwd>/.mcp.json`. Missing file, or an object with no `mcpServers`
+ * key → `{ servers: {} }` (not an error: most vaults have none).
+ * Unreadable / malformed → `{ servers: {}, error }`.
  */
 declare function readProjectMcpServers(cwd: string): {
     servers: Record<string, any>;

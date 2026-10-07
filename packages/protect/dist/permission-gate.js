@@ -19,6 +19,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * intentional — it tells the model what happened and lets it adapt.
  */
 const { buildDenyReason } = require("./deny-copy");
+const { securityInputsOf } = require("./security-settings-store");
 // Obsidian's Modal + Setting are resolved lazily inside _showPermissionModal
 // (only when a modal is actually about to be rendered). This keeps the module
 // loadable in headless Node processes — hook scripts, tests, and any future
@@ -45,12 +46,27 @@ function _ensureSessionCache(plugin) {
  *
  * @returns {Promise<{allow: boolean, reason: string}>}
  */
-async function checkPermission({ ctx, action, target, detail, cacheable = true, kind = "fileEdit", warning = null, category = null, categoryTitle = null, }) {
+async function checkPermission({ ctx, action, target, detail, cacheable = true, kind = "fileEdit", warning = null, category = null, categoryTitle = null, fixedInvariant = false, }) {
     const mode = ctx.permissionMode || "default";
+    // Issue #29: the spawn's security snapshot (ctx.security), else the
+    // caller's own settings — see securityInputsOf.
     const ctxPlugin = ctx.plugin;
-    const settings = (ctxPlugin && ctxPlugin.settings) || {};
-    const protectedModeOn = settings.protectedMode !== false; // default true
-    const autoDenyProtected = settings.autoDenyProtected === true;
+    const security = securityInputsOf(ctx);
+    const protectedModeOn = security.protectedMode !== false; // default true
+    const autoDenyProtected = security.autoDenyProtected === true;
+    // Fixed invariant (#29 review): writes to Gryphon's own trust stores are
+    // refused in EVERY mode, before Protected Mode's demotion, before YOLO /
+    // acceptEdits auto-accept, and without a modal. Those stores decide what
+    // protection is in force, so a tool call must never be able to change
+    // them — the legitimate path is Gryphon's UI on a user click.
+    if (fixedInvariant) {
+        return {
+            allow: false,
+            reason: `Refused: ${action} on ${target} would change Gryphon's own security ` +
+                `settings or MCP approvals. Those can only be changed from Gryphon's ` +
+                `settings or toolbar, by the user.`,
+        };
+    }
     if (mode === "plan") {
         return {
             allow: false,

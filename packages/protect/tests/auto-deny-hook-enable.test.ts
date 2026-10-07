@@ -101,7 +101,7 @@ test("_handleClassifyRequest short-circuits to allow for non-classified calls in
   // and modal-prompt in default permission mode — regressing the
   // "no prompts for routine ops" contract of auto-deny.
   assert.ok(
-    /!classification\s*&&\s*this\.settings\.autoDenyProtected\s*===\s*true/.test(src),
+    /!classification\s*&&\s*security\.autoDenyProtected\s*===\s*true/.test(src),
     "plugin.js must short-circuit to allow when auto-deny is ON and no classification match",
   );
 });

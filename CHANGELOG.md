@@ -4,6 +4,18 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.10.4] — 2026-10-07
+
+### Security
+
+- **A vault can no longer turn your protections off.** Gryphon's settings are saved inside the vault, so a vault you downloaded, synced or cloned could arrive with Protected Mode off, the protected-file and protected-command checks off, or the permission mode set to skip every prompt, and Gryphon would treat that as your choice. Settings that weaken protection now count only after you confirm them on this computer. The first time Gryphon finds such a setting, it starts with protections on and asks once: **Keep protections on** or **Use these settings on this machine**. Changes you make yourself, in Settings or from the chat toolbar, take effect from your next message and stay across restarts.
+- **The assistant can't change these settings or your MCP approvals for you.** Gryphon refuses any attempt by the assistant to edit the files that hold them, in every permission mode. With Protected Mode off, this check currently covers Claude Code and the API providers; the Codex, Gemini and Antigravity command-line chats get it in a later update.
+- **Tighter checks around vault MCP servers.** Gryphon now warns about any vault MCP server that would start inside the vault folder, not just a list of known programs. It checks more of what a tool is asked to do (lists, links, working folders and commands) before it can reach your approvals, and server names and warnings are shown with invisible characters made visible. An empty `.mcp.json` is accepted as "no servers" instead of an error.
+
+### For plugins that build on Gryphon
+
+- Protection settings a host plugin needs (for example, because it doesn't run Gryphon's permission service) are passed in code as `securityOverrides` on the chat view and the settings renderer. Values in the vault's settings file are no longer read for this.
+
 ## [2.10.3] — 2026-10-07
 
 ### Fixed

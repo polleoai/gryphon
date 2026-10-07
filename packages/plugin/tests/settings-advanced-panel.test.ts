@@ -30,11 +30,22 @@ test("renders all Advanced rows", () => {
 });
 
 test("Block REST toggle still fires gryphon:settings-changed", async () => {
+  // Issue #29: the policy is a security setting — written to the machine
+  // store under this vault + host, mirrored into settings for display.
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "g29-rest-cfg-"));
+  const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g29-rest-vault-")));
   let fired = null;
   const host = {
     settings: { obsidianRestApiPolicy: "blocked" },
     saveSettings: async () => {},
-    app: { workspace: { trigger: (ev) => { fired = ev; } } },
+    manifest: { id: "gryphon" },
+    app: {
+      vault: { adapter: { getBasePath: () => vault } },
+      workspace: { trigger: (ev) => { if (ev === "gryphon:settings-changed") fired = ev; } },
+    },
   };
   const panel = _el();
   renderAdvancedPanel(host, panel, noopCtx);
@@ -43,4 +54,6 @@ test("Block REST toggle still fires gryphon:settings-changed", async () => {
   await toggle.changeHandler(false);
   assert.equal(host.settings.obsidianRestApiPolicy, "allowed");
   assert.equal(fired, "gryphon:settings-changed");
+  const { securitySettings } = require("@gryphon/protect");
+  assert.equal(securitySettings.readMachineSecuritySettings({ vaultKey: vault, hostId: "gryphon" }).obsidianRestApiPolicy, "allowed");
 });

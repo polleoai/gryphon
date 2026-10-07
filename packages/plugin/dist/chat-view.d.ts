@@ -59,6 +59,17 @@
  *                            teardown in stopStreaming (for cleaning up
  *                            plugin-owned side processes).
  *   - viewType / displayText / icon — per-plugin view identity.
+ *   - securityOverrides    — issue #29. Capability constraints from the
+ *                            consumer's own code, keyed by the closed set
+ *                            of weakening keys (protectedMode,
+ *                            permissionMode, …). They win over this
+ *                            machine's confirmed values. Weakening values in
+ *                            the host's settings object are SUGGESTIONS, not
+ *                            inputs: until the user confirms them on this
+ *                            machine (toolbar, Settings, the one-time
+ *                            prompt), protections stay on.
+ *   - securityHostId       — issue #29. The store namespace when the host
+ *                            has no `manifest.id`.
  *
  * This file knows nothing about any specific consuming plugin's domain.
  * All coupling comes through the options bag; consumers wire their own

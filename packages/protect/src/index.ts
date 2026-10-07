@@ -79,6 +79,7 @@ const pathUtils = require("./path-utils");
 const permissionGate = require("./permission-gate");
 const constants = require("./constants");
 const mcpApprovals = require("./mcp-approvals");
+const securitySettings = require("./security-settings-store");
 
 module.exports = {
   // Namespace exports — whole modules
@@ -98,6 +99,7 @@ module.exports = {
   permissionGate,
   constants,
   mcpApprovals,
+  securitySettings,
 
   // Promoted named exports — frequent destructure targets
   classify: attackDetector.classify,
@@ -117,6 +119,17 @@ module.exports = {
 
   // Promoted from permission-gate
   checkPermission: permissionGate.checkPermission,
+
+  // Issue #29: machine-local security settings (store, scope, accessor).
+  WEAKENING_KEYS: securitySettings.WEAKENING_KEYS,
+  SecurityScopeUnavailableError: securitySettings.SecurityScopeUnavailableError,
+  resolveSecurityScope: securitySettings.resolveSecurityScope,
+  readMachineSecuritySettings: securitySettings.readMachineSecuritySettings,
+  setMachineSecuritySetting: securitySettings.setMachineSecuritySetting,
+  dismissVaultSecuritySuggestion: securitySettings.dismissVaultSecuritySuggestion,
+  isWeakening: securitySettings.isWeakening,
+  effectiveSecuritySettings: securitySettings.effectiveSecuritySettings,
+  securityInputsOf: securitySettings.securityInputsOf,
 
   // Promoted from constants — protected-pattern catalog data
   DEFAULT_PROTECTED_PATHS: constants.DEFAULT_PROTECTED_PATHS,
@@ -147,6 +160,9 @@ module.exports = {
  * @param {object} args
  *   plugin      — host plugin instance (Obsidian plugin shell)
  *   settings    — settings snapshot (falls back to plugin.settings)
+ *   security    — issue #29 security snapshot (effectiveSecuritySettings);
+ *                 when given, it — not settings — decides every protection
+ *                 toggle and the default permission mode
  *   config      — headless config (replaces settings for non-plugin callers;
  *                 merged as _settings when plugin/settings are absent)
  *   hostAdapter — HostAdapter instance; defaults to HeadlessHostAdapter
@@ -183,21 +199,24 @@ function createProtectionContext({
   config,
   hostAdapter,
   onDecision,
+  security,
 }: {
   plugin?: any;
   settings?: any;
+  security?: any;
   config?: any;
   hostAdapter?: any;
   onDecision?: ((...args: any[]) => any) | null;
 } = {}) {
   const _settings = config || settings || (plugin && plugin.settings) || {};
   const _hostAdapter = hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
+  const _security = securitySettings.securityInputsOf({ security, settings: _settings });
 
   return {
     prepareSpawn({ kind, cwd, providerOptions = {} }: { kind: string; cwd?: string; providerOptions?: Record<string, unknown> }) {
       // Delegate to the existing hook-dispatcher entry. Its signature
       // expects `{ kind, plugin, options }` — `cwd` rides inside options.
-      const merged = { ...providerOptions, cwd };
+      const merged = { ...providerOptions, cwd, ...(security ? { security } : {}) };
       return hookDispatcher.prepareSpawn({
         kind,
         plugin,
@@ -217,7 +236,7 @@ function createProtectionContext({
       return attackDetector.classify(
         toolName,
         toolInput,
-        { plugin, settings: _settings, vaultRoot, hostAdapter: _hostAdapter },
+        { plugin, settings: _settings, security: _security, vaultRoot, hostAdapter: _hostAdapter },
       );
     },
 
@@ -225,7 +244,7 @@ function createProtectionContext({
       // Protection is "available" when settings allow it AND the host has
       // an IPC server we can register with. The host plugin exposes
       // `ipcServer` after onload completes.
-      if (_settings.protectedMode === false) return false;
+      if (_security.protectedMode === false) return false;
       if (!plugin || !plugin.ipcServer) return false;
       try {
         return plugin.ipcServer.isListening && plugin.ipcServer.isListening();
@@ -249,7 +268,7 @@ function createProtectionContext({
      *   tool  — raw tool name (provider-specific; e.g. "bash", "read_file")
      *   args  — tool input object (same shape as tool_use.input)
      *   mode  — permission mode override ("default"|"acceptEdits"|"bypassPermissions"|"plan");
-     *           falls back to _settings.permissionMode, then "default"
+     *           falls back to the security snapshot's permissionMode, then "default"
      *   scope — { allowedRoots?: string[] } — vaultRoot is taken as scope.allowedRoots[0]
      *           for path classification
      *
@@ -276,7 +295,7 @@ function createProtectionContext({
       const classifyResult = attackDetector.classify(
         tool,
         args,
-        { plugin, settings: _settings, vaultRoot, hostAdapter: _hostAdapter },
+        { plugin, settings: _settings, security: _security, vaultRoot, hostAdapter: _hostAdapter },
       );
 
       // classify() returns null when the call is not gated — read-only
@@ -312,7 +331,7 @@ function createProtectionContext({
       // that checkPermission reads: { permissionMode, plugin, plugin.settings,
       // plugin.app }. In headless mode plugin is absent → the no-modal early
       // return fires: { allow: false, reason: "Cannot prompt user..." }.
-      const effectiveMode = mode || _settings.permissionMode || "default";
+      const effectiveMode = mode || _security.permissionMode || "default";
       const canonical = attackDetector.normalizeToolName(tool);
       const isBash = canonical === "Bash" || canonical === "PowerShell";
       const kind = isBash ? "protected-exec" : "protected";
@@ -323,6 +342,7 @@ function createProtectionContext({
 
       const headlessCtx = {
         permissionMode: effectiveMode,
+        security: _security,
         plugin,   // null/undefined in fully headless callers → no-modal path
       };
 
@@ -338,6 +358,7 @@ function createProtectionContext({
           warning: classifyResult.userRisk,
           category: classifyResult.category,
           categoryTitle: classifyResult.title,
+          fixedInvariant: !!classifyResult && "fixedInvariant" in classifyResult && classifyResult.fixedInvariant === true,
         });
       } catch (gateErr) {
         const errorResult = { decision: "deny", reason: `gate-error: ${(gateErr as Error).message}` };

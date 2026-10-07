@@ -362,7 +362,9 @@ class AntigravityCliProvider {
     if (hookExtras?.ok) {
       return { autoApprove: true, refuse: false, message: "" };
     }
-    if (plugin?.settings?.protectedMode === false) {
+    // Issue #29: the spawn's security snapshot, never the vault's data.json.
+    const { securityInputsOf } = require("@gryphon/protect");
+    if (securityInputsOf({ security: this.options?.security, plugin }).protectedMode === false) {
       return { autoApprove: true, refuse: false, message: "" };
     }
     return {

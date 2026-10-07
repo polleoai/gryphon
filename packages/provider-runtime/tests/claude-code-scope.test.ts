@@ -500,3 +500,83 @@ test("#25 review #2: vault server names are display-safe in the provider's own N
   assert.equal(ok.notices.length, 1);
   assert.ok(!CONTROL_RE.test(ok.notices[0]), JSON.stringify(ok.notices[0]));
 });
+
+// ── issue #28 item 4: scope warnings are display-safe at the Notice sink ──
+
+const RAW_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F‪-‮⁦-⁩]/;
+/** The scope-warning text inside the Notice, without Gryphon's own framing. */
+const warningPart = (notice: string) => notice.replace(/^Gryphon: /, "").replace(/\. Claude Code is starting without [\s\S]*$/, "");
+
+test("#28.4: a .mcp.json parse error echoing an RLO / newline reaches the Notice escaped and truncated", () => {
+  const vault = makeVault('{"mcpServers": ‮evil\nline2 ' + "x".repeat(600) + "}");
+  const errs: string[] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { errs.push(a.map(String).join(" ")); };
+  let notices: string[];
+  try { ({ notices } = launch(vault)); } finally { console.error = orig; }
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].includes("\\u{202E}"), notices[0]);
+  assert.ok(!RAW_CONTROL_RE.test(notices[0]), JSON.stringify(notices[0]));
+  assert.ok(warningPart(notices[0]).length <= 300, `${warningPart(notices[0]).length}`);
+  const logged = errs.find((e) => e.includes("launch scope"));
+  assert.ok(logged && !RAW_CONTROL_RE.test(logged), JSON.stringify(logged));
+});
+
+test("#28.4: a read error echoing a long vault path is escaped and truncated to 300 chars", { skip: process.platform === "win32" || process.getuid?.() === 0 }, () => {
+  const vault = path.join(makeVault(), "v\u202E" + "x".repeat(240));
+  fs.mkdirSync(vault);
+  const f = path.join(vault, ".mcp.json");
+  fs.writeFileSync(f, "{}");
+  fs.chmodSync(f, 0o000);
+  try {
+    const { notices } = launch(vault);
+    assert.equal(notices.length, 1);
+    const w = warningPart(notices[0]);
+    assert.ok(w.length <= 300 && w.endsWith("…"), `${w.length}: ${w}`);
+    assert.ok(w.includes("\\u{202E}") && !RAW_CONTROL_RE.test(notices[0]), JSON.stringify(notices[0]));
+  } finally { fs.chmodSync(f, 0o600); }
+});
+
+test("#28.4: the ~/.claude.json parse error is sanitised at the same sink (inherit mode)", () => {
+  const vault = makeVault();
+  const userCfg = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "g28-user-")), ".claude.json");
+  fs.writeFileSync(userCfg, '{"mcpServers": ⁦oops}');
+  const { notices } = launch(vault, { claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" }, _claudeUserConfigFile: userCfg });
+  assert.equal(notices.length, 1);
+  assert.ok(notices[0].includes("\\u{2066}") && !RAW_CONTROL_RE.test(notices[0]), JSON.stringify(notices[0]));
+});
+
+test("#28.4: scope.warnings stays raw for programmatic callers", () => {
+  const vault = makeVault('{"mcpServers": ‮x}');
+  const scope = resolveClaudeCodeScope(undefined, { cwd: vault, extraArgs: [], approvals: NO_APPROVALS });
+  assert.ok(scope.warnings.some((w: string) => w.includes("‮")));
+});
+
+// ── issue #28 item 6: a .mcp.json of `{}` is valid and empty ──
+
+test("#28.6: `{}` → no warning, no Notice, strict with zero servers (default and inherit)", () => {
+  for (const claudeCodeScope of [undefined, { inheritUserConfig: true, mcpServers: "inherit" }]) {
+    const vault = makeVault("{}");
+    const { args, notices } = launch(vault, claudeCodeScope ? { claudeCodeScope } : {});
+    assert.deepEqual(notices, [], JSON.stringify(claudeCodeScope));
+    assert.ok(args.includes("--strict-mcp-config"));
+    assert.deepEqual(valuesOf(args, "--mcp-config"), []);
+    const userConfigFile = path.join(os.tmpdir(), "g25-no-such-claude.json");
+    assert.deepEqual(resolveClaudeCodeScope(claudeCodeScope, { cwd: vault, extraArgs: [], approvals: NO_APPROVALS, userConfigFile }).warnings, []);
+  }
+});
+
+test("#28.6: a non-object mcpServers or top-level value still fails closed with a warning", () => {
+  for (const body of ['{"mcpServers":[]}', '{"mcpServers":"x"}', '{"mcpServers":null}', "null", "[]", "3"]) {
+    const { notices } = launch(makeVault(body));
+    assert.equal(notices.length, 1, body);
+    assert.match(notices[0], /\.mcp\.json/, body);
+  }
+});
+
+test("#28.6: readUserMcpServers takes no error path for `{}`", () => {
+  const { readUserMcpServers } = require("../src/providers/claude-code/scope");
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "g28-user-")), ".claude.json");
+  fs.writeFileSync(f, "{}");
+  assert.deepEqual(readUserMcpServers(f, "/tmp"), { user: {}, local: {} });
+});

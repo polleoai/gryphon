@@ -131,3 +131,69 @@ test("#25 review #6 minimum: the store's deny rules exist on their own (for Prot
   assert.ok(globs.some((g: string) => g.startsWith("Write(") && g.includes("gryphon")));
   assert.ok(globs.some((g: string) => g.startsWith("Edit(") && g.includes("gryphon")));
 });
+
+// ── issue #28 item 2: arrays, URL / cwd keys, and command args of non-shell tools ──
+
+test("#28.2: store paths in arrays, nested edits, file:// URIs, cwd keys and command args are protected", () => {
+  const { pathToFileURL } = require("url");
+  const storeDir = path.dirname(STORE);
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["mcp__fs__write_many", { paths: [path.join(vault, "ok.md"), STORE] }],
+    ["mcp__fs__multi_edit", { edits: [{ file_path: path.join(vault, "a.md") }, { file_path: STORE }] }],
+    ["mcp__fs__write", { uri: pathToFileURL(STORE).href }],
+    ["mcp__shell__run", { cwd: storeDir, command: "ls" }],
+    ["mcp__x__exec", { dirs: [storeDir] }],
+    ["execute_command", { command: "cp x ~/.config/gryphon/mcp-approvals.json" }],
+    ["mcp__shell__spawn", { args: ["sh", "-c", `echo {} > ${STORE}`] }],
+    ["mcp__py__run", { code: "open('/home/u/.config/gryphon/x','w')" }],
+  ];
+  for (const [tool, input] of cases) {
+    const v = classify(tool, input, ctx());
+    assert.ok(v && v.category === "modifies-gryphon", `${tool} ${JSON.stringify(input)} → ${JSON.stringify(v)}`);
+  }
+  const cmd = classify("mcp__shell__spawn", { args: ["sh", "-c", "cat ~/.config/gryphon/x"] }, ctx());
+  assert.match(cmd!.technicalDetail, /^Command:/m);
+  const p = classify("mcp__fs__write_many", { paths: [STORE] }, ctx());
+  assert.match(p!.technicalDetail, /^Target path:/m);
+});
+
+test("#28.2: content, read-only tools, and athena's kb_add url (URL or local path) stay unprotected", () => {
+  for (const [tool, input] of [
+    ["Write", { file_path: path.join(vault, "note.md"), content: "see ~/.config/gryphon/mcp-approvals.json" }],
+    ["Edit", { file_path: path.join(vault, "note.md"), old_string: "a", new_string: `store is ${STORE}` }],
+    ["Read", { file_path: STORE }],
+    ["mcp__athena__kb_add", { url: "https://example.com/x" }],
+    ["mcp__athena__kb_add", { url: "~/Documents/report.pdf" }],
+    ["mcp__athena__kb_add_content", { content: "cp x ~/.config/gryphon/", title: "notes" }],
+  ] as const) {
+    assert.equal(classify(tool, input as any, ctx()), null, `${tool} ${JSON.stringify(input)}`);
+  }
+});
+
+test("#28.2: walk bounds limit work, not coverage; cwd-relative, scheme-like and dst/exec names are covered", () => {
+  const storeDir = path.dirname(STORE);
+  const configDir = path.dirname(storeDir);
+  const junk = Array.from({ length: 300 }, (_, i) => `x${i}`);
+  const deep = { a: { b: { c: { d: { e: { file_path: STORE } } } } } };
+  const rel = path.relative(vault, STORE);
+  for (const [tool, input] of [
+    ["mcp__fs__write_many", { paths: [...junk, STORE] }],
+    ["mcp__fs__write", deep],
+    ["mcp__fs__write", { cwd: configDir, path: `gryphon/${path.basename(STORE)}` }],
+    ["mcp__fs__write", { path: `ab:/../${rel}` }],
+    ["mcp__fs__copy", { src: "/tmp/a", dst: STORE }],
+    ["mcp__x__run", { exec: `rm ${STORE}` }],
+    ["mcp__x__run", { shell_command: "rm ~/.config/gryphon/mcp-approvals.json" }],
+    ["mcp__x__run", { shellCommand: "rm ~/.config/gryphon/mcp-approvals.json" }],
+    ["mcp__fs__write", { paths: [...junk, `../${rel}`], workingDirectory: path.join(vault, "sub") }],
+    ["mcp__fs__write", { rootDir: [configDir], path: `gryphon/${path.basename(STORE)}` }],
+  ] as const) {
+    const v = classify(tool, input as any, ctx());
+    assert.ok(v && v.category === "modifies-gryphon", `${tool} ${JSON.stringify(input).slice(0, 120)}`);
+  }
+  let nest: any = { file_path: STORE };
+  for (let i = 0; i < 80; i++) nest = { n: nest };
+  assert.ok(classify("mcp__fs__write", nest, ctx()), "nesting past the hard cap fails closed");
+  // A large call that never names the store stays unprotected.
+  assert.equal(classify("mcp__fs__write_many", { paths: junk.map((j) => path.join(vault, j)) }, ctx()), null);
+});

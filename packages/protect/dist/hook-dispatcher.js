@@ -36,6 +36,7 @@ const path = require("path");
 const fs = require("fs");
 const { findNodeBinary } = require("../../provider-runtime/dist/utils");
 const { getAdapter, listSupportedKinds } = require("./hook-adapters");
+const { securityInputsOf } = require("./security-settings-store");
 const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 /**
  * Run pre-flight diagnostics. Returns `{ ok, reason, details }`.
@@ -43,9 +44,9 @@ const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-cod
  * exactly which check failed (matches the existing claude-code
  * `hookPreflight` shape).
  */
-function _preflight(plugin) {
-    const settings = (plugin && plugin.settings) || {};
-    const protectedModeOn = settings.protectedMode !== false;
+function _preflight(plugin, security) {
+    // Issue #29: the spawn's security snapshot, else the plugin's settings.
+    const protectedModeOn = securityInputsOf({ security, plugin }).protectedMode !== false;
     const hasIpcServer = !!(plugin && plugin.ipcServer);
     const ipcServer = plugin && plugin.ipcServer;
     const ipcServerListening = !!(ipcServer && typeof ipcServer.isListening === "function" && ipcServer.isListening());
@@ -124,7 +125,7 @@ function prepareSpawn({ kind, plugin, options = {} }) {
             degradationReason: `no hook adapter for kind="${kind}" (supported: ${listSupportedKinds().join(", ")})`,
         };
     }
-    const pf = _preflight(plugin);
+    const pf = _preflight(plugin, options && options.security);
     if (!pf.ok) {
         return { ...empty, degradationReason: pf.reason, details: pf.details };
     }

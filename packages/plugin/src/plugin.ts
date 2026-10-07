@@ -14,7 +14,8 @@ const { GryphonChatView } = require("./chat-view");
 // lives in settings-view.ts so consumers can render the same fields without
 // hand-mirroring rows (which drifted and dropped the API-key inputs). The tab
 // delegates its shared render helpers to the same module for a single source.
-const { renderGryphonSettings, renderSectionHeading, descToTooltip } = require("./settings-view");
+const { renderGryphonSettings, renderSectionHeading, descToTooltip, renderUnconfirmedSecurityRow } = require("./settings-view");
+const securityUi = require("./security-settings");
 const { DEFAULT_SETTINGS, MODEL_ALIAS_MIGRATION, MODEL_RETIREMENT_MIGRATION, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
 const { SkillRegistry } = require("./skills");
 const {
@@ -139,7 +140,11 @@ class GryphonSettingTab extends PluginSettingTab {
     // container that gets dimmed when the master is OFF — user can
     // still see what's there but can't interact. Re-renders on master
     // toggle so the conditional Auto-deny row appears / disappears.
-    const protectedModeOn = this.plugin.settings.protectedMode !== false;
+    // Issue #29: every value shown here is the EFFECTIVE one (this
+    // machine's store, else the protected default); writes go through
+    // applySecuritySetting. The vault's data.json only suggests.
+    const eff = securityUi.effectiveSecurityFor(this.plugin);
+    const protectedModeOn = eff.protectedMode !== false;
     this._renderSectionHeading(containerEl, {
       title: "Protected Mode",
       tooltip:
@@ -152,6 +157,7 @@ class GryphonSettingTab extends PluginSettingTab {
         "Safe / YOLO) entirely. In YOLO this means protected patterns " +
         "become no-ops — real YOLO, by your explicit choice.",
       toggleKey: "protectedMode",
+      rerender: () => ctx.rerenderSelf(),
       onToggle: () => {
         this.plugin._resetActiveSessions();
         // Re-render so Auto-deny appears/disappears and sub-items
@@ -159,6 +165,8 @@ class GryphonSettingTab extends PluginSettingTab {
         ctx.rerenderSelf();
       },
     });
+
+    renderUnconfirmedSecurityRow(containerEl, this.plugin, "protectedMode", { rerender: () => ctx.rerenderSelf() });
 
     // Everything inside this wrapper gets dimmed when Protected Mode is
     // OFF — the sub-items are still visible (so the user remembers what
@@ -245,6 +253,7 @@ class GryphonSettingTab extends PluginSettingTab {
       tooltipDetail: "Gryphon runs inside Obsidian and never needs to install packages. Blocking installs stops a common off-task action and the first step of clean-repo prompt-injection attacks. You can still approve an install when prompted, or turn this off.",
       toggleKey: "blockPackageInstall",
     });
+    renderUnconfirmedSecurityRow(protectedContainer, this.plugin, "blockPackageInstall", { rerender: () => ctx.rerenderSelf() });
 
     // Untrusted-content tagging — header row without a toggle (the
     // feature is always on when the plugin dir is writable), followed
@@ -412,6 +421,8 @@ class GryphonSettingTab extends PluginSettingTab {
       toggleKey: enabledKey,
       onToggle: (value) => { if (applyEnabledVisual) applyEnabledVisual(value); },
     });
+    if (enabledKey) renderUnconfirmedSecurityRow(section, this.plugin, enabledKey, {});
+    renderUnconfirmedSecurityRow(section, this.plugin, disabledKey, {});
 
     const listEl = section.createEl("div", { cls: "gryphon-protected-list" });
     applyEnabledVisual = (on) => {
@@ -419,15 +430,17 @@ class GryphonSettingTab extends PluginSettingTab {
       listEl.style.pointerEvents = on ? "" : "none";
     };
     if (enabledKey) {
-      applyEnabledVisual(this.plugin.settings[enabledKey] !== false);
+      applyEnabledVisual(securityUi.effectiveSecurityFor(this.plugin)[enabledKey] !== false);
     }
 
     const rerender = () => {
       listEl.empty();
       const settings = this.plugin.settings;
-      if (!Array.isArray(settings[disabledKey])) settings[disabledKey] = [];
       if (!Array.isArray(settings[customKey])) settings[customKey] = [];
-      const disabledSet = new Set(settings[disabledKey]);
+      // Issue #29: the built-in rules turned off are a security setting —
+      // the effective list, written through the machine store.
+      const disabledList: string[] = [...securityUi.effectiveSecurityFor(this.plugin)[disabledKey]];
+      const disabledSet = new Set(disabledList);
 
       // Filter defaults by current OS — a Windows user doesn't need
       // `rm -rf` / `sudo` / `| bash` clutter in their checklist, and
@@ -485,12 +498,14 @@ class GryphonSettingTab extends PluginSettingTab {
         const cb = row.createEl("input", { type: "checkbox" });
         cb.checked = !disabledSet.has(pattern);
         cb.addEventListener("change", async () => {
-          if (cb.checked) {
-            settings[disabledKey] = settings[disabledKey].filter((p) => p !== pattern);
-          } else if (!settings[disabledKey].includes(pattern)) {
-            settings[disabledKey] = [...settings[disabledKey], pattern];
+          const next = cb.checked
+            ? disabledList.filter((p) => p !== pattern)
+            : (disabledList.includes(pattern) ? disabledList : [...disabledList, pattern]);
+          try {
+            await securityUi.applySecuritySetting(this.plugin, disabledKey, next);
+          } catch (e) {
+            securityUi.reportSecurityWriteError(e);
           }
-          await this.plugin.saveSettings();
           // Re-render so the summary count updates to match. Minor
           // DOM churn; acceptable because toggling default rules is
           // a rare, deliberate action.
@@ -657,11 +672,26 @@ class GryphonSettingTab extends PluginSettingTab {
     }
 
     if (toggleKey) {
+      // Issue #29: a weakening key shows the effective value and writes
+      // the machine store; any other key stays a plain data.json toggle.
+      const isSecurity = securityUi.WEAKENING_KEYS.includes(toggleKey);
       setting.addToggle((toggle) => {
-        const current = this.plugin.settings[toggleKey] !== false;
+        const current = isSecurity
+          ? securityUi.effectiveSecurityFor(this.plugin)[toggleKey] !== false
+          : this.plugin.settings[toggleKey] !== false;
         toggle.setValue(current).onChange(async (value) => {
-          this.plugin.settings[toggleKey] = !!value;
-          await this.plugin.saveSettings();
+          if (isSecurity) {
+            try {
+              await securityUi.applySecuritySetting(this.plugin, toggleKey, !!value);
+            } catch (e) {
+              securityUi.reportSecurityWriteError(e);
+              toggle.setValue(current);
+              return;
+            }
+          } else {
+            this.plugin.settings[toggleKey] = !!value;
+            await this.plugin.saveSettings();
+          }
           if (onToggle) onToggle(!!value);
         });
       });
@@ -679,6 +709,10 @@ class GryphonSettingTab extends PluginSettingTab {
 const GRYPHON_HOST_PLUGIN_IDS = [];
 
 class GryphonPlugin extends Plugin {
+  // #29 review: the security-settings store namespace for Gryphon's own
+  // views and settings tabs. Pinned in code, never read from manifest.json
+  // (which ships inside the vault and could be renamed to another host's id).
+  securityHostId = "gryphon";
   declare _activeSettingTab: any;
   declare _events: any;
   declare _forceFreshSpawnByProvider: any;
@@ -1430,10 +1464,15 @@ class GryphonPlugin extends Plugin {
     if (!vaultRoot) {
       return { decision: "deny", reason: "gryphon: vault root unavailable" };
     }
+    // Issue #29: enforcement reads this host's effective security snapshot
+    // (machine store, else protected defaults), never data.json. Computed
+    // per request from the store, which only a user gesture writes.
+    const security = securityUi.effectiveSecurityFor(this);
     const ctx = {
       vaultRoot,
       plugin: this,
-      permissionMode: (req && req.permissionMode) || this.settings.permissionMode || "default",
+      security,
+      permissionMode: (req && req.permissionMode) || security.permissionMode || "default",
     };
 
     let classification;
@@ -1493,7 +1532,7 @@ class GryphonPlugin extends Plugin {
     // every REST GET so the >threshold toast can fire if the LLM falls
     // into enumeration patterns.
     if (canonicalTool === "WebFetch") {
-      const policyResult = this._applyRestApiPolicy(input);
+      const policyResult = this._applyRestApiPolicy(input, security);
       if (policyResult) return policyResult;
     }
 
@@ -1509,7 +1548,7 @@ class GryphonPlugin extends Plugin {
     // modal in default permission mode for mutating tools) and allow
     // the call. CC still enforces its own permission mode; we're the
     // guardrail for protected patterns only.
-    if (!classification && this.settings.autoDenyProtected === true) {
+    if (!classification && security.autoDenyProtected === true) {
       return { decision: "allow" };
     }
 
@@ -1625,10 +1664,10 @@ class GryphonPlugin extends Plugin {
    * of the gate logic), or returns null to let normal handling proceed
    * for any WebFetch that isn't pointed at the REST plugin.
    */
-  _applyRestApiPolicy(input) {
+  _applyRestApiPolicy(input, security = securityUi.effectiveSecurityFor(this)) {
     const url = input && typeof input.url === "string" ? input.url : "";
     if (!isObsidianRestApiUrl(url)) return null;
-    const policy = this.settings && this.settings.obsidianRestApiPolicy;
+    const policy = security && security.obsidianRestApiPolicy;
     if (policy === "allowed") {
       try {
         this._restApiCounter && this._restApiCounter.note();
@@ -1858,7 +1897,7 @@ class GryphonPlugin extends Plugin {
         userData.protectedMode === undefined &&
         userData.autoDenyProtected === undefined) {
       if (userData.hookInstrumentation === false) {
-        this.settings.protectedMode = true;
+        this.settings.protectedMode = true; // security-read-ok: legacy shim, only ever strengthens
         this.settings.autoDenyProtected = true;
       }
       // hookInstrumentation=true maps to defaults (protectedMode=true,

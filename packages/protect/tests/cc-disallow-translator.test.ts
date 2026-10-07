@@ -198,3 +198,22 @@ test("every DEFAULT_PROTECTED_PATHS entry translates to at least Write + Edit gl
     assert.ok(globs.some((g) => g.startsWith("Edit(")));
   }
 });
+
+// ── issue #28 item 5: deny-fallback globs and case (live probe, Claude Code 2.1.292, macOS APFS) ──
+// Edit(...) rules matched case-insensitively — even for a directory that
+// didn't exist yet — so the file rules need no variants. Bash(...) rules are
+// case-sensitive and treat `[cC]` literally, so case variants are spelled out.
+
+test("#28.5: Bash store globs carry realistic case variants; no bracket classes", () => {
+  const { buildApprovalsStoreDenyGlobs } = require("../src/cc-disallow-translator");
+  const globs: string[] = buildApprovalsStoreDenyGlobs();
+  for (const g of ["Bash(*.config/gryphon*)", "Bash(*.Config/Gryphon*)", "Bash(*.config/Gryphon*)", "Bash(*.Config/gryphon*)",
+    "Bash(*.CONFIG/GRYPHON*)", "Bash(*mcp-approvals*)", "Bash(*Mcp-Approvals*)", "Bash(*MCP-APPROVALS*)"]) {
+    assert.ok(globs.includes(g), `missing ${g}`);
+  }
+  assert.ok(!globs.some((g) => /\[/.test(g)), "Claude Code doesn't honour bracket classes");
+  assert.equal(new Set(globs).size, globs.length, "no duplicates");
+  // File rules: one Edit + one Write per path form, unchanged.
+  assert.ok(globs.filter((g) => g.startsWith("Edit(")).length >= 1);
+  assert.ok(globs.filter((g) => g.startsWith("Edit(")).every((g) => /gryphon\/\*\*\)$/.test(g)));
+});

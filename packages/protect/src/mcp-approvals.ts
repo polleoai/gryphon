@@ -58,23 +58,28 @@ interface ApprovalEntry { sha256: string; approvedAt: string }
 interface ApprovalStore { version: number; vaults: Record<string, Record<string, ApprovalEntry>> }
 interface LocateOpts { platform?: string; env?: Record<string, string | undefined>; homedir?: string }
 
+// Unicode property classes, not a hand list (issue #28): controls (Cc),
+// format chars (Cf: bidi controls, soft hyphen, U+061C, tags, U+FFF9–FFFB),
+// line / paragraph separators, and default-ignorables (U+034F, hangul
+// fillers, U+180E, variation selectors). U+2800 is So, so it's named.
+const UNSAFE_CHAR_RE = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]/u;
+
 /**
- * A vault-supplied string made safe to show: Cc / bidi / zero-width /
- * line-separator characters become visible `\u{XXXX}` escapes, so a server
- * name or value can't reorder or hide text in a Notice or the review modal
- * (an RLO in a name, a newline faking a second line).
+ * A vault-supplied string made safe to show: control, format, separator and
+ * invisible (default-ignorable) characters become visible `\u{XXXX}`
+ * escapes, so a server name or value can't reorder, hide or pad text in a
+ * Notice or the review modal (an RLO in a name, a newline faking a second
+ * line, blank-looking filler).
  */
-function _isUnsafeChar(code: number): boolean {
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f) ||
-    (code >= 0x200b && code <= 0x200f) || code === 0x2028 || code === 0x2029 ||
-    (code >= 0x202a && code <= 0x202e) || (code >= 0x2060 && code <= 0x2069) || code === 0xfeff;
+function _isUnsafeChar(ch: string): boolean {
+  return UNSAFE_CHAR_RE.test(ch);
 }
 
 function displaySafe(v: unknown): string {
   let out = "";
   for (const ch of String(v)) {
     const code = ch.codePointAt(0)!;
-    out += _isUnsafeChar(code) ? `\\u{${code.toString(16).toUpperCase().padStart(4, "0")}}` : ch;
+    out += _isUnsafeChar(ch) ? `\\u{${code.toString(16).toUpperCase().padStart(4, "0")}}` : ch;
   }
   return out;
 }
@@ -268,11 +273,12 @@ function isApprovalsStorePath(absPath: string, opts: LocateOpts = {}): boolean {
 
 /**
  * Shell commands that name the store. A best-effort lexical check, like
- * every other protected-command pattern: the file name anywhere, or the
+ * every other protected-command pattern: either store file's name anywhere
+ * (`mcp-approvals.json`, and issue #29's `security-settings.json`), or the
  * store directory spelled any of the usual ways on each OS. It is NOT a
  * barrier against a model that already has a shell (see the header).
  */
-const STORE_COMMAND_RE = /mcp-approvals|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
+const STORE_COMMAND_RE = /mcp-approvals|security-settings\.json|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
 
 function mentionsApprovalsStore(command: string, opts: LocateOpts = {}): boolean {
   if (typeof command !== "string" || !command) return false;

@@ -92,9 +92,17 @@ test("refreshToolbarLabels updates model, effort, and permission badges", () => 
 
   const stubView = Object.create(GryphonChatView.prototype);
 
-  // Mock plugin.settings with concrete values.
+  // Mock plugin.settings with concrete values. Issue #29: the badge shows
+  // the EFFECTIVE mode, so YOLO is confirmed in this machine's store.
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { securitySettings } = require("@gryphon/protect");
+  process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "g40-cfg-"));
+  const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g40-vault-")));
   stubView.plugin = {
-    manifest: { version: "1.4.1" },
+    manifest: { id: "gryphon", version: "1.4.1" },
+    app: { vault: { adapter: { getBasePath: () => vault } } },
     settings: {
       model: "sonnet",
       effort: "high",
@@ -103,6 +111,8 @@ test("refreshToolbarLabels updates model, effort, and permission badges", () => 
       anthropicApiKey: "sk-test",
     },
   };
+  stubView.app = stubView.plugin.app;
+  securitySettings.setMachineSecuritySetting({ vaultKey: vault, hostId: "gryphon" }, "permissionMode", "bypassPermissions");
 
   // Mock the three toolbar buttons. setText / setAttribute / classList
   // capture invocations so we can assert what was set.

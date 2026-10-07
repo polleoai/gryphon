@@ -21,6 +21,7 @@ const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PROTECTED_CATEGORIE
 const { matchProtectedPath, resolveVaultPath, PathOutsideVaultError, } = require("./path-utils");
 const { checkPermission } = require("./permission-gate");
 const { isApprovalsStorePath, mentionsApprovalsStore } = require("./mcp-approvals");
+const { securityInputsOf } = require("./security-settings-store");
 /**
  * Per-pattern de-duplication so a user with one broken regex doesn't
  * get a Notice / console warning on every classify call. First time
@@ -184,13 +185,11 @@ const TOOL_ALIASES = {
 function classify(tool, input, ctx) {
     if (!tool || !input)
         return null;
-    // Prefer ctx.settings (explicit headless form) over ctx.plugin.settings
-    // (legacy form). Either route works; both paths construct the same ctx
-    // shape elsewhere.
-    const ctxPlugin = ctx && ctx.plugin;
-    const settings = (ctx && ctx.settings)
-        || (ctxPlugin && ctxPlugin.settings)
-        || {};
+    // Issue #29: the frozen security snapshot (ctx.security) wins. Without
+    // one, the caller's own settings (ctx.settings, then ctx.plugin.settings)
+    // are used — the headless-library form. Gryphon's own callers always pass
+    // a snapshot, so a vault's data.json is never an input here.
+    const security = securityInputsOf(ctx);
     // Normalize provider-specific tool names to the Claude-Code vocabulary
     // the per-tool branches below understand. Unknown names pass through
     // and hit the "not currently gated" branch (correct default).
@@ -203,7 +202,8 @@ function classify(tool, input, ctx) {
     // Issue #25: the vault-MCP approval store. Checked before every master
     // toggle on purpose — it's a fixed invariant, not a user pattern — and
     // for ANY tool that isn't read-only, so a tool missing from TOOL_ALIASES
-    // can't write it by default.
+    // can't write it by default. Path-like and command-like arguments are
+    // both checked, nested ones included (issue #28).
     if (!READ_ONLY_TOOLS.has(canonical) && canonical !== "Bash" && canonical !== "PowerShell") {
         const store = _classifyApprovalsStoreWrite(canonical, input, ctx);
         if (store)
@@ -214,13 +214,13 @@ function classify(tool, input, ctx) {
         // entirely, return null so gate() treats it as non-protected and
         // the normal permission-mode policy applies (Prompt/Safe/YOLO all
         // respected as the user chose for routine operations).
-        if (settings.protectedPathsEnabled === false)
+        if (security.protectedPathsEnabled === false)
             return null;
         // Gemini's write_file uses `file_path` already, but `replace`
         // uses `file_path` too (Gemini's docs). _classifyFilePath reads
         // input.file_path; if a future CLI uses a different field, add
         // a normalizer here similar to TOOL_ALIASES.
-        return _classifyFilePath(canonical, input, ctx, settings);
+        return _classifyFilePath(canonical, input, ctx, security);
     }
     // "PowerShell" is CC's shell-command tool on Windows; it carries the
     // same `{command, description}` shape as Bash and needs the same
@@ -232,9 +232,9 @@ function classify(tool, input, ctx) {
         const store = _classifyApprovalsStoreCommand(canonical, input);
         if (store)
             return store;
-        if (settings.protectedCommandsEnabled === false)
+        if (security.protectedCommandsEnabled === false)
             return null;
-        return _classifyCommand(canonical, input, ctx, settings);
+        return _classifyCommand(canonical, input, ctx, security);
     }
     // Read / Glob / Grep / WebFetch / WebSearch are not currently gated —
     // their outputs carry the threat, not their inputs. Returning null
@@ -273,6 +273,11 @@ function _approvalsStoreVerdict(tool, what) {
         category: "modifies-gryphon",
         title: _categoryTitle("modifies-gryphon"),
         userRisk: APPROVALS_STORE_RISK,
+        // Gryphon's own trust stores (MCP approvals, security settings) are
+        // written only by Gryphon's UI on a user click — never by a tool call.
+        // The gate refuses these in every mode (#29 review): no demotion when
+        // Protected Mode is off, no YOLO/acceptEdits auto-accept, no modal.
+        fixedInvariant: true,
         technicalDetail: `Tool:            ${tool}\n` +
             `${what}\n` +
             `Matched pattern: gryphon MCP approval store`,
@@ -280,24 +285,129 @@ function _approvalsStoreVerdict(tool, what) {
 }
 /** Read-only tools: never gated, even when they name the store. */
 const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
-/** Top-level argument names that may carry a target path, across CLIs. */
-// Content-ish names (`new_source`, `content`) are left out on purpose.
-const PATH_ARG_RE = /path|file|target|dest|dir|^(?:source|src|to|from|output|out)$/i;
+/** Argument names that may carry a target path, across CLIs and MCP tools. */
+// Content-ish names (`new_source`, `content`, `new_string`) are left out on
+// purpose: a note that MENTIONS the store path must not raise the modal.
+const PATH_ARG_RE = /path|file|target|dest|dst|dir|uri|url|location|cwd|^(?:source|src|to|from|output|out|folders?)$/i;
+/** Names of a directory that relative path arguments may resolve against. */
+const BASE_ARG_RE = /cwd|dir(?:ectory)?s?$|folders?$|^(?:root|base)$/i;
+/**
+ * Argument names that carry a command line (issue #28), checked lexically
+ * like Bash. Matched per word of the key, so `shellCommand`, `run_cmd` and
+ * `tool-args` all count.
+ */
+const COMMAND_WORDS = new Set(["command", "cmd", "cmdline", "script", "code", "args", "argv", "shell", "exec", "program"]);
+function _isCommandKey(key) {
+    return key.replace(/([a-z\d])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z\d]+/).some((w) => COMMAND_WORDS.has(w));
+}
+/** The first, cheap pass. A call past these bounds is walked again in full. */
+const WALK_MAX_DEPTH = 4;
+const WALK_MAX_STRINGS = 256;
+/** The full pass's caps: tool input past them is refused, not waved through. */
+const WALK_HARD_DEPTH = 64;
+const WALK_HARD_STRINGS = 10000;
+const MAX_BASES = 32;
+/**
+ * The string arguments of a tool call as `[key, value]` pairs, walked to a
+ * bounded depth and count. An array of strings stays one entry under the
+ * key that holds it (so `args: ["sh","-c","…"]` can be read as one command
+ * line); an object's properties go under their own keys, so
+ * `{edits: [{file_path}]}` reaches `file_path`. `truncated` is set when a
+ * bound cut the walk short — the caller must not read that as "clean".
+ */
+function _argStrings(input, maxDepth, maxStrings) {
+    const pairs = [];
+    let budget = maxStrings;
+    let truncated = false;
+    const walk = (key, v, depth) => {
+        if (budget <= 0 || depth > maxDepth) {
+            truncated = true;
+            return;
+        }
+        if (typeof v === "string") {
+            if (v) {
+                budget--;
+                pairs.push([key, v]);
+            }
+            return;
+        }
+        if (Array.isArray(v)) {
+            const all = v.filter((x) => typeof x === "string" && !!x);
+            const strs = all.slice(0, budget);
+            if (strs.length < all.length)
+                truncated = true;
+            if (strs.length > 0) {
+                budget -= strs.length;
+                pairs.push([key, strs]);
+            }
+            for (const x of v)
+                if (x && typeof x === "object")
+                    walk(key, x, depth + 1);
+            return;
+        }
+        if (v && typeof v === "object")
+            for (const [k, x] of Object.entries(v))
+                walk(k, x, depth + 1);
+    };
+    for (const [k, v] of Object.entries(input))
+        walk(k, v, 1);
+    return { pairs, truncated };
+}
+/**
+ * A path argument → the absolute paths it could name: resolved against the
+ * vault and against every cwd-like argument of the same call. `file:` URLs
+ * are converted; any other `scheme:` value is still resolved as a path
+ * (harmless for a real URL, and `ab:/../../…` is a relative path to a tool).
+ */
+function _resolveArgPaths(value, bases) {
+    if (/^file:/i.test(value)) {
+        try {
+            return [require("url").fileURLToPath(value)];
+        }
+        catch (_) {
+            return [];
+        }
+    }
+    if (/^~(?=$|[\\/])/.test(value))
+        return [path.join(os.homedir(), value.slice(1))];
+    if (path.isAbsolute(value))
+        return [value];
+    return bases.map((b) => path.resolve(b, value));
+}
 function _classifyApprovalsStoreWrite(tool, input, ctx) {
     const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
-    for (const [key, value] of Object.entries(input)) {
-        if (typeof value !== "string" || !value || !PATH_ARG_RE.test(key))
+    // Cheap pass first; past its bounds (padding, deep nesting) walk the whole
+    // call, so the bound limits work, never coverage.
+    let walked = _argStrings(input, WALK_MAX_DEPTH, WALK_MAX_STRINGS);
+    if (walked.truncated) {
+        walked = _argStrings(input, WALK_HARD_DEPTH, WALK_HARD_STRINGS);
+        if (walked.truncated)
+            return _approvalsStoreVerdict(tool, `Arguments:       too large to inspect`);
+    }
+    const vaultBases = vaultRoot ? [vaultRoot] : [];
+    const baseSet = new Set(vaultBases);
+    for (const [key, value] of walked.pairs) {
+        if (!BASE_ARG_RE.test(key))
             continue;
-        let abs = value;
-        if (/^~(?=$|[\\/])/.test(abs))
-            abs = path.join(os.homedir(), abs.slice(1));
-        else if (!path.isAbsolute(abs)) {
-            if (!vaultRoot)
-                continue;
-            abs = path.resolve(vaultRoot, abs);
+        for (const v of Array.isArray(value) ? value : [value])
+            for (const b of _resolveArgPaths(v, vaultBases))
+                baseSet.add(b);
+    }
+    if (baseSet.size > MAX_BASES)
+        return _approvalsStoreVerdict(tool, `Arguments:       too many directories to inspect`);
+    const bases = [...baseSet];
+    for (const [key, value] of walked.pairs) {
+        if (PATH_ARG_RE.test(key)) {
+            for (const v of Array.isArray(value) ? value : [value]) {
+                if (_resolveArgPaths(v, bases).some((abs) => isApprovalsStorePath(abs)))
+                    return _approvalsStoreVerdict(tool, `Target path:     ${v}`);
+            }
         }
-        if (isApprovalsStorePath(abs))
-            return _approvalsStoreVerdict(tool, `Target path:     ${value}`);
+        if (_isCommandKey(key)) {
+            const raw = Array.isArray(value) ? value.join(" ") : value;
+            if (mentionsApprovalsStore(_normalizeForMatch(raw)))
+                return _approvalsStoreVerdict(tool, `Command:         ${raw}`);
+        }
     }
     return null;
 }
@@ -309,7 +419,7 @@ function _classifyApprovalsStoreCommand(tool, input) {
         ? _approvalsStoreVerdict(tool, `Command:         ${raw}`)
         : null;
 }
-function _classifyFilePath(tool, input, ctx, settings) {
+function _classifyFilePath(tool, input, ctx, security) {
     const vaultRoot = ctx && ctx.vaultRoot;
     if (!vaultRoot)
         return null;
@@ -338,7 +448,7 @@ function _classifyFilePath(tool, input, ctx, settings) {
     // Same normalization as command-path matching: NFKC + zero-width strip.
     // Closes naïve Unicode obfuscation on file paths if CC ever emits one.
     const rel = _normalizeForMatch(rawRel);
-    const defs = _activePatternDefs(DEFAULT_PROTECTED_PATHS, settings.protectedPathsDisabled, settings.protectedPathsCustom);
+    const defs = _activePatternDefs(DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
     for (const def of defs) {
         if (matchProtectedPath(rel, [def.pattern])) {
             return {
@@ -368,13 +478,13 @@ function _normalizeForMatch(s) {
         .normalize("NFKC")
         .replace(/[​-‍﻿⁠]/g, "");
 }
-function _classifyCommand(tool, input, ctx, settings) {
+function _classifyCommand(tool, input, ctx, security) {
     const rawCommand = input && typeof input.command === "string" ? input.command : "";
     if (!rawCommand)
         return null;
     const command = _normalizeForMatch(rawCommand);
-    const defs = _activePatternDefs(DEFAULT_PROTECTED_COMMANDS, settings.protectedCommandsDisabled, settings.protectedCommandsCustom);
-    const muteInstall = settings.blockPackageInstall === false;
+    const defs = _activePatternDefs(DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
+    const muteInstall = security.blockPackageInstall === false;
     const activeDefs = muteInstall ? defs.filter((d) => d.category !== "package-install") : defs;
     for (const def of activeDefs) {
         let re;
@@ -436,6 +546,7 @@ async function gate(classification, opts) {
             warning: classification.userRisk,
             category: classification.category,
             categoryTitle: classification.title,
+            fixedInvariant: "fixedInvariant" in classification && classification.fixedInvariant === true,
         });
     }
     return await checkPermission({

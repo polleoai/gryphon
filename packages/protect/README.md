@@ -189,6 +189,50 @@ irrelevant to headless callers, see `packages/plugin/src/constants.js`
 
 ---
 
+## Machine-confirmed security settings (`securitySettings`)
+
+A host's settings file can travel with the data it protects. Gryphon's
+`data.json` lives inside the vault, so a shared, synced or cloned vault could
+ship `protectedMode: false` or `permissionMode: "bypassPermissions"`. The
+rule: **a file inside the vault can add protection but never remove it.**
+Nine keys can weaken protection (`WEAKENING_KEYS`): `protectedMode`,
+`permissionMode`, `protectedPathsEnabled`, `protectedCommandsEnabled`,
+`blockPackageInstall`, `protectedPathsDisabled`, `protectedCommandsDisabled`,
+`claudeCodeInheritUserConfig` and `obsidianRestApiPolicy`. `autoDenyProtected`
+isn't one of them, because both of its values enforce.
+
+```js
+const { securitySettings } = require("@gryphon/protect");
+const scope = securitySettings.resolveSecurityScope({ app, hostPlugin }); // { vaultKey, hostId } | null
+const security = securitySettings.effectiveSecuritySettings(hostPlugin.settings, scope, overrides);
+createProtectionContext({ plugin, security });   // enforcement reads the snapshot
+```
+
+- **Resolution:** `overrides[key] ?? store[vaultKey].hosts[hostId][key] ?? DEFAULT[key]`.
+  The settings object is never an input for these keys. It's only compared
+  to list `unconfirmed` values, which a host can offer to confirm.
+- **Store:** `security-settings.json` next to `mcp-approvals.json`
+  (`$XDG_CONFIG_HOME/gryphon/` or `~/.config/gryphon/`, `%APPDATA%\gryphon\`
+  on Windows), written atomically with mode 0600. It's namespaced per vault
+  (realpath) **and** per host plugin (`manifest.id`), so confirming in one
+  plugin doesn't apply to another plugin in the same vault. The approvals-store
+  guardrail covers the file in every permission mode.
+- **Writes:** `setMachineSecuritySetting(scope, key, value)` is for an
+  explicit user gesture on this machine only. It validates, throws on an
+  unknown key or an invalid value, and stores both directions (turning
+  protection back on is stored too). `dismissVaultSecuritySuggestion` records
+  "keep protections on" for one settings-file value.
+- **Fails closed:** with no scope, or with a missing, unreadable or malformed
+  file, or with an invalid value, every key resolves to its protected
+  default. Read errors go to `console.error` and to any
+  `onSecurityStoreError` sink. With no scope, `resolveSecurityScope` returns
+  `null` and writes throw `SecurityScopeUnavailableError`.
+- **Headless callers** that pass `config` / `settings` with no `security`
+  keep the old contract: their own config decides. It's the caller's code,
+  not a file that travels with user data.
+
+---
+
 ## Audit sink (S3)
 
 Pass `onDecision` to `createProtectionContext` to receive a structured record

@@ -23,12 +23,23 @@
  * so a minimal host never crashes. The standalone plugin is itself a valid
  * host, so standalone Gryphon behaves and looks exactly as before.
  *
+ * Security settings (issue #29): `claudeCodeInheritUserConfig`,
+ * `obsidianRestApiPolicy` and `permissionMode` show their EFFECTIVE value
+ * and write through `applySecuritySetting` (the machine-local store), never
+ * straight into `hostPlugin.settings`. That needs the optional `app`
+ * (vault path) and `manifest.id` (store namespace; or pass
+ * `options.securityHostId`); without them the controls show protected
+ * defaults and a write raises a visible error. `options.securityOverrides`
+ * shows host-set keys disabled, "Set by <host>". `_vaultRoot()` is never
+ * used for the security scope.
+ *
  * The Gryphon-plugin-only zone (Security / Protected-Mode / provenance /
  * diagnostics) stays in `GryphonSettingTab` — it depends on `provenanceStore`,
  * `@gryphon/protect`, and REST internals a generic host does not have.
  */
 
 const { Setting, Notice } = require("obsidian");
+const securityUi = require("./security-settings");
 const { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, visibleProviderPrefs, resolveConnectionTimeoutMs } = require("./constants");
 const { testApiKey: testAnthropicApiKey } = require("../../provider-runtime/src/providers/anthropic-api/anthropic-api");
 const { testApiKey: testOpenAIApiKey } = require("../../provider-runtime/src/providers/openai-api/openai-api");
@@ -730,15 +741,86 @@ function renderSectionHeading(parentEl, opts, plugin) {
   );
   if (tooltip) descToTooltip(setting, tooltip);
   else setting.setDesc("");
+  // Issue #29: a weakening key (Protected Mode) shows the effective value
+  // and writes the machine store; any other key is a plain data.json toggle.
+  const isSecurity = securityUi.WEAKENING_KEYS.includes(toggleKey);
   setting.addToggle((toggle) => {
-    const current = plugin.settings[toggleKey] !== false;
+    const current = isSecurity
+      ? securityUi.effectiveSecurityFor(plugin)[toggleKey] !== false
+      : plugin.settings[toggleKey] !== false;
     toggle.setValue(current).onChange(async (value) => {
-      plugin.settings[toggleKey] = !!value;
-      await plugin.saveSettings();
+      if (isSecurity) {
+        try {
+          await securityUi.applySecuritySetting(plugin, toggleKey, !!value);
+        } catch (e) {
+          securityUi.reportSecurityWriteError(e);
+          toggle.setValue(current);
+          return;
+        }
+      } else {
+        plugin.settings[toggleKey] = !!value;
+        await plugin.saveSettings();
+      }
       if (onToggle) onToggle(!!value);
     });
   });
   return setting;
+}
+
+/**
+ * Issue #29: options for a security control — the renderer's
+ * `securityOverrides` / `securityHostId`, in the shape applySecuritySetting
+ * and effectiveSecurityFor take.
+ */
+function _securityOpts(sec) {
+  return { overrides: (sec && sec.securityOverrides) || null, hostId: sec && sec.securityHostId };
+}
+
+/**
+ * Issue #29: write a security key from a Settings control. Returns true on
+ * success; on failure shows the Notice and returns false.
+ */
+async function _writeSecurity(hostPlugin, key, value, sec) {
+  try {
+    await securityUi.applySecuritySetting(hostPlugin, key, value, _securityOpts(sec));
+    return true;
+  } catch (e) {
+    securityUi.reportSecurityWriteError(e);
+    return false;
+  }
+}
+
+/**
+ * Issue #29: under a security control, the rows that explain its value:
+ *   - set by the host plugin (securityOverrides) → "Set by <host>";
+ *   - no security scope → "protections forced on";
+ *   - the vault's settings file requests a weaker value not confirmed on
+ *     this machine → "Vault file requests <value>, not confirmed on this
+ *     machine — Confirm…", which opens the same prompt the chat view hosts.
+ * Returns the row's Setting, or null when nothing needs explaining.
+ */
+function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
+  const opts = _securityOpts(sec);
+  const { scope } = securityUi.securityScopeFor(hostPlugin, opts);
+  const eff = securityUi.effectiveSecurityFor(hostPlugin, opts);
+  if (eff.source[key] === "override") {
+    return new Setting(panelEl).setDesc(`Set by ${securityUi.hostDisplayName(hostPlugin, opts.hostId)}.`);
+  }
+  if (!scope) {
+    return new Setting(panelEl).setDesc("⚠ Protections forced on: Gryphon couldn't identify this vault/host, so this can't be changed here.");
+  }
+  if (!eff.unconfirmed.includes(key)) return null;
+  const requested = securityUi.describeSecurityValue(key, hostPlugin.settings && hostPlugin.settings[key]);
+  const row = new Setting(panelEl).setDesc(
+    `⚠ Vault file requests ${requested}, not confirmed on this machine for ` +
+    `${securityUi.hostDisplayName(hostPlugin, scope.hostId)}.`,
+  );
+  row.addButton((btn) => btn.setButtonText("Confirm…").onClick(() => {
+    securityUi.maybePromptVaultSecurity(hostPlugin.app, hostPlugin, {
+      ...opts, force: true, onDone: () => { if (sec && sec.rerender) sec.rerender(); },
+    });
+  }));
+  return row;
 }
 
 /**
@@ -755,9 +837,13 @@ function renderSectionHeading(parentEl, opts, plugin) {
  *                      the built-in Setup/Defaults/Advanced tabs.
  *                    - `initialTabId`: which tab to activate on first render.
  *                    - `onTabChange`: called with the tab id on activation.
+ *                    - `securityOverrides` / `securityHostId` (issue #29):
+ *                      the same values the host passes its chat view, so
+ *                      both show the same effective security settings.
  */
 function renderGryphonSettings(hostPlugin, containerEl, options) {
   options = options || {};
+  const sec = { securityOverrides: options.securityOverrides, securityHostId: options.securityHostId };
   const { renderTabbedSettings } = require("./settings-tabs");
 
   const extraTabs = Array.isArray(options.extraTabs) ? options.extraTabs : [];
@@ -779,14 +865,14 @@ function renderGryphonSettings(hostPlugin, containerEl, options) {
         const modelGroup = panelEl.createDiv("gryphon-settings-group");
         modelGroup.createDiv({ cls: "gryphon-settings-group-label", text: "Model" });
         renderSetupPanel(hostPlugin, modelGroup, ctx);
-        renderDefaultsPanel(hostPlugin, modelGroup, ctx);
+        renderDefaultsPanel(hostPlugin, modelGroup, ctx, { ...sec, rerender: () => ctx && ctx.rerenderSelf && ctx.rerenderSelf() });
 
         const fallbackGroup = panelEl.createDiv("gryphon-settings-group");
         fallbackGroup.createDiv({ cls: "gryphon-settings-group-label", text: "Fallback" });
         renderFallbackRows(hostPlugin, fallbackGroup, ctx);
       },
     },
-    { id: "advanced", label: "Advanced", render: (panelEl, ctx) => renderAdvancedPanel(hostPlugin, panelEl, ctx) },
+    { id: "advanced", label: "Advanced", render: (panelEl, ctx) => renderAdvancedPanel(hostPlugin, panelEl, ctx, { ...sec, rerender: () => ctx && ctx.rerenderSelf && ctx.rerenderSelf() }) },
     ...extraTabs,
   ];
 
@@ -800,7 +886,8 @@ function renderGryphonSettings(hostPlugin, containerEl, options) {
  * Advanced tab: optional Brave key + tuning toggles + connection timeout +
  * max file size. Niche knobs kept out of the primary Setup path.
  */
-function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
+function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
+  const secEff = securityUi.effectiveSecurityFor(hostPlugin, _securityOpts(sec));
   // Copy verbatim (originals remain in the flat renderGryphonSettings until
   // Task 6 deletes them), rendering into `panelEl` instead of `containerEl`.
   // No logic change.
@@ -842,12 +929,15 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
     "Takes effect on your next message. Plugins that embed Gryphon may set " +
     "this for you, and their setting overrides this toggle.",
   )
-    .addToggle((toggle) =>
-      toggle.setValue(hostPlugin.settings.claudeCodeInheritUserConfig === true).onChange(async (value) => {
-        hostPlugin.settings.claudeCodeInheritUserConfig = value;
-        await hostPlugin.saveSettings();
-      })
-    );
+    .addToggle((toggle) => {
+      const current = secEff.claudeCodeInheritUserConfig === true;
+      toggle.setValue(current)
+        .setDisabled(secEff.source.claudeCodeInheritUserConfig === "override")
+        .onChange(async (value) => {
+          if (!(await _writeSecurity(hostPlugin, "claudeCodeInheritUserConfig", !!value, sec))) toggle.setValue(current);
+        });
+    });
+  renderUnconfirmedSecurityRow(panelEl, hostPlugin, "claudeCodeInheritUserConfig", sec);
 
   // Issue #25 rev 2: vault .mcp.json servers run only once approved, and
   // the approvals live outside the vault. List + revoke for this vault.
@@ -945,18 +1035,24 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
     "127.0.0.1:27124 freely; a warning toast still fires when GETs " +
     "exceed the threshold below in one turn.",
   )
-    .addToggle((toggle) =>
-      toggle.setValue((hostPlugin.settings.obsidianRestApiPolicy || "blocked") === "blocked").onChange(async (value) => {
-        hostPlugin.settings.obsidianRestApiPolicy = value ? "blocked" : "allowed";
-        await hostPlugin.saveSettings();
-        try {
-          // Preserve the cross-plugin contract: consumers listen on this
-          // event for live provider/model teardown (Gryphon 2.4.4). Guard
-          // the whole chain so a minimal host without app/workspace is safe.
-          hostPlugin.app?.workspace?.trigger?.("gryphon:settings-changed");
-        } catch { /* best-effort */ }
-      })
-    );
+    .addToggle((toggle) => {
+      const current = secEff.obsidianRestApiPolicy !== "allowed";
+      toggle.setValue(current)
+        .setDisabled(secEff.source.obsidianRestApiPolicy === "override")
+        .onChange(async (value) => {
+          if (!(await _writeSecurity(hostPlugin, "obsidianRestApiPolicy", value ? "blocked" : "allowed", sec))) {
+            toggle.setValue(current);
+            return;
+          }
+          try {
+            // Preserve the cross-plugin contract: consumers listen on this
+            // event for live provider/model teardown (Gryphon 2.4.4). Guard
+            // the whole chain so a minimal host without app/workspace is safe.
+            hostPlugin.app?.workspace?.trigger?.("gryphon:settings-changed");
+          } catch { /* best-effort */ }
+        });
+    });
+  renderUnconfirmedSecurityRow(panelEl, hostPlugin, "obsidianRestApiPolicy", sec);
 
   // Issue #38: cold-start connection-timeout override. Empty input
   // (or out-of-range) means "use the model-adaptive default" —
@@ -1072,7 +1168,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
  * permissions + Open-in-main-tab. (Per-session defaults, also reachable from
  * the chat toolbar.)
  */
-function renderDefaultsPanel(hostPlugin, panelEl, _ctx) {
+function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
   // Per-provider Default model + Default effort. When an adapter is
   // shipped, dropdowns read its native model list (with effort options
   // where applicable). When the adapter is still pending (google-api in
@@ -1232,14 +1328,20 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx) {
   new Setting(panelEl)
     .setName("Default permissions")
     .addDropdown((drop) => {
+      // Issue #29: the effective mode; a pick writes the machine store.
+      const eff = securityUi.effectiveSecurityFor(hostPlugin, _securityOpts(sec));
       for (const p of PERMS) drop.addOption(p.value, `${p.label} — ${p.desc}`);
-      drop.setValue(hostPlugin.settings.permissionMode);
+      drop.setValue(eff.permissionMode);
+      drop.setDisabled(eff.source.permissionMode === "override");
       drop.onChange(async (value) => {
-        hostPlugin.settings.permissionMode = value;
-        await hostPlugin.saveSettings();
+        if (!(await _writeSecurity(hostPlugin, "permissionMode", value, sec))) {
+          drop.setValue(eff.permissionMode);
+          return;
+        }
         hostPlugin._resetActiveSessions?.();
       });
     });
+  renderUnconfirmedSecurityRow(panelEl, hostPlugin, "permissionMode", sec);
 
   descToTooltip(
     new Setting(panelEl).setName("Open in main tab"),
@@ -1292,4 +1394,5 @@ module.exports = {
   _defaultFallbackModel,
   renderSectionHeading,
   descToTooltip,
+  renderUnconfirmedSecurityRow,
 };

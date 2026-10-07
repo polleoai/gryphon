@@ -132,3 +132,20 @@ test("#25 review #4: a server named __proto__ can't be approved — a visible er
   assert.equal(isApprovableName("athena"), true);
   assert.throws(() => approve("/v", "__proto__", "a".repeat(64), { file }), /__proto__/);
 });
+
+// ── issue #28 item 3: displaySafe uses Unicode property classes ──
+
+test("#28.3: displaySafe escapes every invisible-padding code point named in the issue", () => {
+  const cps = [0x061c, 0x180e, 0x00ad, 0x034f, 0x115f, 0x1160, 0x3164, 0xffa0, 0xfe00, 0xfe0f, 0xfff9, 0xfffa, 0xfffb, 0x2800,
+    0xe0000, 0xe0001, 0xe0041, 0xe007f, 0x202e, 0x2066, 0x200b, 0x2028, 0x2029, 0x0007, 0x009b, 0xfeff];
+  for (const cp of cps) {
+    const out = approvals.displaySafe(`a${String.fromCodePoint(cp)}b`);
+    assert.equal(out, `a\\u{${cp.toString(16).toUpperCase().padStart(4, "0")}}b`, `U+${cp.toString(16)}`);
+  }
+});
+
+test("#28.3: displaySafe leaves ASCII, CJK and plain emoji unchanged", () => {
+  for (const s of ["plain-server_1 (x)", "知识库服务器", "日本語のサーバー", "🚀 rocket 🦄", "Ünïcødé ñ"]) {
+    assert.equal(approvals.displaySafe(s), s);
+  }
+});

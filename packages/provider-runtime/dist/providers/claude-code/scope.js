@@ -88,8 +88,9 @@ function hasFlag(args, name) {
     return args.some((a) => typeof a === "string" && (a === name || a.startsWith(name + "=")));
 }
 /**
- * Read `<cwd>/.mcp.json`. Missing file → `{ servers: {} }` (not an error:
- * most vaults have none). Unreadable / malformed → `{ servers: {}, error }`.
+ * Read `<cwd>/.mcp.json`. Missing file, or an object with no `mcpServers`
+ * key → `{ servers: {} }` (not an error: most vaults have none).
+ * Unreadable / malformed → `{ servers: {}, error }`.
  */
 function readProjectMcpServers(cwd) {
     if (!cwd)
@@ -113,9 +114,17 @@ function readProjectMcpServers(cwd) {
     catch (e) {
         return { servers: {}, error: `.mcp.json is not valid JSON (${e && e.message})` };
     }
-    const servers = parsed && parsed.mcpServers;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return { servers: {}, error: `.mcp.json is not a JSON object` };
+    }
+    // No `mcpServers` key at all (e.g. `{}`) is valid and empty — Claude Code
+    // loads nothing from it either (issue #28). Present but not an object
+    // stays an error: fail closed.
+    if (!Object.prototype.hasOwnProperty.call(parsed, "mcpServers"))
+        return { servers: {} };
+    const servers = parsed.mcpServers;
     if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
-        return { servers: {}, error: `.mcp.json has no "mcpServers" object` };
+        return { servers: {}, error: `.mcp.json's "mcpServers" is not an object` };
     }
     return { servers };
 }

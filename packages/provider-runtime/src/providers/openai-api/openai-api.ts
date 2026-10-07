@@ -178,6 +178,8 @@ class OpenAIProvider {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
+      // Issue #29: the host's security snapshot for this send.
+      security: this.options.security || null,
     };
 
     // L6 structured output: if caller passes { structuredOutput: { name, schema } },

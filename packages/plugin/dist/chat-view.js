@@ -60,6 +60,17 @@
  *                            teardown in stopStreaming (for cleaning up
  *                            plugin-owned side processes).
  *   - viewType / displayText / icon — per-plugin view identity.
+ *   - securityOverrides    — issue #29. Capability constraints from the
+ *                            consumer's own code, keyed by the closed set
+ *                            of weakening keys (protectedMode,
+ *                            permissionMode, …). They win over this
+ *                            machine's confirmed values. Weakening values in
+ *                            the host's settings object are SUGGESTIONS, not
+ *                            inputs: until the user confirms them on this
+ *                            machine (toolbar, Settings, the one-time
+ *                            prompt), protections stay on.
+ *   - securityHostId       — issue #29. The store namespace when the host
+ *                            has no `manifest.id`.
  *
  * This file knows nothing about any specific consuming plugin's domain.
  * All coupling comes through the options bag; consumers wire their own
@@ -73,6 +84,8 @@ const os = require("os");
 const { createProvider, createProviderForKind, explainUnavailable, detectAvailable } = require("@gryphon/provider-runtime");
 const { TOOL_STATUS_CORE, MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS, CC_BLOCKED_IN_STREAM_JSON, CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT, resolveConnectionTimeoutMs, } = require("./constants");
 const { collectContextSources, summarizeContext } = require("./context-budget");
+const securityUi = require("./security-settings");
+const { securitySettings: _securityStore } = require("@gryphon/protect");
 // F1 (v1.7.0) — debounce window for re-projecting context on keyup.
 // 300ms is long enough that bursty typing (10+ chars/sec) doesn't fire
 // per-char while short enough that the chip feels responsive when the
@@ -794,7 +807,12 @@ class GryphonChatView extends ItemView {
         //     • _resetActiveSessions()            — imperative cross-view reset; absent ⇒ this view self-refreshes
         //     • _announceProviderChange(a,b)      — provider-switch notice; absent ⇒ skipped
         //     • _resetRestApiCounter()            — REST-API GET counter reset; absent ⇒ skipped
-        //     • _vaultRoot()                      — vault base path for context sources; absent ⇒ null
+        //     • app                               — security scope (`app.vault.adapter.getBasePath()`)
+        //                                           and the workspace event bus; absent ⇒ security
+        //                                           settings fail closed and writes raise a visible error
+        //     • manifest.id                       — security-store namespace; absent ⇒ pass
+        //                                           `securityHostId`, or writes raise a visible error
+        //     • _vaultRoot()                      — context sources only; not used for security scope; absent ⇒ null
         //     • getProjectionCalibrationDelta()   — context-projection calibration; absent ⇒ 0
         //     • recordProjectionCalibrationSample(d) — calibration feedback; absent ⇒ skipped
         for (const m of ["saveSettings"]) {
@@ -863,6 +881,10 @@ class GryphonChatView extends ItemView {
             }
         }
         this.onBeforeSend = options.onBeforeSend || null;
+        // Issue #29: consumer capability constraints + store namespace.
+        this.securityOverrides = _securityStore.sanitizeSecurityOverrides(options.securityOverrides);
+        this.securityHostId = typeof options.securityHostId === "string" ? options.securityHostId : undefined;
+        securityUi.installSecurityStoreErrorNotice();
         this.viewType = options.viewType || "gryphon-view";
         this.viewDisplayText = options.displayText || "Gryphon";
         this.viewIcon = options.icon || "shield-check";
@@ -917,6 +939,9 @@ class GryphonChatView extends ItemView {
         // bar (see _setIdleStatus) — no need to add a throwaway system bubble
         // on every open that the user would immediately scroll past.
         this._restoreChatHistory();
+        // Issue #29: weakening values in the vault's settings file that this
+        // machine hasn't confirmed — ask once per vault+host per app session.
+        this._maybePromptVaultSecurity();
         // F1 (v1.7.0) — kick off the initial context projection. Async,
         // but doesn't block opening the view — the chip shows "—" until
         // the snapshot lands (~5ms typical). Failure is silent (the chip
@@ -1006,11 +1031,11 @@ class GryphonChatView extends ItemView {
         this.effortBtn.addEventListener("click", (e) => this.showEffortMenu(e));
         toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
         this.permBtn = toolbar.createEl("span", {
-            text: labelFor(PERMS, this.plugin.settings.permissionMode) + " \u25BE",
-            cls: "gryphon-toolbar-btn" +
-                (this.plugin.settings.permissionMode === "bypassPermissions" ? " gryphon-perm-yolo" : ""),
+            text: "",
+            cls: "gryphon-toolbar-btn",
             attr: { title: "Permission mode" },
         });
+        this._refreshPermBadge();
         this.permBtn.addEventListener("click", (e) => this.showPermMenu(e));
         toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
         this.contextBtn = toolbar.createEl("span", {
@@ -1079,25 +1104,14 @@ class GryphonChatView extends ItemView {
         });
         this._updateRestApiChip();
         this.restApiBtn.addEventListener("click", async () => {
-            const previous = this.plugin.settings.obsidianRestApiPolicy || "blocked";
-            this.plugin.settings.obsidianRestApiPolicy = previous === "blocked" ? "allowed" : "blocked";
-            try {
-                await this.plugin.saveSettings();
-            }
-            catch (e) {
-                // Roll back the in-memory mutation so the chip doesn't lie about
-                // what got persisted. Without this, the user sees REST: on but
-                // next session reloads "blocked" and the change silently reverts
-                // — exactly the kind of "where did my setting go?" trap a
-                // security-adjacent toggle must not have.
-                this.plugin.settings.obsidianRestApiPolicy = previous;
-                try {
-                    const { Notice } = require("obsidian");
-                    new Notice(`Gryphon: couldn't persist REST API toggle — ${(e && e.message) || e}. Setting unchanged.`, 8000);
-                }
-                catch { /* obsidian unavailable (tests / headless) */ }
-                console.error("[gryphon] obsidianRestApiPolicy save failed:", e);
-            }
+            // Issue #29: a security setting — stored on this machine, never
+            // trusted from the vault's data.json. A failed write leaves the
+            // effective value (and so the chip) unchanged, and says why.
+            const eff = this._effectiveSecurity();
+            if (eff.source.obsidianRestApiPolicy === "override")
+                return;
+            const next = eff.obsidianRestApiPolicy === "blocked" ? "allowed" : "blocked";
+            await this.applySecuritySetting("obsidianRestApiPolicy", next);
             this._updateRestApiChip();
         });
         toolbar.createEl("span", { cls: "gryphon-toolbar-spacer" });
@@ -1295,6 +1309,110 @@ class GryphonChatView extends ItemView {
                 this._refreshMeasuredAgainstCurrentModel();
                 this._refreshContextProjection().catch(() => { });
             }));
+            // Issue #29: a security write from any surface (another panel, the
+            // host's settings tab, the confirm prompt). Scoped: only this host's
+            // views re-evaluate. The spawn signature carries the effective
+            // values, so a mismatch tears the live process down.
+            this.registerEvent(this.app.workspace.on(securityUi.SECURITY_CHANGED_EVENT, (scope) => {
+                this._onSecuritySettingsChanged(scope);
+            }));
+        }
+    }
+    /**
+     * Issue #29: one audit line per spawn when the consumer's code sets
+     * security values, so a forced-off protection is visible in the log.
+     */
+    _logSecurityAudit(security) {
+        const keys = Object.keys(this.securityOverrides || {});
+        if (keys.length === 0)
+            return;
+        console.info(`[gryphon] ${this.viewDisplayText || "host"} security overrides for this spawn: ` +
+            keys.map((k) => `${k}=${JSON.stringify(security[k])}`).join(", "));
+    }
+    /**
+     * Issue #29: the security half of a provider's construction options. The
+     * CLI flag and every in-process gate come from the same frozen snapshot.
+     */
+    _securitySpawnOptions(security) {
+        return { permissionMode: security.permissionMode, security };
+    }
+    /** Issue #29: react to a `gryphon:security-settings-changed` event. */
+    _onSecuritySettingsChanged(scope) {
+        const mine = this._securityScope();
+        if (!mine || !scope || _securityStore.scopeKey(scope) !== _securityStore.scopeKey(mine))
+            return;
+        try {
+            this._teardownLiveProcessIfSettingsChanged();
+        }
+        catch (e) {
+            console.error("[gryphon] provider teardown on security change threw:", e);
+        }
+        this.refreshToolbarLabels();
+        this._updateRestApiChip();
+    }
+    /**
+     * Issue #29: this host's security-store scope (vault + host plugin), or
+     * null when it can't be derived (reads then fail closed).
+     */
+    _securityScope() {
+        return _securityStore.resolveSecurityScope({
+            app: this.app, hostPlugin: this.plugin, hostId: this.securityHostId,
+        });
+    }
+    /**
+     * Issue #29: the frozen effective security snapshot — the consumer's
+     * overrides, then this machine's confirmed values, then the protected
+     * defaults. Every badge, menu, diagnostics line and provider spawn reads
+     * this; the host's settings object only supplies suggestions.
+     */
+    _effectiveSecurity() {
+        return _securityStore.effectiveSecuritySettings((this.plugin && this.plugin.settings) || {}, this._securityScope(), this.securityOverrides);
+    }
+    /**
+     * Issue #29 public API: set a weakening key from a user gesture on this
+     * machine — for an embedder's own settings UI. Same path the toolbar
+     * uses: store write, mirror into the host's settings, workspace event,
+     * live-process teardown, badge refresh. Returns false (after a Notice)
+     * when the write can't be saved.
+     */
+    async applySecuritySetting(key, value) {
+        try {
+            await securityUi.applySecuritySetting(this.plugin, key, value, {
+                app: this.app, hostId: this.securityHostId, overrides: this.securityOverrides,
+            });
+        }
+        catch (e) {
+            securityUi.reportSecurityWriteError(e);
+            this.refreshToolbarLabels();
+            return false;
+        }
+        if (this.claudeProcess && typeof this.claudeProcess.isAlive === "function" && this.claudeProcess.isAlive()) {
+            try {
+                this.claudeProcess.abort();
+            }
+            catch (_) { /* best-effort */ }
+            this.claudeProcess = null;
+            this._providerSpawnSignature = null;
+        }
+        this.refreshToolbarLabels();
+        this._updateRestApiChip();
+        return true;
+    }
+    /**
+     * Issue #29: open the one-time confirm prompt for this host's scope when
+     * the vault's settings file holds weakening values not confirmed on this
+     * machine. Once per scope per app session; `force` reopens it (badge).
+     */
+    _maybePromptVaultSecurity(force = false) {
+        try {
+            return securityUi.maybePromptVaultSecurity(this.app, this.plugin, {
+                app: this.app, hostId: this.securityHostId, overrides: this.securityOverrides, force,
+                onDone: () => { this.refreshToolbarLabels(); this._updateRestApiChip(); },
+            });
+        }
+        catch (e) {
+            console.error("[gryphon] vault security prompt failed:", e);
+            return null;
         }
     }
     /**
@@ -1323,7 +1441,9 @@ class GryphonChatView extends ItemView {
             kind: getActiveProviderKind(this.plugin) || s.providerPreference || null,
             model: s.model || null,
             effort: s.effort || null,
-            permissionMode: s.permissionMode || null,
+            permissionMode: this._effectiveSecurity().permissionMode || null,
+            // Issue #29: every effective security value is spawn-time.
+            security: JSON.stringify(_securityStore.securityValuesOf(this._effectiveSecurity())),
             scope: JSON.stringify(this._resolveClaudeCodeScope() || null),
             // Issue #25 rev 2: bumped on every vault-MCP approve / revoke, so the
             // next message respawns (with --resume) under the new server set.
@@ -1342,8 +1462,9 @@ class GryphonChatView extends ItemView {
     _resolveClaudeCodeScope() {
         if (this.claudeCodeScope)
             return this.claudeCodeScope;
-        const s = (this.plugin && this.plugin.settings) || {};
-        return s.claudeCodeInheritUserConfig === true
+        // Issue #29: loading the user's personal config is a weakening key —
+        // the machine-confirmed value, not the vault's data.json.
+        return this._effectiveSecurity().claudeCodeInheritUserConfig === true
             ? { inheritUserConfig: true, mcpServers: "inherit" }
             : undefined;
     }
@@ -1366,6 +1487,7 @@ class GryphonChatView extends ItemView {
             || have.model !== want.model
             || have.effort !== want.effort
             || have.permissionMode !== want.permissionMode
+            || (have.security !== undefined && have.security !== want.security)
             || have.scope !== want.scope
             || (have.mcpApprovals || 0) !== (want.mcpApprovals || 0);
     }
@@ -1609,12 +1731,45 @@ class GryphonChatView extends ItemView {
         if (this.effortBtn) {
             this.effortBtn.setText(labelFor(EFFORTS, this.plugin.settings.effort) + " \u25be");
         }
-        if (this.permBtn) {
-            this.permBtn.setText(labelFor(PERMS, this.plugin.settings.permissionMode) + " \u25be");
-            // YOLO highlight class \u2014 toggled to match the active mode each refresh.
-            const isYolo = this.plugin.settings.permissionMode === "bypassPermissions";
-            this.permBtn.classList.toggle("gryphon-perm-yolo", isYolo);
-        }
+        this._refreshPermBadge();
+    }
+    /**
+     * Issue #29: the permission badge shows the EFFECTIVE mode. "⚠" marks
+     * either unconfirmed vault values (click to review) or a host with no
+     * security scope (protections forced on).
+     */
+    _refreshPermBadge() {
+        if (!this.permBtn)
+            return;
+        const eff = this._effectiveSecurity();
+        const warn = !eff.scopeAvailable || eff.unconfirmed.length > 0;
+        this.permBtn.setText(labelFor(PERMS, eff.permissionMode) + (warn ? " \u26a0" : "") + " \u25be");
+        // YOLO highlight class \u2014 toggled to match the active mode each refresh.
+        this.permBtn.classList.toggle("gryphon-perm-yolo", eff.permissionMode === "bypassPermissions");
+        this.permBtn.classList.toggle("gryphon-perm-unconfirmed", warn);
+        const host = securityUi.hostDisplayName(this.plugin, this.securityHostId);
+        const title = !eff.scopeAvailable
+            ? "Permission mode \u2014 \u26a0 protections forced on (vault path unknown)"
+            : eff.unconfirmed.length > 0
+                ? `Permission mode \u2014 \u26a0 not confirmed on this machine for ${host} (click to review)`
+                : "Permission mode";
+        this.permBtn.setAttribute("title", title);
+    }
+    /**
+     * Issue #29: the permission menu's entries. The checkmark follows the
+     * effective mode; when the consumer's `securityOverrides` sets the mode,
+     * every entry is disabled with "Set by <host>" so a pick can't look like
+     * it did something.
+     */
+    _permMenuEntries() {
+        const eff = this._effectiveSecurity();
+        const overridden = eff.source.permissionMode === "override";
+        return PERMS.map((p) => ({
+            value: p.value,
+            title: p.label + " \u2014 " + p.desc + (p.value === eff.permissionMode ? " \u2713" : ""),
+            disabled: overridden,
+            tooltip: overridden ? `Set by ${this.viewDisplayText || "the host plugin"}` : null,
+        }));
     }
     showEffortMenu(e) {
         const menu = new Menu();
@@ -1628,26 +1783,37 @@ class GryphonChatView extends ItemView {
         this._showMenuAbove(menu, e.target);
     }
     showPermMenu(e) {
+        // Issue #29: with unconfirmed vault values, the ⚠ badge reopens the
+        // confirm prompt (the persistent, actionable affordance).
+        if (this._maybePromptVaultSecurity(true))
+            return;
         const menu = new Menu();
-        for (const p of PERMS) {
+        for (const p of this._permMenuEntries()) {
             menu.addItem((item) => {
-                item.setTitle(p.label + " \u2014 " + p.desc +
-                    (p.value === this.plugin.settings.permissionMode ? " \u2713" : ""))
+                item.setTitle(p.disabled ? `${p.title} (${p.tooltip})` : p.title)
                     .setSection("perm")
                     .onClick(() => {
-                    this.changeSetting("permissionMode", p.value, this.permBtn, PERMS);
-                    if (p.value === "bypassPermissions") {
-                        this.permBtn.addClass("gryphon-perm-yolo");
-                    }
-                    else {
-                        this.permBtn.removeClass("gryphon-perm-yolo");
-                    }
+                    if (p.disabled)
+                        return;
+                    void this.changeSetting("permissionMode", p.value, this.permBtn, PERMS);
                 });
+                if (p.disabled && typeof item.setDisabled === "function")
+                    item.setDisabled(true);
             });
         }
         this._showMenuAbove(menu, e.target);
     }
     async changeSetting(key, value, btnEl, list) {
+        // Issue #29: security keys go through the machine store, never straight
+        // into the host's settings (which travel with the vault).
+        if (_securityStore.isWeakeningKey(key)) {
+            if (this._effectiveSecurity()[key] === value)
+                return;
+            const ok = await this.applySecuritySetting(key, value);
+            if (ok)
+                this._flashStatus(`${key} \u2192 ${labelFor(list, value)}`);
+            return;
+        }
         if (this.plugin.settings[key] === value)
             return;
         this.plugin.settings[key] = value;
@@ -1729,7 +1895,7 @@ class GryphonChatView extends ItemView {
     _updateRestApiChip() {
         if (!this.restApiBtn)
             return;
-        const blocked = (this.plugin.settings.obsidianRestApiPolicy || "blocked") === "blocked";
+        const blocked = this._effectiveSecurity().obsidianRestApiPolicy !== "allowed";
         this.restApiBtn.textContent = blocked ? "REST: off" : "REST: on";
         this.restApiBtn.removeClass("gryphon-rest-api-on");
         this.restApiBtn.removeClass("gryphon-rest-api-off");
@@ -2756,8 +2922,8 @@ class GryphonChatView extends ItemView {
             provider,
             model,
             effort: settings.effort || "high",
-            permissionMode: settings.permissionMode || "default",
-            protectedMode: settings.protectedMode !== false,
+            permissionMode: this._effectiveSecurity().permissionMode,
+            protectedMode: this._effectiveSecurity().protectedMode !== false,
             autoCompactSdk: settings.autoCompactSdk !== false,
             obsidianVersion,
             os: osDesc,
@@ -3804,11 +3970,12 @@ class GryphonChatView extends ItemView {
      * their custom patterns mid-session.
      */
     _buildTriggerKeywords() {
+        const sec = this._effectiveSecurity();
         const snapshotKey = JSON.stringify({
-            cmdDisabled: this.plugin.settings.protectedCommandsDisabled || [],
-            cmdCustom: this.plugin.settings.protectedCommandsCustom || [],
-            pathDisabled: this.plugin.settings.protectedPathsDisabled || [],
-            pathCustom: this.plugin.settings.protectedPathsCustom || [],
+            cmdDisabled: sec.protectedCommandsDisabled,
+            cmdCustom: sec.protectedCommandsCustom,
+            pathDisabled: sec.protectedPathsDisabled,
+            pathCustom: sec.protectedPathsCustom,
         });
         if (this._triggerKwCache && this._triggerKwSnapshot === snapshotKey) {
             return this._triggerKwCache;
@@ -3855,7 +4022,7 @@ class GryphonChatView extends ItemView {
         // first token; we do fuller token extraction here.
         const { DEFAULT_PROTECTED_COMMANDS, DEFAULT_PROTECTED_PATHS } = require("./constants");
         const { resolveActivePatterns } = require("@gryphon/protect");
-        const activeCmds = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, this.plugin.settings.protectedCommandsDisabled, this.plugin.settings.protectedCommandsCustom);
+        const activeCmds = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, sec.protectedCommandsDisabled, sec.protectedCommandsCustom);
         for (const p of activeCmds) {
             if (typeof p !== "string")
                 continue;
@@ -3887,7 +4054,7 @@ class GryphonChatView extends ItemView {
         // the reminder on every turn, burning tokens. Only add the full
         // path (entered as-is by the user) and, for deep paths, the
         // more distinctive tail segment.
-        const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, this.plugin.settings.protectedPathsDisabled, this.plugin.settings.protectedPathsCustom);
+        const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, sec.protectedPathsDisabled, sec.protectedPathsCustom);
         for (const p of activePaths) {
             if (typeof p !== "string")
                 continue;
@@ -5862,7 +6029,11 @@ class GryphonChatView extends ItemView {
         // reused for the active attempt; a fallback, if needed, builds with a
         // minimal options bag — see `creationOptions`).
         let baseOptions = null;
+        // Issue #29: one frozen security snapshot per send — the CLI spawn
+        // snapshots it; API/SDK providers enforce from it on this send.
+        const security = this._effectiveSecurity();
         if (isNewProcess) {
+            this._logSecurityAudit(security);
             // v0.5.13: pass any pending compaction summary as a dedicated
             // `compactionSummary` option so the CLI provider can merge it
             // with the Gryphon system-prompt hint into a single
@@ -5926,7 +6097,7 @@ class GryphonChatView extends ItemView {
             baseOptions = {
                 model: this.plugin.settings.model || undefined,
                 effort: this.plugin.settings.effort || undefined,
-                permissionMode: this.plugin.settings.permissionMode || undefined,
+                ...this._securitySpawnOptions(security),
                 resumeSessionId: this.plugin.settings.lastSessionId || undefined,
                 compactionSummary: compactionPreamble,
                 extraArgs,
@@ -6126,7 +6297,7 @@ class GryphonChatView extends ItemView {
             const creationOptions = baseOptions || {
                 model: this.plugin.settings.model || undefined,
                 effort: this.plugin.settings.effort || undefined,
-                permissionMode: this.plugin.settings.permissionMode || undefined,
+                ...this._securitySpawnOptions(security),
                 extraArgsByProvider: this.extraProcessArgsByProvider,
                 claudeCodeScope: this._resolveClaudeCodeScope(),
                 hostAdapter: this.plugin.hostAdapter,
@@ -6165,7 +6336,8 @@ class GryphonChatView extends ItemView {
                                 kind,
                                 model: modelOverride || null,
                                 effort: this.plugin.settings.effort || null,
-                                permissionMode: this.plugin.settings.permissionMode || null,
+                                permissionMode: security.permissionMode || null,
+                                security: JSON.stringify(_securityStore.securityValuesOf(security)),
                                 scope: JSON.stringify(this._resolveClaudeCodeScope() || null),
                                 mcpApprovals: this.plugin.mcpApprovalsGeneration || 0,
                             };
