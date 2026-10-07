@@ -26,13 +26,23 @@
  *                            this for clean per-provider routing instead
  *                            of relying on the filter.
  *   - claudeCodeScope      — { inheritUserConfig, settingSources, mcpServers,
- *                            includeProjectMcp, autoMemory } — which Claude
- *                            Code config a claude-code chat launches with
- *                            (issue #25; default: the vault's, not the
- *                            user's personal plugins/hooks/MCP servers).
+ *                            includeProjectMcp, autoMemory, pluginDirs,
+ *                            memoryFiles } — which Claude Code config a
+ *                            claude-code chat launches with (issues #25,
+ *                            #27; default: no settings files from the vault
+ *                            or the user, approved vault MCP servers only).
  *                            When supplied — ANY field — it REPLACES the
- *                            user's Settings → Advanced toggle outright (no
- *                            per-field merge). Object-form `mcpServers` are
+ *                            user's Settings → Advanced toggle (the toggle
+ *                            isn't merged in). Each field the consumer
+ *                            leaves unset takes the provider default on its
+ *                            own: `{ memoryFiles: [...] }` behaves exactly
+ *                            like no scope on every other field.
+ *                            `pluginDirs` (→ --plugin-dir) must be trusted
+ *                            dirs from the consumer's own install;
+ *                            `memoryFiles` (→ one
+ *                            --append-system-prompt-file, @-imports
+ *                            expanded) carries the vault CLAUDE.md, which
+ *                            the default no longer loads. Object-form `mcpServers` are
  *                            executed WITHOUT approval: build them from your
  *                            plugin's own code, never from files inside the
  *                            vault. Vault `.mcp.json` servers run only once

@@ -32,7 +32,10 @@ function buildPassiveArgs(config, opts = {}) {
         "--strict-mcp-config",
         // C5 — skip ALL user/project/local settings (and their SessionStart
         // hooks, C12). The caller's systemPrompt is the only protocol input.
-        "--setting-sources", "",
+        // Single token (#27): an empty argv element can be dropped by a shell or
+        // shim layer, which would leave --setting-sources consuming the NEXT
+        // flag and Claude Code falling back to project+local settings.
+        "--setting-sources=",
         // C6 — deny every built-in tool.
         "--disallowedTools", DISALLOWED_BUILTINS.join(","),
     ];

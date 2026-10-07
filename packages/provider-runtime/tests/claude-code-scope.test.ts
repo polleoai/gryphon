@@ -81,6 +81,8 @@ function launch(cwd: string, opts: Record<string, any> = {}) {
     hostAdapter: { notify: (m: string) => notices.push(m) },
     _spawnOverride: () => Promise.resolve({}), // skips binary preflight
     _mcpApprovals: NO_APPROVALS,
+    // Inherit mode reads the user's ~/.claude.json (#27) — never the real one here.
+    _claudeUserConfigFile: path.join(os.tmpdir(), "g25-no-such-claude.json"),
     ...opts,
   });
   provider.spawn();
@@ -91,6 +93,15 @@ function launch(cwd: string, opts: Record<string, any> = {}) {
 function valuesOf(args: string[], flag: string): string[] {
   const out: string[] = [];
   args.forEach((a, i) => { if (a === flag) out.push(args[i + 1]); });
+  return out;
+}
+/** Values of `flag` in either `--flag v` or `--flag=v` form. */
+function flagValues(args: string[], flag: string): string[] {
+  const out: string[] = [];
+  args.forEach((a, i) => {
+    if (a === flag) out.push(args[i + 1]);
+    else if (a.startsWith(flag + "=")) out.push(a.slice(flag.length + 1));
+  });
   return out;
 }
 const readJson = (p: string) => JSON.parse(fs.readFileSync(p, "utf8"));
@@ -104,7 +115,8 @@ test.after(() => { for (const s of spawns) s.proc.emit("close", 0); });
 test("#25 default: scoped sources, strict MCP, --mcp-config = exactly the APPROVED vault .mcp.json servers", () => {
   const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
   const { args } = launch(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
-  assert.deepEqual(valuesOf(args, "--setting-sources"), ["project,local"]);
+  // #27: no settings files at all (was project,local — vault hooks ran zero-click).
+  assert.deepEqual(flagValues(args, "--setting-sources"), [""]);
   assert.ok(args.includes("--strict-mcp-config"));
   const [mcpFile] = valuesOf(args, "--mcp-config");
   assert.ok(mcpFile, "expected --mcp-config");
@@ -128,28 +140,33 @@ test("#25 malformed .mcp.json: launch proceeds strict with zero servers AND show
   assert.match(notices[0], /\.mcp\.json/);
 });
 
-test("#25 inheritUserConfig + mcpServers:'inherit' (every vault server approved) → today's argv, plus only the approval-store deny (review #6)", () => {
+test("#25/#27 inheritUserConfig + mcpServers:'inherit' (every vault server approved) → user sources, strict, approved servers listed, plus only the approval-store deny (review #6)", () => {
   const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
   const { args } = launch(vault, {
     claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
     _mcpApprovals: approving({ athena: ATHENA_SERVER }),
   });
   const [settingsFile] = valuesOf(args, "--settings");
+  const [mcpFile] = valuesOf(args, "--mcp-config");
   assert.deepEqual(args, [
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--verbose",
     "--include-partial-messages",
     "--settings", settingsFile,
+    "--mcp-config", mcpFile,
+    "--setting-sources=user",
+    "--strict-mcp-config",
     "--append-system-prompt", GRYPHON_SYSTEM_PROMPT_HINT,
   ]);
+  assert.deepEqual(readJson(mcpFile), { mcpServers: { athena: ATHENA_SERVER } });
   const { buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
   assert.deepEqual(readJson(settingsFile), { permissions: { deny: buildApprovalsStoreDenyGlobs() } });
 });
 
 test("#25 explicit settingSources wins; [] emits an empty source list", () => {
   const { args } = launch(makeVault(), { claudeCodeScope: { settingSources: [] } });
-  assert.deepEqual(valuesOf(args, "--setting-sources"), [""]);
+  assert.deepEqual(flagValues(args, "--setting-sources"), [""]);
 });
 
 test("#25 mcpServers object merges with the project file unless includeProjectMcp:false", () => {
@@ -166,7 +183,7 @@ test("#25 consumer flags in extraArgs suppress Gryphon's own value for that flag
   const { args } = launch(vault, {
     extraArgs: ["--setting-sources", "user", "--strict-mcp-config", "--mcp-config", "/consumer.json"],
   });
-  assert.deepEqual(valuesOf(args, "--setting-sources"), ["user"]);
+  assert.deepEqual(flagValues(args, "--setting-sources"), ["user"]);
   assert.equal(args.filter((a) => a === "--strict-mcp-config").length, 1);
   assert.deepEqual(valuesOf(args, "--mcp-config"), ["/consumer.json"]);
 });
@@ -182,7 +199,7 @@ test("#25 consumer --setting-sources via the legacy flat extraProcessArgs path (
   });
   provider.spawn();
   const { args } = spawns[spawns.length - 1];
-  assert.deepEqual(valuesOf(args, "--setting-sources"), ["project"]);
+  assert.deepEqual(flagValues(args, "--setting-sources"), ["project"]);
 });
 
 // ── settings file composition ─────────────────────────────────────────
@@ -326,28 +343,21 @@ test("#25 rev2: a corrupt approval store approves nothing", () => {
   assert.equal(pending[0].pending.length, 1);
 });
 
-test("#25 rev2: inherit mode puts every unapproved vault name in the --settings disabledMcpjsonServers", () => {
+test("#25 rev2 / #27 B: inherit mode leaves every unapproved vault server out of a strict --mcp-config (no disabledMcpjsonServers)", () => {
   const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER, evil: EVIL, other: { command: "x" } } }));
-  const { args, pending } = launchCapturing(vault, {
-    claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
-    _mcpApprovals: approving({ athena: ATHENA_SERVER }),
-  });
-  assert.ok(!args.includes("--strict-mcp-config"), "inherit keeps the user's MCP servers");
-  const files = valuesOf(args, "--settings");
-  assert.equal(files.length, 1);
-  assert.deepEqual(readJson(files[0]).disabledMcpjsonServers.sort(), ["evil", "other"]);
-  assert.deepEqual(pending[0].pending.map((p: any) => p.name).sort(), ["evil", "other"]);
-  // With hooks on, the guard rides in the SAME single --settings object.
-  const hookedRun = launchCapturing(vault, {
-    plugin: hooked(),
-    claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
-    _mcpApprovals: approving({ athena: ATHENA_SERVER }),
-  });
-  const hs = valuesOf(hookedRun.args, "--settings");
-  assert.equal(hs.length, 1);
-  const merged = readJson(hs[0]);
-  assert.deepEqual(Object.keys(merged.hooks).sort(), Object.keys(HOOK_FILES).sort());
-  assert.deepEqual(merged.disabledMcpjsonServers.sort(), ["evil", "other"]);
+  for (const plugin of [unprotected, hooked]) {
+    const { args, pending } = launchCapturing(vault, {
+      plugin: plugin(),
+      claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
+      _mcpApprovals: approving({ athena: ATHENA_SERVER }),
+    });
+    assert.ok(args.includes("--strict-mcp-config"), "Claude Code never reads the vault .mcp.json itself (#27 B)");
+    assert.deepEqual(mcpConfigOf(args), { athena: ATHENA_SERVER });
+    assert.deepEqual(pending[0].pending.map((p: any) => p.name).sort(), ["evil", "other"]);
+    const files = valuesOf(args, "--settings");
+    assert.equal(files.length, 1, "still exactly one --settings object");
+    assert.equal(readJson(files[0]).disabledMcpjsonServers, undefined);
+  }
 });
 
 test("#25 rev2: an unapproved server isn't reported as 'didn't connect' at init", () => {
@@ -392,8 +402,8 @@ test("#25 consumer review (rev2) #2: claudeCodeScope is ignored by non-claude-co
     } catch (_) { continue; } // provider unavailable in this env — nothing could leak
     try { provider && provider.spawn && provider.spawn(); } catch (_) {}
     for (const s of spawns.slice(n)) {
-      for (const flag of ["--setting-sources", "--strict-mcp-config", "--mcp-config"]) {
-        assert.ok(!s.args.includes(flag), `${kind} leaked ${flag}`);
+      for (const flag of ["--setting-sources", "--strict-mcp-config", "--mcp-config", "--plugin-dir", "--append-system-prompt-file"]) {
+        assert.ok(!flagValues(s.args, flag).length && !s.args.includes(flag), `${kind} leaked ${flag}`);
       }
     }
   }
@@ -405,10 +415,9 @@ test("#25 consumer review (rev2) #2: claudeCodeScope is ignored by non-claude-co
 
 test("#25 rev2: a BOM-prefixed .mcp.json still parses (no parser differential with Claude Code)", () => {
   const vault = makeVault("\uFEFF" + JSON.stringify({ mcpServers: { evil: EVIL } }));
-  const { args, pending, notices } = launchCapturing(vault, { claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" } });
-  assert.deepEqual(readJson(valuesOf(args, "--settings")[0]).disabledMcpjsonServers, ["evil"]);
-  assert.equal(pending[0].pending.length, 1);
-  assert.deepEqual(notices, []);
+  const { args, pending } = launchCapturing(vault, { claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" } });
+  assert.equal(mcpConfigOf(args), null);
+  assert.equal(pending[0].pending.length, 1, "parsed, so the server is offered for approval rather than reported as malformed");
 });
 
 test("#25 rev2: inherit mode + an unparseable .mcp.json fails closed — strict, no vault servers, Notice", () => {
@@ -420,7 +429,11 @@ test("#25 rev2: inherit mode + an unparseable .mcp.json fails closed — strict,
   assert.match(notices[0], /\.mcp\.json/);
 });
 
-// ── security review of rev 2, finding #3: inherit mode fails closed ───
+// ── security review of rev 2, finding #3 — superseded by #27 B ─────
+// The non-strict inherit path (and its disabledMcpjsonServers guard, which
+// had to fail closed when it couldn't be written or could be overridden) is
+// gone: inherit mode is always strict now. These pin that it stays strict in
+// the cases that used to need the fallback.
 
 function withUnwritableTmp<T>(fn: () => T): T {
   const keys = ["TMPDIR", "TMP", "TEMP"];
@@ -433,31 +446,33 @@ function withUnwritableTmp<T>(fn: () => T): T {
 const INHERIT = { inheritUserConfig: true, mcpServers: "inherit" };
 
 for (const [label, plugin] of [["Protected off", unprotected], ["hooks on", hooked]] as const) {
-  test(`#25 review #3 (${label}): inherit mode whose disabledMcpjsonServers guard can't be written launches strict + Notice`, () => {
+  test(`#25 review #3 / #27 B (${label}): inherit mode with no writable settings file is still strict`, () => {
     const vault = makeVault(JSON.stringify({ mcpServers: { evil: EVIL } }));
     const p = plugin(); // its fixture dir lives in the real tmpdir
-    const { args, notices } = withUnwritableTmp(() => launchCapturing(vault, { plugin: p, claudeCodeScope: INHERIT }));
+    const { args } = withUnwritableTmp(() => launchCapturing(vault, { plugin: p, claudeCodeScope: INHERIT }));
     assert.deepEqual(valuesOf(args, "--settings"), [], "precondition: the settings write really failed");
-    assert.ok(args.includes("--strict-mcp-config"), "never non-strict without the guard");
-    assert.ok(notices.some((n) => /MCP/.test(n)), JSON.stringify(notices));
+    assert.ok(args.includes("--strict-mcp-config"));
+    assert.deepEqual(valuesOf(args, "--mcp-config"), []);
   });
 }
 
-test("#25 review #3: a consumer --settings in extraArgs could override the guard → inherit launches strict + Notice", () => {
+test("#25 review #3 / #27 B: a consumer --settings in extraArgs can't re-enable vault servers — inherit is strict regardless", () => {
   const vault = makeVault(JSON.stringify({ mcpServers: { evil: EVIL } }));
   for (const extraArgs of [["--settings", "/consumer/settings.json"], ["--settings=/consumer/settings.json"]]) {
     const { args, notices } = launchCapturing(vault, { claudeCodeScope: INHERIT, extraArgs });
     assert.ok(args.includes("--strict-mcp-config"), JSON.stringify(extraArgs));
-    assert.ok(notices.some((n) => /settings/i.test(n)), JSON.stringify(notices));
+    assert.equal(mcpConfigOf(args), null);
+    assert.ok(!notices.some((n) => /--settings/.test(n)), "no fallback warning needed any more");
   }
 });
 
-test("#25 review #3: inherit mode with nothing to disable keeps today's non-strict argv even with a consumer --settings", () => {
+test("#27 B: inherit mode with every vault server approved is strict too, and lists them", () => {
   const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
   const { args, notices } = launchCapturing(vault, {
     claudeCodeScope: INHERIT, extraArgs: ["--settings", "/consumer/settings.json"], _mcpApprovals: approving({ athena: ATHENA_SERVER }),
   });
-  assert.ok(!args.includes("--strict-mcp-config"));
+  assert.ok(args.includes("--strict-mcp-config"));
+  assert.deepEqual(mcpConfigOf(args), { athena: ATHENA_SERVER });
   assert.deepEqual(notices, []);
 });
 
@@ -468,8 +483,9 @@ test("#25 review #4: a __proto__-named vault server is never run and stays pendi
   const r = resolveClaudeCodeScope(undefined, { cwd: vault, extraArgs: [], approvals: { lookup: () => mcpApprovals.hashSpec(EVIL) } });
   assert.equal(r.mcpServers, null);
   assert.deepEqual(r.pendingApprovals.map((p: any) => p.name), ["__proto__"]);
-  const inh = resolveClaudeCodeScope(INHERIT as any, { cwd: vault, extraArgs: [], approvals: NO_APPROVALS });
-  assert.deepEqual(inh.settingsKeys.disabledMcpjsonServers, ["__proto__"]);
+  const inh = resolveClaudeCodeScope(INHERIT as any, { cwd: vault, extraArgs: [], approvals: NO_APPROVALS, userConfigFile: path.join(os.tmpdir(), "g25-no-such-claude.json") });
+  assert.equal(inh.mcpServers, null);
+  assert.deepEqual(inh.pendingApprovals.map((p: any) => p.name), ["__proto__"]);
 });
 
 test("#25 review #2: vault server names are display-safe in the provider's own Notices (fallback + didn't-connect)", () => {

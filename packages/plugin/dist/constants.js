@@ -847,11 +847,12 @@ const DEFAULT_SETTINGS = {
     // console-only; never written to a user file or sent off-device.
     // Default off; opt-in for bug reports and cross-platform debugging.
     devCliDebug: false,
-    // Issue #25: Claude Code chats launch with the vault's config only —
-    // the user's personal plugins (and their hooks / skills / output
-    // styles), personal MCP servers and auto-memory stay out. true = launch
-    // with the user's full personal config, as before. A consumer's
-    // `claudeCodeScope` view option overrides this.
+    // Issue #25: Claude Code chats launch without the user's personal
+    // plugins (and their hooks / skills / output styles), personal MCP
+    // servers and auto-memory. true = load the user's own settings and
+    // ~/.claude.json MCP servers. Issue #27: vault settings files never load
+    // in either mode. A consumer's `claudeCodeScope` view option overrides
+    // this.
     claudeCodeInheritUserConfig: false,
     // Issue #5 / v1.1.0: SDK-mode auto-compact at AUTO_COMPACT_SDK_THRESHOLD_PCT
     // (95%). When true, Gryphon automatically summarizes the conversation and

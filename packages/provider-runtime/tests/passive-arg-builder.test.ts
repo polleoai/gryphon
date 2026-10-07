@@ -12,7 +12,9 @@ test("emits clean-room transport + flags", () => {
   assert.equal(args[args.indexOf("--model") + 1], "claude-sonnet-4-6");
   // C4/C5
   assert.ok(args.includes("--strict-mcp-config"));
-  assert.equal(args[args.indexOf("--setting-sources") + 1], "");
+  // Single token (#27): a separate "" element can be dropped by a shim layer.
+  assert.ok(args.includes("--setting-sources="), "single-token empty --setting-sources=");
+  assert.equal(args.indexOf("--setting-sources"), -1, "never the two-token form");
 });
 
 test("uses --system-prompt REPLACE, never --append-system-prompt (C3)", () => {

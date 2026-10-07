@@ -26,13 +26,23 @@
  *                            this for clean per-provider routing instead
  *                            of relying on the filter.
  *   - claudeCodeScope      — { inheritUserConfig, settingSources, mcpServers,
- *                            includeProjectMcp, autoMemory } — which Claude
- *                            Code config a claude-code chat launches with
- *                            (issue #25; default: the vault's, not the
- *                            user's personal plugins/hooks/MCP servers).
+ *                            includeProjectMcp, autoMemory, pluginDirs,
+ *                            memoryFiles } — which Claude Code config a
+ *                            claude-code chat launches with (issues #25,
+ *                            #27; default: no settings files from the vault
+ *                            or the user, approved vault MCP servers only).
  *                            When supplied — ANY field — it REPLACES the
- *                            user's Settings → Advanced toggle outright (no
- *                            per-field merge). Object-form `mcpServers` are
+ *                            user's Settings → Advanced toggle (the toggle
+ *                            isn't merged in). Each field the consumer
+ *                            leaves unset takes the provider default on its
+ *                            own: `{ memoryFiles: [...] }` behaves exactly
+ *                            like no scope on every other field.
+ *                            `pluginDirs` (→ --plugin-dir) must be trusted
+ *                            dirs from the consumer's own install;
+ *                            `memoryFiles` (→ one
+ *                            --append-system-prompt-file, @-imports
+ *                            expanded) carries the vault CLAUDE.md, which
+ *                            the default no longer loads. Object-form `mcpServers` are
  *                            executed WITHOUT approval: build them from your
  *                            plugin's own code, never from files inside the
  *                            vault. Vault `.mcp.json` servers run only once
@@ -79,13 +89,17 @@ interface GryphonChatViewOptions {
   extraProcessArgs?: string[];
   /** Per-provider extra CLI args, keyed by provider kind. */
   extraProcessArgsByProvider?: Record<string, string[]>;
-  /** Claude Code launch scope (issue #25). Overrides the Advanced-tab toggle when set. */
+  /** Claude Code launch scope (issues #25, #27). Overrides the Advanced-tab toggle when set; unset fields take the provider default. */
   claudeCodeScope?: {
     inheritUserConfig?: boolean;
     settingSources?: Array<"user" | "project" | "local">;
     mcpServers?: "project" | "inherit" | Record<string, any>;
     includeProjectMcp?: boolean;
     autoMemory?: boolean;
+    /** Absolute, consumer-owned plugin dirs (skills/agents/commands) → --plugin-dir. Never vault paths. */
+    pluginDirs?: string[];
+    /** Absolute memory files (e.g. the vault CLAUDE.md) → one --append-system-prompt-file. */
+    memoryFiles?: string[];
   };
   /** Callback invoked before each send. Return true to consume the message. */
   onBeforeSend?: ((text: string) => boolean) | null;
@@ -1483,9 +1497,12 @@ class GryphonChatView extends ItemView {
 
   /**
    * Issue #25: the Claude Code launch scope for the next spawn. A consumer's
-   * `claudeCodeScope` option wins outright (embedders own their chat's
-   * config surface); otherwise the Advanced-tab toggle decides. Undefined ⇒
-   * the provider default (vault config only).
+   * `claudeCodeScope` option replaces the Advanced-tab toggle (embedders own
+   * their chat's config surface); otherwise the toggle decides. That is NOT
+   * all-or-nothing within the scope: the provider defaults each field the
+   * consumer leaves unset on its own, so `{ memoryFiles: [...] }` behaves
+   * exactly like `undefined` on every other field (issue #27). Undefined ⇒
+   * the provider default (no settings files; approved vault MCP only).
    */
   _resolveClaudeCodeScope() {
     if (this.claudeCodeScope) return this.claudeCodeScope;

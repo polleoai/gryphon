@@ -4,6 +4,19 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.10.1] — 2026-10-06
+
+### Security
+
+- **Claude Code settings files inside a vault no longer load.** A vault can contain Claude Code settings files (`.claude/settings.json` and `.claude/settings.local.json`), and those files can run commands: hooks, a helper that supplies the API key, a status line. Claude Code doesn't ask before loading them when another program starts it, so a vault you'd downloaded or synced could run commands as soon as you sent a chat message. Gryphon now starts Claude Code without them, whether or not you use your personal Claude Code configuration. Gryphon's own protections are unaffected.
+- **MCP servers you approve can't be swapped at launch.** With **Use my personal Claude Code configuration** on, Claude Code used to read the vault's `.mcp.json` itself, after Gryphon had checked it. A file changed in that short window could run a different command under an approved name. Gryphon now hands Claude Code the exact servers it checked.
+- **Instruction files can only bring in files from their own folder.** When a plugin passes Gryphon an instructions file (such as a `CLAUDE.md`) that refers to other files, Gryphon now ignores references to network locations and drive paths before opening anything. On Windows, opening such a reference could have sent your Windows sign-in credentials to another computer. Very large files are skipped instead of loaded.
+
+### Changed
+
+- **What a vault contributes to Claude Code chats.** Because vault settings files no longer load, a Claude Code chat no longer picks up the vault's `CLAUDE.md` or the skills, agents and commands in its `.claude` folder. Plugins that build on Gryphon can pass these in explicitly.
+- **Personal configuration and MCP servers.** With **Use my personal Claude Code configuration** on, chats load your own Claude Code settings and the MCP servers in your `~/.claude.json`. claude.ai connectors and MCP servers that come from your Claude Code plugins don't load in Gryphon chats.
+
 ## [2.10.0] — 2026-10-06
 
 ### Security

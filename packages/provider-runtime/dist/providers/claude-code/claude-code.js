@@ -28,6 +28,7 @@ const { winSpawn } = require("@gryphon/protect");
 const { mcpApprovals, buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
 const { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile, HOOK_FILES, } = require("./hook-settings-builder");
 const { resolveClaudeCodeScope } = require("./scope");
+const { buildMemoryAppendix, writeMemoryFile } = require("./memory-appendix");
 const { writeMcpConfigFile } = require("../../passive/mcp-config-builder");
 // The system-prompt hints (anti-leak directives + fallback deny copy)
 // were promoted to src/providers/shared/system-prompt-hints.js in
@@ -195,11 +196,26 @@ class ClaudeCodeProvider {
         // Vault MCP servers run only when the out-of-vault approval store
         // matches their exact spec (Design rev 2). Read fresh on every spawn, so
         // an approval made in the review modal applies on the next message.
-        const scope = resolveClaudeCodeScope(this.options.claudeCodeScope, {
-            cwd: this.cwd,
-            extraArgs: this.options.extraArgs,
-            approvals: this.options._mcpApprovals || mcpApprovals.reader(),
-        });
+        // Issue #27: the scope also decides which settings files load (none
+        // from the vault) and carries the consumer's memoryFiles / pluginDirs.
+        // A contract error (memoryFiles + a consumer --append-system-prompt-file)
+        // fails this turn with the message rather than spawning with one set of
+        // rules silently dropped.
+        let scope;
+        try {
+            scope = resolveClaudeCodeScope(this.options.claudeCodeScope, {
+                cwd: this.cwd,
+                extraArgs: this.options.extraArgs,
+                approvals: this.options._mcpApprovals || mcpApprovals.reader(),
+                userConfigFile: this.options._claudeUserConfigFile,
+            });
+        }
+        catch (e) {
+            const msg = (e && e.message) || String(e);
+            console.error("[gryphon/claude-code] launch scope:", msg);
+            this._lastSpawnError = new Error(`Gryphon: ${msg}`);
+            return;
+        }
         // Protected Mode decides whether we instrument CC at all:
         //   protectedMode=false → no settings file, no hooks, no deny-list.
         //                      Protected patterns fall through to CC's
@@ -463,22 +479,17 @@ class ClaudeCodeProvider {
         // launches strict with zero servers rather than failing the spawn, but
         // says so — otherwise the consumer's tools vanish silently.
         const scopeWarnings = [...scope.warnings];
-        // Inherit mode is non-strict: Claude Code loads the vault's .mcp.json
-        // itself, and only the disabledMcpjsonServers key in OUR --settings
-        // keeps unapproved servers off. No file, no guard — never spawn
-        // non-strict without it.
-        if (scope.settingsKeys.disabledMcpjsonServers && !hookSettingsFile) {
-            args.push("--strict-mcp-config");
-            scopeWarnings.push("couldn't write the setting that keeps unapproved vault MCP servers off; " +
-                "your personal MCP servers are off this session too, to be safe");
-        }
         this._scopeMcpServerNames = [];
         this._mcpInitChecked = false;
         if (scope.mcpServers) {
             try {
                 this._mcpConfigFile = writeMcpConfigFile(scope.mcpServers, "gryphon-cc-mcp");
                 args.push("--mcp-config", this._mcpConfigFile);
-                this._scopeMcpServerNames = Object.keys(scope.mcpServers);
+                // The "didn't connect" Notice covers vault + consumer servers. The
+                // user's own (inherit mode) are theirs to manage — an OAuth server
+                // reporting needs-auth shouldn't nag on every spawn.
+                const personal = new Set(scope.personalMcpServerNames);
+                this._scopeMcpServerNames = Object.keys(scope.mcpServers).filter((n) => !personal.has(n));
             }
             catch (e) {
                 scopeWarnings.push(`couldn't write the MCP server list (${(e && e.message) || String(e)})`);
@@ -490,7 +501,33 @@ class ClaudeCodeProvider {
         if (scopeWarnings.length > 0) {
             console.error("[gryphon/cli] launch scope:", scopeWarnings.join("; "));
             this.hostAdapter.notify(`Gryphon: ${scopeWarnings.join("; ")}. Claude Code is starting without ` +
-                `the vault's MCP servers, so their tools won't be available this session.`, { level: "warn", timeoutMs: 15000 });
+                `those MCP servers, so their tools won't be available this session.`, { level: "warn", timeoutMs: 15000 });
+        }
+        // Issue #27: the consumer's memory files (its vault CLAUDE.md, @-imports
+        // expanded) as ONE --append-system-prompt-file — a second one would
+        // silently replace the first. Rebuilt per spawn, so edits apply on the
+        // next process, as native memory does. A file that can't be read never
+        // blocks chat, but it's never silent either: its rules are not in effect.
+        if (scope.memoryFiles.length > 0) {
+            const mem = buildMemoryAppendix(scope.memoryFiles);
+            for (const w of mem.warnings)
+                console.error("[gryphon/claude-code] memory:", w);
+            if (mem.missing.length > 0) {
+                const names = mem.missing.join(", ");
+                console.error(`[gryphon/claude-code] consumer memory file(s) not found: ${names}`);
+                this.hostAdapter.notify(`Gryphon: consumer memory file ${names} not found; its rules are NOT in effect this session.`, { level: "error", timeoutMs: 20000 });
+            }
+            if (mem.text) {
+                try {
+                    this._memoryFile = writeMemoryFile(mem.text);
+                    args.push("--append-system-prompt-file", this._memoryFile);
+                }
+                catch (e) {
+                    const msg = (e && e.message) || String(e);
+                    console.error("[gryphon/claude-code] memory file write failed:", msg);
+                    this.hostAdapter.notify(`Gryphon: couldn't pass the consumer memory files to Claude Code (${msg}); their rules are NOT in effect this session.`, { level: "error", timeoutMs: 20000 });
+                }
+            }
         }
         // Compose --append-system-prompt. Deferred to here (rather than
         // earlier with the rest of args) because the fallback-mode hint
@@ -1301,7 +1338,7 @@ class ClaudeCodeProvider {
      * swallowed.
      */
     _cleanupSpawnFiles() {
-        for (const key of ["_hookSettingsFile", "_mcpConfigFile"]) {
+        for (const key of ["_hookSettingsFile", "_mcpConfigFile", "_memoryFile"]) {
             const file = this[key];
             if (!file)
                 continue;

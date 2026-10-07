@@ -763,18 +763,22 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx) {
             hostPlugin._resetActiveSessions?.();
         });
     });
-    // Issue #25: off by default — a Gryphon chat runs with the vault's
-    // Claude Code config, not the user's personal plugins / hooks / MCP
-    // servers. The signature check in chat-view respawns on next message.
-    descToTooltip(new Setting(panelEl).setName("Use my personal Claude Code configuration (plugins, hooks, MCP servers)"), "Claude Code mode only. Off (default): chats use this vault's Claude " +
-        "Code configuration and approved MCP servers only, so your personal " +
-        "plugins, hooks, MCP servers and auto-memory stay out of the chat. Your " +
-        "personal permission allow/deny rules don't apply either; Gryphon's " +
-        "protected patterns still do. On: chats load your full personal " +
-        "Claude Code configuration. Either way, MCP servers defined in the " +
-        "vault run only after you approve them. Takes effect on your next " +
-        "message. Plugins that embed Gryphon may set this for you, and their " +
-        "setting overrides this toggle.")
+    // Issue #25: off by default — a Gryphon chat runs without the user's
+    // personal plugins / hooks / MCP servers. Issue #27: either way, the
+    // vault's own .claude/settings files never load (they can run commands),
+    // and MCP is always an explicit list. The signature check in chat-view
+    // respawns on next message.
+    descToTooltip(new Setting(panelEl).setName("Use my personal Claude Code configuration (plugins, hooks, MCP servers)"), "Claude Code mode only. Off (default): your personal plugins, hooks, " +
+        "MCP servers and auto-memory stay out of the chat, and so do your " +
+        "personal permission allow/deny rules; Gryphon's protected patterns " +
+        "still apply. On: chats load your personal Claude Code settings and " +
+        "the MCP servers in your ~/.claude.json. claude.ai connectors and MCP " +
+        "servers provided by your Claude Code plugins don't load. Either way, " +
+        "settings files inside the vault (.claude/settings.json and " +
+        "settings.local.json) are never loaded, because they can run commands, " +
+        "and MCP servers defined in the vault run only after you approve them. " +
+        "Takes effect on your next message. Plugins that embed Gryphon may set " +
+        "this for you, and their setting overrides this toggle.")
         .addToggle((toggle) => toggle.setValue(hostPlugin.settings.claudeCodeInheritUserConfig === true).onChange(async (value) => {
         hostPlugin.settings.claudeCodeInheritUserConfig = value;
         await hostPlugin.saveSettings();

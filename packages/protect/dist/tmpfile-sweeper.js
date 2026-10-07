@@ -14,6 +14,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   |-----------------------------------------|-----------------|------------------------|
  *   | gryphon-cc-settings-<pid>-<ts>-<hex>.json| os.tmpdir()     | 24h+ since last mtime  |
  *   | gryphon-cc-mcp-<pid>-<ts>-<n>.json      | os.tmpdir()     | 24h+ since last mtime  |
+ *   | gryphon-cc-memory-<pid>-<ts>-<hex>.md   | os.tmpdir()     | 24h+ since last mtime  |
  *   | gryphon-<pid>-<hex>.sock                 | os.tmpdir()     | pid-in-name dead       |
  *   | provenance.json.<pid>.<hex>.tmp         | pluginDir       | 60s+ since last mtime  |
  *   | chat-history.json.tmp-<pid>-<ts>-<rand> | pluginDir       | pid-in-name dead       |
@@ -39,6 +40,9 @@ const HOOK_SETTINGS_RE = /^gryphon-cc-settings-\d+-\d+-[0-9a-f]+\.json$/;
 // lifecycle as the settings file (unlinked on CLI close), so a crash leaves
 // it behind the same way — and it can carry MCP server env (tokens).
 const MCP_CONFIG_RE = /^gryphon-cc-mcp-\d+-\d+-\d+\.json$/;
+// Issue #27: the consumer memory file (--append-system-prompt-file). Same
+// lifecycle again; holds the consumer's CLAUDE.md text.
+const MEMORY_FILE_RE = /^gryphon-cc-memory-\d+-\d+-[0-9a-f]+\.md$/;
 const SOCKET_RE = /^gryphon-(\d+)-[0-9a-f]+\.sock$/;
 const PROVENANCE_TMP_RE = /^provenance\.json\.\d+\.[0-9a-f]+\.tmp$/;
 const CHAT_HISTORY_TMP_RE = /^chat-history\.json\.tmp-(\d+)-\d+-[0-9a-z]+$/;
@@ -84,7 +88,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
     }
     const removed = [];
     for (const name of entries) {
-        if (!HOOK_SETTINGS_RE.test(name) && !MCP_CONFIG_RE.test(name))
+        if (!HOOK_SETTINGS_RE.test(name) && !MCP_CONFIG_RE.test(name) && !MEMORY_FILE_RE.test(name))
             continue;
         const full = pathMod.join(dir, name);
         try {

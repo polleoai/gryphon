@@ -31,6 +31,7 @@ const setTimeoutFn = setTimeout;
 // would throw in the headless paths these probes run in.
 const clearTimeoutFn = clearTimeout;
 const { spawn } = require("child_process");
+const os = require("os");
 const { buildEnhancedPath } = require("../../utils");
 const { killProcessTree } = require("../../subprocess-registry");
 const _LIVENESS_TIMEOUT_MS = 45000; // CC cold start is slower than the others
@@ -44,6 +45,10 @@ function testCli(claudePath) {
         const isWindowsShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
         const opts = {
             env: { ...process.env, PATH: buildEnhancedPath() },
+            // Never Obsidian's own cwd: launched from a shell that can be a vault
+            // or project dir, and --print skips Claude Code's workspace-trust check,
+            // so that dir's .claude/settings hooks and .mcp.json would run (#27).
+            cwd: os.tmpdir(),
             // Close stdin so the CLI cannot block waiting on input in headless mode.
             stdio: ["ignore", "pipe", "pipe"],
         };
@@ -51,7 +56,11 @@ function testCli(claudePath) {
             opts.shell = true;
         let proc;
         try {
-            proc = spawn(claudePath, ["--print", _LIVENESS_PROMPT, "--output-format", "stream-json", "--verbose"], opts);
+            proc = spawn(claudePath, 
+            // Same no-settings-files / no-ambient-MCP scope as a scoped chat
+            // spawn (#27): the probe only needs a completion.
+            ["--print", _LIVENESS_PROMPT, "--output-format", "stream-json", "--verbose",
+                "--setting-sources=", "--strict-mcp-config"], opts);
         }
         catch (err) {
             resolve({ ok: false, message: `Could not spawn Claude Code CLI: ${err.message}` });

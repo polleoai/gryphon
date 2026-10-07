@@ -30,6 +30,7 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 const { spawn } = require("child_process") as typeof import("child_process");
+const os = require("os") as typeof import("os");
 const { buildEnhancedPath } = require("../../utils");
 const { killProcessTree } = require("../../subprocess-registry");
 
@@ -47,6 +48,10 @@ function testCli(claudePath: any) {
       process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
     const opts: Record<string, any> = {
       env: { ...process.env, PATH: buildEnhancedPath() },
+      // Never Obsidian's own cwd: launched from a shell that can be a vault
+      // or project dir, and --print skips Claude Code's workspace-trust check,
+      // so that dir's .claude/settings hooks and .mcp.json would run (#27).
+      cwd: os.tmpdir(),
       // Close stdin so the CLI cannot block waiting on input in headless mode.
       stdio: ["ignore", "pipe", "pipe"],
     };
@@ -56,7 +61,10 @@ function testCli(claudePath: any) {
     try {
       proc = spawn(
         claudePath,
-        ["--print", _LIVENESS_PROMPT, "--output-format", "stream-json", "--verbose"],
+        // Same no-settings-files / no-ambient-MCP scope as a scoped chat
+        // spawn (#27): the probe only needs a completion.
+        ["--print", _LIVENESS_PROMPT, "--output-format", "stream-json", "--verbose",
+          "--setting-sources=", "--strict-mcp-config"],
         opts,
       );
     } catch (err) {

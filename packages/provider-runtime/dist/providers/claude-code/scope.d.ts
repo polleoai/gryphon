@@ -1,49 +1,75 @@
 /**
- * Claude Code launch scope (issue #25).
+ * Claude Code launch scope (issues #25, #27).
  *
- * By default a Gryphon chat runs with the VAULT's Claude Code config, not
- * the user's personal one: the `user` setting source is dropped (personal
- * plugins, their hooks/skills/output styles, personal MCP servers), MCP is
- * strict, and auto-memory is off. Gryphon's own guardrail hooks still fire —
- * they arrive through `--settings`, which is a flag source, not `user`.
+ * The rule (#27): a file inside the vault can add protection, but it can
+ * never remove protection or run code. The vault is the cwd, and vaults are
+ * shared, synced and cloned. Headless Claude Code (stream-json) skips its
+ * workspace-trust prompt, so anything it loads from the vault runs zero-
+ * click: `.claude/settings.json` / `settings.local.json` hooks, `env`,
+ * `apiKeyHelper`, `statusLine`, … — and `.mcp.json` server commands.
  *
- * MCP trust (Design rev 2). An entry in `<cwd>/.mcp.json` is a command line
- * and the cwd is a vault — shared, synced, cloned. A vault server runs only
- * when an approval stored OUTSIDE the vault (`@gryphon/protect` mcpApprovals,
- * injected here as `ctx.approvals`) matches its exact spec hash. Everything
- * else is left out and returned in `pendingApprovals` for the host to offer.
- * Approval files inside the vault (`.claude/settings*.json`,
- * `enabledMcpjsonServers`, Gryphon's own `data.json`) count for nothing.
+ * Settings sources. A scoped launch (default) loads NO settings files
+ * (`--setting-sources=`); inherit mode loads only `user` (the user's own
+ * `~/.claude/settings.json`, outside the vault). Gryphon's guardrail hooks
+ * and keys still arrive through `--settings`, a flag source. Dropping
+ * `project` also drops what Claude Code discovers through it — the vault's
+ * CLAUDE.md and `.claude/{skills,agents,commands}` — so consumers carry
+ * those back explicitly with `memoryFiles` and `pluginDirs`.
  *
- * This module is pure resolution: it reads `<cwd>/.mcp.json` and asks the
- * injected reader, but writes nothing. The provider owns temp files.
+ * MCP trust (#25 Design rev 2). An entry in `<cwd>/.mcp.json` is a command
+ * line. A vault server runs only when an approval stored OUTSIDE the vault
+ * (`@gryphon/protect` mcpApprovals, injected here as `ctx.approvals`)
+ * matches its exact spec hash. Everything else is left out and returned in
+ * `pendingApprovals` for the host to offer. Approval files inside the vault
+ * (`.claude/settings*.json`, `enabledMcpjsonServers`, Gryphon's own
+ * `data.json`) count for nothing. Every mode launches `--strict-mcp-config`
+ * with a `--mcp-config` Gryphon writes from the objects it parsed and
+ * hashed, so Claude Code never re-reads `.mcp.json` (no approve-then-swap
+ * race, #27 Part B).
  *
- * Consumer contract (`options.claudeCodeScope`):
- *   inheritUserConfig  default false → --setting-sources project,local
- *   settingSources     explicit list; wins over inheritUserConfig
+ * This module is pure resolution: it reads `<cwd>/.mcp.json`,
+ * `~/.claude.json` (inherit only) and asks the injected reader, but writes
+ * nothing. The provider owns temp files.
+ *
+ * Consumer contract (`options.claudeCodeScope`). Every field defaults on
+ * its own: a scope that sets only `memoryFiles` behaves exactly like
+ * `undefined` on every other field.
+ *   inheritUserConfig  default false → --setting-sources= (no files);
+ *                      true → --setting-sources=user
+ *   settingSources     explicit list; wins over inheritUserConfig. Listing
+ *                      `project` or `local` loads vault files that can run
+ *                      commands — honoured (the consumer owns that choice)
+ *                      and logged on every spawn.
  *   mcpServers         "project" (default): APPROVED vault servers only
  *                      { name: spec }: these servers + approved vault ones
  *                        (unless includeProjectMcp:false). Executed WITHOUT
  *                        approval — build them from your plugin's own code,
  *                        never from files inside the vault. A name here
  *                        shadows the vault entry of the same name.
- *                      "inherit": the user's MCP config (non-strict), with
- *                        every unapproved vault server named in
- *                        `disabledMcpjsonServers` — a flag-source setting,
- *                        which beats project/local `enableAllProjectMcpServers`
- *                        (live-probed on claude 2.1.291). Fails closed to
- *                        strict MCP when that guard can't hold: an
- *                        unparseable `.mcp.json`, a consumer `--settings`
- *                        that could override it, or (provider side) a
- *                        settings file that couldn't be written.
+ *                      "inherit": the user's own servers from
+ *                        `~/.claude.json` (top-level + this vault's
+ *                        local-scope entry, both outside the vault) +
+ *                        approved vault servers. claude.ai connectors and
+ *                        plugin-provided servers don't load.
  *   includeProjectMcp  default true when mcpServers is an object
  *   autoMemory         default false (scoped) / untouched (inheritUserConfig)
+ *   pluginDirs         absolute paths → one --plugin-dir each. TRUSTED
+ *                      directories the consumer ships in its own install —
+ *                      a plugin dir can carry hooks, so never point it at
+ *                      vault content.
+ *   memoryFiles        absolute paths the consumer names in code (e.g. its
+ *                      vault CLAUDE.md). Assembled with @-imports expanded
+ *                      (./memory-appendix.ts) into ONE
+ *                      --append-system-prompt-file. Never inferred.
  *
  * Any of `--setting-sources`, `--strict-mcp-config`, `--mcp-config`,
- * `--name` already present in the consumer's extraArgs suppresses
- * Gryphon's own value for that flag — consumers stay in control. (A
- * consumer `--mcp-config` is trusted code; a consumer that drops
- * `--strict-mcp-config` from a scoped launch owns that choice.)
+ * `--plugin-dir`, `--name` already present in the consumer's extraArgs
+ * suppresses Gryphon's own value for that flag — consumers stay in
+ * control. (A consumer `--mcp-config` is trusted code; a consumer that
+ * drops `--strict-mcp-config` owns that choice.) The exception is
+ * `--append-system-prompt-file` with `memoryFiles` set: the CLI keeps only
+ * the last value, so one set of rules would vanish silently — that's a
+ * contract error and the resolver throws.
  */
 interface ClaudeCodeScopeOptions {
     inheritUserConfig?: boolean;
@@ -51,6 +77,8 @@ interface ClaudeCodeScopeOptions {
     mcpServers?: "project" | "inherit" | Record<string, any>;
     includeProjectMcp?: boolean;
     autoMemory?: boolean;
+    pluginDirs?: string[];
+    memoryFiles?: string[];
 }
 /** Reads the out-of-vault approval store: the approved spec hash, or null. */
 interface McpApprovalsReader {
@@ -76,13 +104,19 @@ interface ResolvedScope {
     pendingApprovals: PendingApproval[];
     /** realpath(cwd) — the approval store's key for this vault. */
     vaultKey: string;
+    /** Inherit mode: names in mcpServers that are the user's own (not vault/consumer). */
+    personalMcpServerNames: string[];
+    /** Consumer memory files for the provider to assemble (./memory-appendix.ts); empty = none. */
+    memoryFiles: string[];
     /** One-line summary for devCliDebug logging. */
     summary: {
-        settingSources: string | null;
+        settingSources: string;
         strictMcp: boolean;
-        mcpServerNames: string[] | "inherit";
+        mcpServerNames: string[];
         pendingApproval: string[];
         autoMemory: boolean | "inherit";
+        pluginDirs: string[];
+        memoryFiles: string[];
     };
 }
 /**
@@ -93,10 +127,24 @@ declare function readProjectMcpServers(cwd: string): {
     servers: Record<string, any>;
     error?: string;
 };
+/**
+ * The user's own MCP servers for inherit mode (#27 Part B), from
+ * `~/.claude.json` — outside the vault. `user` = top-level `mcpServers`
+ * (`claude mcp add -s user`); `local` = `projects[<cwd>].mcpServers`
+ * (`claude mcp add`, the default local scope). Missing file → empty, quietly
+ * (a fresh install has none). Unreadable / malformed → empty + `error`:
+ * it costs the personal servers only, never the spawn.
+ */
+declare function readUserMcpServers(file: string, cwd: string): {
+    user: Record<string, any>;
+    local: Record<string, any>;
+    error?: string;
+};
 declare function resolveClaudeCodeScope(scope: ClaudeCodeScopeOptions | null | undefined, ctx: {
     cwd: string;
     extraArgs?: string[];
     approvals?: McpApprovalsReader | null;
+    userConfigFile?: string;
 }): ResolvedScope;
-export { resolveClaudeCodeScope, readProjectMcpServers };
+export { resolveClaudeCodeScope, readProjectMcpServers, readUserMcpServers };
 export type { ClaudeCodeScopeOptions, ResolvedScope, McpApprovalsReader, PendingApproval };

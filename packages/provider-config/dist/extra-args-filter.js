@@ -44,6 +44,9 @@ const PROVIDER_FLAGS = {
         "--setting-sources",
         "--strict-mcp-config",
         "--mcp-config",
+        // Issue #27 consumer carriers (claudeCodeScope.pluginDirs / memoryFiles).
+        "--plugin-dir",
+        "--append-system-prompt-file",
     ]),
     "codex-cli": new Set([
         // `--disable` is Codex's structured-disable flag, distinct from

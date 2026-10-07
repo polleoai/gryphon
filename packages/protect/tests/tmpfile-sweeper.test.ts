@@ -97,6 +97,19 @@ test("#25 sweepHookSettingsOrphans also removes stale claude-code --mcp-config f
   } finally { rmrf(dir); }
 });
 
+test("#27 sweepHookSettingsOrphans also removes stale claude-code memory files", () => {
+  const dir = tempDir();
+  try {
+    const stale = path.join(dir, "gryphon-cc-memory-12345-1234567890-deadbeef.md");
+    const fresh = path.join(dir, "gryphon-cc-memory-67890-9999999999-cafef00d.md");
+    for (const p of [stale, fresh]) fs.writeFileSync(p, "rules");
+    backdate(stale, 48 * 60 * 60 * 1000);
+    const { removed } = sweepHookSettingsOrphans({ tmpDir: dir });
+    assert.deepEqual(removed, [stale]);
+    assert.ok(fs.existsSync(fresh));
+  } finally { rmrf(dir); }
+});
+
 test("sweepHookSettingsOrphans tolerates a missing dir", () => {
   const { removed } = sweepHookSettingsOrphans({ tmpDir: "/definitely/does/not/exist/xyz" });
   assert.deepEqual(removed, []);
