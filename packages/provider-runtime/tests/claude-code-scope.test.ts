@@ -76,8 +76,12 @@ const hooked = () => {
 
 function launch(cwd: string, opts: Record<string, any> = {}) {
   const notices: string[] = [];
+  // #30 (G4): protection comes from the spawn's security snapshot, as the
+  // chat view passes it — the stub plugin's settings only say which one.
+  const stub = opts.plugin || unprotected();
   const provider = new ClaudeCodeProvider("/fake/claude", cwd, {
-    plugin: unprotected(),
+    plugin: stub,
+    security: { protectedMode: stub.settings && stub.settings.protectedMode === false ? false : true },
     hostAdapter: { notify: (m: string) => notices.push(m) },
     _spawnOverride: () => Promise.resolve({}), // skips binary preflight
     _mcpApprovals: NO_APPROVALS,

@@ -68,8 +68,17 @@
  *                            inputs: until the user confirms them on this
  *                            machine (toolbar, Settings, the one-time
  *                            prompt), protections stay on.
- *   - securityHostId       — issue #29. The store namespace when the host
- *                            has no `manifest.id`.
+ *   - securityHostId       — issue #29; REQUIRED since #30. The store
+ *                            namespace for this host's confirmed security
+ *                            values and CLI paths. There is no manifest.id
+ *                            fallback (the manifest is vault-resident):
+ *                            without it, protections stay on and security
+ *                            writes raise a visible error. Pass the id your
+ *                            plugin used before to keep its stored values.
+ *   - securityOverrides.paths — issue #30. CLI binaries pinned in code
+ *                            ({ claudePath, codexPath, geminiCliPath,
+ *                            antigravityPath }); they win over this
+ *                            machine's confirmed paths and detection.
  *
  * This file knows nothing about any specific consuming plugin's domain.
  * All coupling comes through the options bag; consumers wire their own

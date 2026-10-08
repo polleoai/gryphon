@@ -345,7 +345,10 @@ class AntigravityCliProvider {
    *    Gryphon's two axes are independent by design: permission modes are
    *    convenience, protected-path rules are the guardrail, and disabling
    *    the latter is a supported choice. Refusing here would override the
-   *    user's own decision, so auto-approve stands.
+   *    user's own decision, so auto-approve stands. Since #30 the spawn
+   *    still carries the store-guard hook (`hookExtras.ok`, mode
+   *    "store-guard-only"); if that couldn't install, the chat view's
+   *    turn-end check still undoes changes to Gryphon's own settings.
    *
    *  - PROTECTED MODE ON, GUARDRAIL FAILED TO INSTALL. The user asked to be
    *    protected and we could not deliver it. This is the case that shipped

@@ -154,6 +154,7 @@ function scopeView({ consumerScope = null, inherit = false, fileOnly = false } =
     settings: { claudeCodeInheritUserConfig: inherit || fileOnly },
     app: { vault: { adapter: { getBasePath: () => vault } } },
     manifest: { id: "gryphon" },
+    securityHostId: "gryphon", // #30 (G3): code-set, as GryphonPlugin pins it
   };
   view.app = view.plugin.app;
   if (inherit) {

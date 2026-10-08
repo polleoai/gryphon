@@ -28,8 +28,11 @@ const {
 } = require("../src/constants");
 
 function makeCtx(vault, settings = {}) {
+  // #30 (G4): an explicit, code-supplied config — plugin.settings is never
+  // a security input.
   return {
     vaultRoot: vault,
+    settings,
     plugin: { settings },
   };
 }

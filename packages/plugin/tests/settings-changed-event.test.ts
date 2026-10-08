@@ -102,6 +102,7 @@ test("refreshToolbarLabels updates model, effort, and permission badges", () => 
   const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g40-vault-")));
   stubView.plugin = {
     manifest: { id: "gryphon", version: "1.4.1" },
+    securityHostId: "gryphon", // #30 (G3): code-set, as GryphonPlugin pins it
     app: { vault: { adapter: { getBasePath: () => vault } } },
     settings: {
       model: "sonnet",

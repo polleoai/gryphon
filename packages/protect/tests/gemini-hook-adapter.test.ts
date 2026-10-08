@@ -169,11 +169,15 @@ test("GEMINI_HOOK_EVENTS table is consistent with HOOK_FILES", () => {
 // ─────────────────────────────────────────────────────────────────
 
 test("hooks/pretool.js source pins the dialect-aware buildDecision", () => {
+  // #30: the dialect switch lives in common/dialects (shared with the
+  // store-guard hook); pretool feeds it GRYPHON_HOOK_DIALECT.
   const src = fs.readFileSync(require.resolve("../src/hooks/pretool.js"), "utf8");
-  assert.match(src, /GRYPHON_HOOK_DIALECT.*===.*"gemini"/,
-    "pretool.js must check GRYPHON_HOOK_DIALECT to pick output shape");
-  assert.match(src, /\bdecision:\s*geminiDecision\b/,
-    "pretool.js must emit Gemini's flat {decision, reason} shape");
-  assert.match(src, /hookSpecificOutput/,
-    "pretool.js must still emit Claude/Codex's {hookSpecificOutput} shape for default dialect");
+  assert.match(src, /buildHookDecision\(process\.env\.GRYPHON_HOOK_DIALECT/,
+    "pretool.js must pick the output shape from GRYPHON_HOOK_DIALECT");
+  const { buildHookDecision } = require("../src/hooks/common/dialects");
+  assert.deepEqual(buildHookDecision("gemini", "deny", "r"), { decision: "deny", reason: "r" },
+    "Gemini gets the flat {decision, reason} shape");
+  assert.equal(buildHookDecision("gemini", "ask").decision, "ask_user");
+  assert.equal(buildHookDecision(undefined, "allow").hookSpecificOutput.permissionDecision, "allow",
+    "Claude/Codex keep the {hookSpecificOutput} shape for the default dialect");
 });

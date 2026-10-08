@@ -42,6 +42,7 @@ test("Block REST toggle still fires gryphon:settings-changed", async () => {
     settings: { obsidianRestApiPolicy: "blocked" },
     saveSettings: async () => {},
     manifest: { id: "gryphon" },
+    securityHostId: "gryphon", // #30 (G3): code-set, as GryphonPlugin pins it
     app: {
       vault: { adapter: { getBasePath: () => vault } },
       workspace: { trigger: (ev) => { if (ev === "gryphon:settings-changed") fired = ev; } },

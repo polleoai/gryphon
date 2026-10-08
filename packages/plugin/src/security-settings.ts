@@ -9,8 +9,9 @@
  * (never enforced), and announces the change on the workspace bus.
  *
  * `host` is the minimal embedding contract `{ settings, saveSettings, app?,
- * manifest? }`. The store scope comes from `app.vault.adapter` and
- * `manifest.id` (or an explicit `hostId`); with no scope a write throws
+ * manifest? }`. The store scope comes from `app.vault.adapter` and an
+ * explicit `hostId` or the host's code-set `securityHostId` — never
+ * `manifest.id` (#30, G3); with no scope a write throws
  * `SecurityScopeUnavailableError` and the caller shows why. A confirm is
  * never dropped silently.
  */
@@ -24,12 +25,32 @@ const {
   describeSecurityScope,
   scopeKey,
   isWeakeningKey,
+  isExecutableKey,
   validateSecurityValue,
+  validateCliPath,
   setMachineSecuritySetting,
+  setMachineCliPath,
   dismissVaultSecuritySuggestion,
   effectiveSecuritySettings,
   onSecurityStoreError,
+  CLI_PATH_KEY_BY_KIND,
 } = securitySettings;
+
+/** Issue #30: human names for the CLI path keys. */
+const CLI_PATH_LABELS: Record<string, string> = {
+  claudePath: "Claude Code",
+  codexPath: "Codex CLI",
+  geminiCliPath: "Gemini CLI",
+  antigravityPath: "Antigravity CLI",
+};
+function cliPathLabel(key: string): string {
+  return CLI_PATH_LABELS[key] || key;
+}
+/** Issue #30: the CLI kind a path key belongs to. */
+function cliKindForPathKey(key: string): string | null {
+  for (const [kind, k] of Object.entries(CLI_PATH_KEY_BY_KIND as Record<string, string>)) if (k === key) return kind;
+  return null;
+}
 
 const SECURITY_CHANGED_EVENT = "gryphon:security-settings-changed";
 
@@ -121,6 +142,73 @@ async function applySecuritySetting(host: Host, key: string, value: unknown, opt
   return scope;
 }
 
+/**
+ * Issue #30: store a CLI binary path from a user gesture on this machine
+ * (Settings row, the confirm prompt). Validates (throws CliPathRejectedError
+ * with the reason), writes the machine store under the host's scope, mirrors
+ * the value into the host's settings for display continuity (never a spawn
+ * input), and announces the change. `value` "" / null clears it.
+ */
+async function applyCliPathSetting(host: Host, key: string, value: string | null, opts: ApplyOpts = {}) {
+  const { scope, missing } = securityScopeFor(host, opts);
+  if (!scope) throw new SecurityScopeUnavailableError(missing);
+  if (!isExecutableKey(key)) throw new Error(`Gryphon: ${key} isn't a CLI path setting`);
+  const ov = opts.overrides && (opts.overrides as any).paths;
+  if (ov && _hasOwn(ov, key)) {
+    throw new Error(`Gryphon: the ${cliPathLabel(key)} location is set by ${hostDisplayName(host, scope.hostId)} and can't be changed here.`);
+  }
+  setMachineCliPath(scope, key, value);
+  const v = typeof value === "string" ? value.trim() : "";
+  if (host && host.settings) host.settings[key] = v;
+  try {
+    if (host && typeof host.saveSettings === "function") await host.saveSettings();
+  } catch (e) {
+    console.error("[gryphon] CLI path saved on this machine, but the settings file write failed:", e);
+  }
+  const app = opts.app || (host && host.app);
+  try { app?.workspace?.trigger?.(SECURITY_CHANGED_EVENT, scope, key); } catch { /* best-effort */ }
+  return scope;
+}
+
+/** Issue #30: one Notice per rejected stored path (it falls back to detection). */
+const _reportedRejections = new Set<string>();
+function reportCliPathRejected(rejected: { key: string; value: string; reason: string }) {
+  const tag = `${rejected.key}\u0000${rejected.value}\u0000${rejected.reason}`;
+  if (_reportedRejections.has(tag)) return;
+  _reportedRejections.add(tag);
+  const why: Record<string, string> = {
+    "missing": "it no longer exists",
+    "inside-vault": "it's inside this vault",
+    "not-executable": "it isn't executable",
+    "not-a-file": "it's a folder",
+    "relative": "it isn't a full path",
+    "too-old": "that version is too old",
+  };
+  const msg =
+    `Gryphon isn't using the ${cliPathLabel(rejected.key)} location you confirmed ` +
+    `(${mcpApprovals.displaySafe(rejected.value)}): ${why[rejected.reason] || rejected.reason}. ` +
+    "It's using the one it detected instead. Set a new location in Settings → Gryphon.";
+  console.warn("[gryphon]", msg);
+  try { new Notice(msg, 15000); } catch { /* headless */ }
+}
+
+/**
+ * Issue #30 (G2): the turn-end tamper check undid weakening changes to
+ * Gryphon's security settings that something other than Gryphon made
+ * during a reply. Always visible.
+ */
+function reportSecurityTamperReverted(reverted: Array<{ hostId: string; key: string }>, providerLabel: string) {
+  const names = reverted.map((r) => {
+    const k = r.key.replace(/^(paths|dismissed)\./, "");
+    return isExecutableKey(k) ? `${cliPathLabel(k)} location` : securityKeyLabel(k);
+  });
+  const msg =
+    `Gryphon undid a change to its security settings made during ${mcpApprovals.displaySafe(providerLabel)}'s ` +
+    `reply (${[...new Set(names)].join(", ")}). Only Gryphon's settings screen can change these.`;
+  console.warn("[gryphon]", msg, reverted);
+  try { new Notice(msg, 15000); } catch { /* headless */ }
+}
+
 /** The Notice + log a caller shows when a security write fails. */
 function reportSecurityWriteError(e: any) {
   const msg = e instanceof SecurityScopeUnavailableError
@@ -152,13 +240,20 @@ class ConfirmVaultSecurityModal extends Modal {
   host: Host;
   scope: any;
   keys: string[];
+  pathKeys: string[];
   opts: ApplyOpts & { onDone?: (outcome: "confirmed" | "dismissed") => void };
 
-  constructor(app: any, host: Host, scope: any, unconfirmed: string[], opts: ApplyOpts & { onDone?: (outcome: "confirmed" | "dismissed") => void } = {}) {
+  constructor(
+    app: any, host: Host, scope: any, unconfirmed: string[],
+    opts: ApplyOpts & { onDone?: (outcome: "confirmed" | "dismissed") => void } = {},
+    unconfirmedPaths: string[] = [],
+  ) {
     super(app);
     this.host = host;
     this.scope = scope;
     this.keys = unconfirmed.filter((k) => isWeakeningKey(k));
+    // Issue #30: CLI binary locations the vault's settings file names.
+    this.pathKeys = unconfirmedPaths.filter((k) => isExecutableKey(k));
     this.opts = opts;
   }
 
@@ -184,6 +279,17 @@ class ConfirmVaultSecurityModal extends Modal {
         text: `${securityKeyLabel(key)}: ${describeSecurityValue(key, this.host.settings && this.host.settings[key])}`,
       });
     }
+    // Issue #30: a CLI location is a program Gryphon would run. Show the
+    // full path it resolves to, and say so plainly when it can't be used.
+    for (const key of this.pathKeys) {
+      const value = this.host.settings && this.host.settings[key];
+      const v = validateCliPath(value, this.scope && this.scope.vaultKey);
+      const shown = mcpApprovals.displaySafe(v.ok ? v.real : String(value));
+      let text = `${cliPathLabel(key)} program: ${shown}`;
+      if (!v.ok && v.reason === "inside-vault") text += " — this file is inside this vault, so Gryphon won't run it.";
+      else if (!v.ok) text += " — Gryphon can't use this location.";
+      list.createEl("li", { text });
+    }
     new Setting(c)
       .addButton((btn: any) => btn.setButtonText("Use these settings on this machine").setWarning().onClick(() => {
         void this.confirm();
@@ -198,6 +304,9 @@ class ConfirmVaultSecurityModal extends Modal {
       for (const key of this.keys) {
         await applySecuritySetting(this.host, key, this.host.settings && this.host.settings[key], this.opts);
       }
+      for (const key of this.pathKeys) {
+        await applyCliPathSetting(this.host, key, this.host.settings && this.host.settings[key], this.opts);
+      }
       this.close();
       if (this.opts.onDone) this.opts.onDone("confirmed");
     } catch (e) {
@@ -207,7 +316,7 @@ class ConfirmVaultSecurityModal extends Modal {
 
   keepProtections() {
     try {
-      for (const key of this.keys) {
+      for (const key of [...this.keys, ...this.pathKeys]) {
         dismissVaultSecuritySuggestion(this.scope, key, this.host.settings && this.host.settings[key]);
       }
       this.close();
@@ -230,11 +339,11 @@ function maybePromptVaultSecurity(app: any, host: Host, opts: ApplyOpts & { forc
   const { scope } = securityScopeFor(host, opts);
   if (!scope) return null;
   const eff = effectiveSecuritySettings((host && host.settings) || {}, scope, opts.overrides || undefined);
-  if (!eff.unconfirmed.length) return null;
+  if (!eff.unconfirmed.length && !eff.unconfirmedPaths.length) return null;
   const key = scopeKey(scope) as string;
   if (!opts.force && _promptedScopes.has(key)) return null;
   _promptedScopes.add(key);
-  const modal = new ConfirmVaultSecurityModal(app || host.app, host, scope, [...eff.unconfirmed], opts);
+  const modal = new ConfirmVaultSecurityModal(app || host.app, host, scope, [...eff.unconfirmed], opts, [...eff.unconfirmedPaths]);
   modal.open();
   return modal;
 }
@@ -249,6 +358,11 @@ module.exports = {
   SECURITY_CHANGED_EVENT,
   SecurityScopeUnavailableError,
   applySecuritySetting,
+  applyCliPathSetting,
+  reportCliPathRejected,
+  reportSecurityTamperReverted,
+  cliPathLabel,
+  cliKindForPathKey,
   reportSecurityWriteError,
   installSecurityStoreErrorNotice,
   securityScopeFor,

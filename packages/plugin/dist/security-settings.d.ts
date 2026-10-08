@@ -9,8 +9,9 @@
  * (never enforced), and announces the change on the workspace bus.
  *
  * `host` is the minimal embedding contract `{ settings, saveSettings, app?,
- * manifest? }`. The store scope comes from `app.vault.adapter` and
- * `manifest.id` (or an explicit `hostId`); with no scope a write throws
+ * manifest? }`. The store scope comes from `app.vault.adapter` and an
+ * explicit `hostId` or the host's code-set `securityHostId` — never
+ * `manifest.id` (#30, G3); with no scope a write throws
  * `SecurityScopeUnavailableError` and the caller shows why. A confirm is
  * never dropped silently.
  */

@@ -62,6 +62,8 @@ function makeHost({ app, id = "fixture", settings = {} } = {}) {
     async saveSettings() { host.saves++; },
     app,
     manifest: id ? { id, name: id } : undefined,
+    // #30 (G3): the host id is code-set, never read from the (vault-resident) manifest.
+    securityHostId: id || undefined,
   };
   return host;
 }

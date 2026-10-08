@@ -432,10 +432,13 @@ test("protected mode OFF: the user's own opt-out is honoured, not overridden", (
   // convenience, protected-path rules are the guardrail. Turning the
   // guardrail off is a supported choice, so refusing here would override the
   // user's decision rather than protect them.
+  // #30 (G4): the opt-out arrives as the spawn's security snapshot — the
+  // host's settings object is never an input.
   const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {
-    plugin: { settings: { protectedMode: false } },
+    plugin: { settings: {} },
+    security: { protectedMode: false },
   });
-  const d = p._autoApproveDecision({ ok: false, degradationReason: "protectedMode is off" });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: "store-guard script unavailable" });
   assert.equal(d.refuse, false, "an explicit opt-out must not be turned into an error");
   assert.equal(d.autoApprove, true);
 });

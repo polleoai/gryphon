@@ -64,8 +64,11 @@ import type { LLMProvider, ProviderKind } from "./types";
  * @param {string} [cwd]        — (legacy form) vault root for the provider
  * @param {object} [options={}] — (legacy form) per-turn options
  *
- *   `claudePath` is read from settings, NOT from options — it's a
- *   provider-selection input, not a per-turn override.
+ *   CLI binary paths are NEVER read from settings (issue #30): settings is
+ *   the vault's data.json. They come from `options.cliPaths` (resolved by
+ *   the chat view), else `resolveCliPath` (code override → this machine's
+ *   store for `options.securityHostId ?? plugin.securityHostId` →
+ *   detection).
  *
  * @returns {object|null}     — LLMProvider instance, or null if no
  *                              provider can be constructed (caller shows
@@ -93,9 +96,49 @@ function createProvider(pluginOrBag: any, cwd?: string, options: Record<string, 
   // in, so selecting them must be intentional. An explicit kind whose
   // key/CLI is missing yields null from _buildProvider (the caller shows
   // setup guidance via explainUnavailable).
-  const kind = preference === "auto" ? _firstAvailableKind(settings) : preference;
+  const kind = preference === "auto" ? _firstAvailableKind(settings, _cliPathResolver(plugin, options)) : preference;
   if (!kind) return null;
   return _buildProvider(plugin, kind, cwd, options);
+}
+
+/**
+ * Issue #30: where every factory reader gets a CLI binary path. A vault's
+ * data.json is never consulted — a shared vault could otherwise point
+ * `claudePath` at a script it ships and have the first chat (or even the
+ * `--version` detection probe) run it.
+ *
+ *   options.cliPaths[kind]  — already resolved by the caller (the chat view);
+ *   else resolveCliPath     — code override (options.securityOverrides.paths)
+ *                             → this machine's store for the host id
+ *                             → find*Binary detection.
+ * Returns a per-call memoised `(kind) => path | null`.
+ */
+function _cliPathResolver(plugin: any, options: Record<string, any> = {}): (kind: string) => string | null {
+  const given = options && options.cliPaths && typeof options.cliPaths === "object" ? options.cliPaths : null;
+  const memo: Record<string, string | null> = {};
+  return (kind: string) => {
+    if (given && Object.prototype.hasOwnProperty.call(given, kind)) return given[kind] || null;
+    if (Object.prototype.hasOwnProperty.call(memo, kind)) return memo[kind];
+    const { resolveCliPath } = require("@gryphon/protect");
+    const hostId = options.securityHostId !== undefined ? options.securityHostId : plugin && plugin.securityHostId;
+    const r = resolveCliPath(kind, {
+      app: plugin && plugin.app,
+      hostPlugin: plugin,
+      hostId,
+      overrides: options.securityOverrides,
+      detect: _detectFor,
+    });
+    return (memo[kind] = r.path || null);
+  };
+}
+
+/** Detection through this module's own utils (patchable in tests). */
+function _detectFor(kind: string): string | null {
+  if (kind === "claude-code") return _detectClaudeBinary();
+  if (kind === "codex-cli") return _detectCodexBinary();
+  if (kind === "gemini-cli") return _detectGeminiBinary();
+  if (kind === "antigravity-cli") return _detectAntigravityBinary();
+  return null;
 }
 
 /**
@@ -130,13 +173,10 @@ function _buildProvider(
   options: Record<string, any> = {}, modelOverride?: string,
 ): LLMProvider | null {
   const settings = plugin.settings || {};
-  const claudePath = settings.claudePath || _detectClaudeBinary();
+  const pathFor = _cliPathResolver(plugin, options);
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
   const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
-  const codexPath = settings.codexPath || _detectCodexBinary();
-  const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
-  const antigravityPath = settings.antigravityPath || _detectAntigravityBinary();
 
   // Issue #39: per-provider extraArgs targeting. `enrich(kind)` returns
   // options with extraArgs = legacy bucket + extraArgsByProvider[kind].
@@ -167,6 +207,7 @@ function _buildProvider(
   // protected-path / protected-command settings and translate them to Claude
   // Code's `--disallowedTools` flags on spawn.
   if (kind === "claude-code") {
+    const claudePath = pathFor("claude-code");
     if (!claudePath) return null;
     const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
     return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
@@ -189,6 +230,7 @@ function _buildProvider(
   // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled by the
   // CLI itself (`codex login`); no API key from settings. Binary must exist.
   if (kind === "codex-cli") {
+    const codexPath = pathFor("codex-cli");
     if (!codexPath) return null;
     const { CodexProvider } = require("./providers/codex-cli/codex-cli");
     return new CodexProvider(codexPath, cwd, enrich("codex-cli"));
@@ -196,6 +238,7 @@ function _buildProvider(
   // gemini-cli (v1.3): the Google Gemini CLI subprocess. Auth via
   // settings.googleApiKey forwarded as GEMINI_API_KEY env. Binary must exist.
   if (kind === "gemini-cli") {
+    const geminiPath = pathFor("gemini-cli");
     if (!geminiPath) return null;
     const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
     return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli"));
@@ -205,6 +248,7 @@ function _buildProvider(
   // mirrors codex-cli's `codex login` model); no API key from settings.
   // Binary must exist.
   if (kind === "antigravity-cli") {
+    const antigravityPath = pathFor("antigravity-cli");
     if (!antigravityPath) return null;
     const { AntigravityCliProvider } = require("./providers/antigravity-cli/antigravity-cli");
     return new AntigravityCliProvider(antigravityPath, cwd, enrich("antigravity-cli"));
@@ -218,8 +262,8 @@ function _buildProvider(
  * createProvider's "auto" path and resolveFallback's "auto" fallback. The
  * CLI fallthroughs are intentionally excluded (see createProvider).
  */
-function _firstAvailableKind(settings: any): ProviderKind | null {
-  const claudePath = settings.claudePath || _detectClaudeBinary();
+function _firstAvailableKind(settings: any, pathFor: (kind: string) => string | null): ProviderKind | null {
+  const claudePath = pathFor("claude-code");
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
   const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
@@ -269,17 +313,17 @@ function defaultModelForKind(kind: string): string {
  * `fallbackModel` is unset. Pure over `plugin.settings` + binary detection —
  * no chat-view dependency, so headless consumers can call it directly.
  */
-function resolveFallback(plugin: any): { kind: ProviderKind; model: string } | null {
+function resolveFallback(plugin: any, options: Record<string, any> = {}): { kind: ProviderKind; model: string } | null {
   const settings = (plugin && plugin.settings) || {};
   const pref = settings.fallbackProviderPreference;
   if (pref === "none") return null;
 
+  const pathFor = _cliPathResolver(plugin, options);
   let kind: ProviderKind | null;
   if (!pref) {
-    const claudePath = settings.claudePath || _detectClaudeBinary();
-    kind = claudePath ? "claude-code" : null;
+    kind = pathFor("claude-code") ? "claude-code" : null;
   } else if (pref === "auto") {
-    kind = _firstAvailableKind(settings);
+    kind = _firstAvailableKind(settings, pathFor);
   } else {
     kind = pref;
   }
@@ -350,20 +394,21 @@ function _createProviderFromBag(bag: Record<string, unknown>): LLMProvider | nul
  * Returns a human-readable explanation of why createProvider returned
  * null, used by chat-view to surface a setup hint to the user.
  */
-function explainUnavailable(plugin: any): string {
+function explainUnavailable(plugin: any, options: Record<string, any> = {}): string {
   const settings = plugin.settings || {};
+  const pathFor = _cliPathResolver(plugin, options);
   // Round 15 fix (F20): single source of truth for the default. Previously
   // createProvider used "auto" while explainUnavailable used "anthropic-api"
   // — those two assumptions diverged in the settings-corruption /
   // pre-DEFAULT-merge edge case.
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
-  const hasCli = !!(settings.claudePath || _detectClaudeBinary());
+  const hasCli = !!pathFor("claude-code");
   const hasKey = !!(settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY);
   const hasOpenAiKey = !!(settings.openaiApiKey || process.env.OPENAI_API_KEY);
   const hasGoogleKey = !!(settings.googleApiKey || process.env.GOOGLE_API_KEY);
-  const hasCodexCli = !!(settings.codexPath || _detectCodexBinary());
-  const hasGeminiCli = !!(settings.geminiCliPath || _detectGeminiBinary());
-  const hasAntigravityCli = !!(settings.antigravityPath || _detectAntigravityBinary());
+  const hasCodexCli = !!pathFor("codex-cli");
+  const hasGeminiCli = !!pathFor("gemini-cli");
+  const hasAntigravityCli = !!pathFor("antigravity-cli");
 
   if (preference === "claude-code" && !hasCli) {
     return _cliNotFoundMessage();
@@ -529,9 +574,10 @@ function _detectAntigravityBinary() {
  *   apiKeySource: "settings" | "env" | null,
  * }}
  */
-function detectAvailable(plugin: any) {
+function detectAvailable(plugin: any, options: Record<string, any> = {}) {
   const settings = plugin.settings || {};
-  const cliPath = settings.claudePath || _detectClaudeBinary() || null;
+  const pathFor = _cliPathResolver(plugin, options);
+  const cliPath = pathFor("claude-code");
   let apiKey = "";
   let apiKeySource = null;
   if (settings.anthropicApiKey) {
@@ -562,9 +608,9 @@ function detectAvailable(plugin: any) {
     googleKeySource = "env";
   }
 
-  const codexPath = settings.codexPath || _detectCodexBinary() || null;
-  const geminiCliPath = settings.geminiCliPath || _detectGeminiBinary() || null;
-  const antigravityPath = settings.antigravityPath || _detectAntigravityBinary() || null;
+  const codexPath = pathFor("codex-cli");
+  const geminiCliPath = pathFor("gemini-cli");
+  const antigravityPath = pathFor("antigravity-cli");
 
   return {
     cliPath,
@@ -590,28 +636,27 @@ function detectAvailable(plugin: any) {
  * Returns one of: "claude-code" | "anthropic-api" | "openai-api" | "google-api" | null.
  * Mirrors createProvider's selection logic exactly (any divergence = bug).
  */
-function getActiveProviderKind(plugin: any): ProviderKind | null {
+function getActiveProviderKind(plugin: any, options: Record<string, any> = {}): ProviderKind | null {
   const settings = (plugin && plugin.settings) || {};
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
-  const claudePath = settings.claudePath || _detectClaudeBinary();
+  // Lazy: only the kind the preference names is resolved (each resolve may
+  // probe `--version` on a validated binary).
+  const pathFor = _cliPathResolver(plugin, options);
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
   const googleKey = settings.googleApiKey || process.env.GOOGLE_API_KEY || "";
-  const codexPath = settings.codexPath || _detectCodexBinary();
-  const geminiPath = settings.geminiCliPath || _detectGeminiBinary();
-  const antigravityPath = settings.antigravityPath || _detectAntigravityBinary();
 
-  if (preference === "claude-code")     return claudePath     ? "claude-code"     : null;
-  if (preference === "anthropic-api")   return apiKey         ? "anthropic-api"   : null;
-  if (preference === "openai-api")      return openaiKey      ? "openai-api"      : null;
-  if (preference === "google-api")      return googleKey      ? "google-api"      : null;
-  if (preference === "codex-cli")       return codexPath      ? "codex-cli"       : null;
-  if (preference === "gemini-cli")      return geminiPath     ? "gemini-cli"      : null;
-  if (preference === "antigravity-cli") return antigravityPath ? "antigravity-cli" : null;
+  if (preference === "claude-code")     return pathFor("claude-code")     ? "claude-code"     : null;
+  if (preference === "anthropic-api")   return apiKey                     ? "anthropic-api"   : null;
+  if (preference === "openai-api")      return openaiKey                  ? "openai-api"      : null;
+  if (preference === "google-api")      return googleKey                  ? "google-api"      : null;
+  if (preference === "codex-cli")       return pathFor("codex-cli")       ? "codex-cli"       : null;
+  if (preference === "gemini-cli")      return pathFor("gemini-cli")      ? "gemini-cli"      : null;
+  if (preference === "antigravity-cli") return pathFor("antigravity-cli") ? "antigravity-cli" : null;
 
   // auto: same priority as createProvider's auto-fallthrough — CLI
   // fallthroughs are NOT in this list (see createProvider for rationale).
-  if (claudePath) return "claude-code";
+  if (pathFor("claude-code")) return "claude-code";
   if (apiKey)     return "anthropic-api";
   if (openaiKey)  return "openai-api";
   if (googleKey)  return "google-api";

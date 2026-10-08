@@ -45,7 +45,24 @@ const os = require("os");
 const crypto = require("crypto");
 const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 const { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT, } = require("../system-prompt-hints");
+const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
 const KIND = "gemini-cli";
+/**
+ * Issue #30: store-guard-only settings — a single BeforeTool hook. Gemini's
+ * `timeout` is MILLISECONDS (see _buildHooksJson).
+ */
+function _buildStoreGuardJson({ nodePath, storeGuard }) {
+    const cmd = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "gemini" });
+    const hook = {
+        name: "gryphon-store-guard",
+        type: "command",
+        command: cmd.command,
+        timeout: STORE_GUARD_TIMEOUT_S * 1000,
+    };
+    if (cmd.shell)
+        hook.shell = cmd.shell;
+    return { hooks: { BeforeTool: [{ matcher: "*", hooks: [hook] }] } };
+}
 /**
  * Mapping from Gryphon's canonical hook events (Claude-Code-named)
  * to Gemini's event names + the matcher to use. Order matches the
@@ -180,7 +197,18 @@ function _cleanupFile(file) {
  *     to emit Gemini's `{decision, reason}` output shape instead of
  *     Claude Code's `{hookSpecificOutput: {permissionDecision, ...}}`
  */
-function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath }) {
+function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, storeGuardOnly }) {
+    if (storeGuardOnly) {
+        if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir)
+            return null;
+        const file = _writeSettingsFile(_buildStoreGuardJson({ nodePath, storeGuard: storeGuardOnly }));
+        return {
+            env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: file, GRYPHON_HOOK_PROVIDER: KIND },
+            args: [],
+            cleanup: () => _cleanupFile(file),
+            settingsFile: file,
+        };
+    }
     if (!pluginDir || !ipcSocketPath || !nodePath) {
         return null;
     }
@@ -237,6 +265,7 @@ module.exports = {
     kind: KIND,
     buildSpawnExtras,
     _buildHooksJson,
+    _buildStoreGuardJson,
     _buildModelInstructions,
     _writeSettingsFile,
     _cleanupFile,

@@ -32,7 +32,7 @@ const {
 } = require("./common/ipc-client");
 const {
   normalizeAntigravityInput,
-  buildAntigravityDecision,
+  buildHookDecision,
 } = require("./common/dialects");
 
 // Wall-clock budget for the whole hook. CC's configured PreToolUse
@@ -64,25 +64,7 @@ const IPC_TIMEOUT_MS = 270_000;
  * enforceable at all.
  */
 function buildDecision(decision: string, reason?: string) {
-  if (process.env.GRYPHON_HOOK_DIALECT === "antigravity") {
-    return buildAntigravityDecision(decision, reason);
-  }
-  if (process.env.GRYPHON_HOOK_DIALECT === "gemini") {
-    const geminiDecision = decision === "ask" ? "ask_user" : decision;
-    return Object.assign(
-      { decision: geminiDecision },
-      reason ? { reason } : {},
-    );
-  }
-  return {
-    hookSpecificOutput: Object.assign(
-      {
-        hookEventName: "PreToolUse",
-        permissionDecision: decision,
-      },
-      reason ? { permissionDecisionReason: reason } : {},
-    ),
-  };
+  return buildHookDecision(process.env.GRYPHON_HOOK_DIALECT, decision, reason);
 }
 
 const { emitAndExit, crashHandler } = installHookDeadline({

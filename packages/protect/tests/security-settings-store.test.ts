@@ -84,10 +84,11 @@ test("#29: isWeakening per key", () => {
 
 // ── scope (rev 3 R1) ────────────────────────────────────────────────────
 
-test("#29 (13): scope comes from app.vault.adapter + manifest.id, never _vaultRoot()", () => {
+test("#29 (13): scope comes from app.vault.adapter + a code-set host id, never _vaultRoot()", () => {
   const v = vaultDir();
   let vaultRootCalled = false;
-  const host = { settings: {}, saveSettings() {}, app: appFor(v), manifest: { id: "host-b" }, _vaultRoot() { vaultRootCalled = true; return "/elsewhere"; } };
+  // #30 (G3): the code-set securityHostId, never manifest.id.
+  const host = { settings: {}, saveSettings() {}, app: appFor(v), securityHostId: "host-b", manifest: { id: "manifest-id" }, _vaultRoot() { vaultRootCalled = true; return "/elsewhere"; } };
   assert.deepEqual(store.resolveSecurityScope({ hostPlugin: host }), { vaultKey: v, hostId: "host-b" });
   assert.equal(vaultRootCalled, false);
   // An explicit hostId (options bag) wins; a view's app wins over the host's.
@@ -134,7 +135,7 @@ test("#29 (5): after confirming on this machine they apply; a copied vault path 
   assert.equal(eff.source.permissionMode, "machine");
   // Copy of the vault: different realpath → different vaultKey → protected + prompts.
   const copy = vaultDir();
-  const effCopy = store.effectiveSecuritySettings(VAULT_WEAK, store.resolveSecurityScope({ hostPlugin: { app: appFor(copy), manifest: { id: "gryphon" } } }));
+  const effCopy = store.effectiveSecuritySettings(VAULT_WEAK, store.resolveSecurityScope({ hostPlugin: { app: appFor(copy), securityHostId: "gryphon" } }));
   assert.equal(effCopy.permissionMode, "default");
   assert.equal(effCopy.unconfirmed.length, 3);
 });
@@ -307,8 +308,10 @@ test("#29: classify, the permission gate and the deny globs read ctx.security ov
   const security = store.effectiveSecuritySettings(vaultSettings, scope);
   const plugin = { settings: vaultSettings };
   // Commands: the vault turned them off; the snapshot keeps them on.
-  assert.equal(classify("Bash", { command: "rm -rf /tmp/x" }, { plugin }), null, "baseline: vault settings alone disable it");
-  assert.ok(classify("Bash", { command: "rm -rf /tmp/x" }, { plugin, security }), "the snapshot re-enables protection");
+  assert.equal(classify("Bash", { command: "rm -rf /tmp/x" }, { settings: vaultSettings }), null, "baseline: an explicit config can disable it");
+  // #30 (G4): the vault's settings reached through `plugin` alone are not an input at all.
+  assert.ok(classify("Bash", { command: "rm -rf /tmp/x" }, { plugin }), "plugin.settings is never an input");
+  assert.ok(classify("Bash", { command: "rm -rf /tmp/x" }, { plugin, security }), "the snapshot keeps protection on");
   // The gate: Protected Mode on (snapshot) → a protected op is not demoted/auto-allowed.
   const res = await checkPermission({
     ctx: { permissionMode: "bypassPermissions", plugin: { settings: vaultSettings }, security: { ...security, autoDenyProtected: true } },
@@ -358,7 +361,9 @@ test("#29 review: a vault-renamed manifest id can't redirect Gryphon's own secur
   const app = { vault: { adapter: { getBasePath: () => vaultDir() } } };
   const gryphonHost = { securityHostId: "gryphon", manifest: { id: "athena" } }; // vault edited manifest.json
   assert.equal(describeSecurityScope({ app, hostPlugin: gryphonHost }).scope.hostId, "gryphon");
-  const embedder = { manifest: { id: "athena" } };                              // no code-pinned id
-  assert.equal(describeSecurityScope({ app, hostPlugin: embedder }).scope.hostId, "athena");
+  // #30 (G3): an embedder with no code-pinned id gets NO scope — the manifest is vault-resident.
+  const embedder = { manifest: { id: "host-b" } };
+  assert.equal(describeSecurityScope({ app, hostPlugin: embedder }).scope, null);
+  assert.equal(describeSecurityScope({ app, hostPlugin: embedder }).missing, "hostId");
   assert.equal(describeSecurityScope({ app, hostPlugin: gryphonHost, hostId: "custom" }).scope.hostId, "custom");
 });

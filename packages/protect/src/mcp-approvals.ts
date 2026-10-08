@@ -10,7 +10,7 @@
  * every vault — matches the server's exact spec.
  *
  * That rules out Gryphon's own `data.json` too: it lives at
- * `<vault>/.obsidian/plugins/gryphon/` and travels with the vault.
+ * `<vault>/<config dir>/plugins/gryphon/` and travels with the vault.
  *
  *   macOS / Linux: $XDG_CONFIG_HOME/gryphon/mcp-approvals.json (~/.config fallback)
  *   Windows:       %APPDATA%\gryphon\mcp-approvals.json
@@ -39,6 +39,7 @@ const fs = require("fs") as typeof import("fs");
 const os = require("os") as typeof import("os");
 const path = require("path") as typeof import("path");
 const crypto = require("crypto") as typeof import("crypto");
+const { TOOL_ALIASES } = require("./tool-aliases");
 
 const STORE_VERSION = 1;
 const FILE_NAME = "mcp-approvals.json";
@@ -253,15 +254,28 @@ function _realish(p: string): string {
 }
 
 /**
+ * Extra directories guarded alongside `approvalsDir()` — issue #30: the
+ * store-guard hook passes the dir Gryphon actually writes, so a tampered
+ * XDG_CONFIG_HOME / APPDATA in the agent's environment can't move the
+ * target away from it. Only ever widens what's guarded.
+ */
+type GuardOpts = LocateOpts & { extraDirs?: string[] };
+
+function _guardedDirs(opts: GuardOpts): string[] {
+  const extra = Array.isArray(opts.extraDirs) ? opts.extraDirs.filter((d) => typeof d === "string" && path.isAbsolute(d)) : [];
+  return [approvalsDir(opts), ...extra];
+}
+
+/**
  * True when `absPath` is the approval store's directory or anything inside
  * it. Case-insensitive (macOS / Windows filesystems are), and compared both
  * lexically and through symlinks so `/tmp` ↔ `/private/tmp` style aliases
  * don't slip past.
  */
-function isApprovalsStorePath(absPath: string, opts: LocateOpts = {}): boolean {
+function isApprovalsStorePath(absPath: string, opts: GuardOpts = {}): boolean {
   if (typeof absPath !== "string" || !absPath) return false;
-  const dir = approvalsDir(opts);
-  const dirs = new Set([_norm(dir), _norm(_realish(dir))]);
+  const dirs = new Set<string>();
+  for (const dir of _guardedDirs(opts)) { dirs.add(_norm(dir)); dirs.add(_norm(_realish(dir))); }
   const cands = [_norm(absPath), _norm(_realish(absPath))];
   for (const c of cands) {
     for (const d of dirs) {
@@ -280,11 +294,156 @@ function isApprovalsStorePath(absPath: string, opts: LocateOpts = {}): boolean {
  */
 const STORE_COMMAND_RE = /mcp-approvals|security-settings\.json|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
 
-function mentionsApprovalsStore(command: string, opts: LocateOpts = {}): boolean {
+function mentionsApprovalsStore(command: string, opts: GuardOpts = {}): boolean {
   if (typeof command !== "string" || !command) return false;
   if (STORE_COMMAND_RE.test(command)) return true;
   // The literal resolved directory, for a custom XDG_CONFIG_HOME / APPDATA.
-  return command.replace(/\\/g, "/").toLowerCase().includes(_norm(approvalsDir(opts)));
+  const text = command.replace(/\\/g, "/").toLowerCase();
+  return _guardedDirs(opts).some((d) => text.includes(_norm(d)));
+}
+
+// ── the store rule (issue #30: shared by classify and the store-guard hook) ──
+
+/** Read-only tools: never gated, even when they name the store. */
+const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
+/** Argument names that may carry a target path, across CLIs and MCP tools. */
+// Content-ish names (`new_source`, `content`, `new_string`) are left out on
+// purpose: a note that MENTIONS the store path must not be refused.
+const PATH_ARG_RE = /path|file|target|dest|dst|dir|uri|url|location|cwd|^(?:source|src|to|from|output|out|folders?)$/i;
+/** Names of a directory that relative path arguments may resolve against. */
+const BASE_ARG_RE = /cwd|dir(?:ectory)?s?$|folders?$|^(?:root|base)$/i;
+/**
+ * Argument names that carry a command line (issue #28), checked lexically
+ * like Bash. Matched per word of the key, so `shellCommand`, `run_cmd` and
+ * `tool-args` all count.
+ */
+const COMMAND_WORDS = new Set(["command", "cmd", "cmdline", "script", "code", "args", "argv", "shell", "exec", "program"]);
+function _isCommandKey(key: string): boolean {
+  return key.replace(/([a-z\d])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z\d]+/).some((w) => COMMAND_WORDS.has(w));
+}
+/** The first, cheap pass. A call past these bounds is walked again in full. */
+const WALK_MAX_DEPTH = 4;
+const WALK_MAX_STRINGS = 256;
+/** The full pass's caps: tool input past them is refused, not waved through. */
+const WALK_HARD_DEPTH = 64;
+const WALK_HARD_STRINGS = 10000;
+const MAX_BASES = 32;
+
+/**
+ * The string arguments of a tool call as `[key, value]` pairs, walked to a
+ * bounded depth and count. An array of strings stays one entry under the
+ * key that holds it (so `args: ["sh","-c","…"]` can be read as one command
+ * line); an object's properties go under their own keys, so
+ * `{edits: [{file_path}]}` reaches `file_path`. `truncated` is set when a
+ * bound cut the walk short — the caller must not read that as "clean".
+ */
+function _argStrings(input: Record<string, unknown>, maxDepth: number, maxStrings: number): { pairs: Array<[string, string | string[]]>; truncated: boolean } {
+  const pairs: Array<[string, string | string[]]> = [];
+  let budget = maxStrings;
+  let truncated = false;
+  const walk = (key: string, v: unknown, depth: number) => {
+    if (budget <= 0 || depth > maxDepth) { truncated = true; return; }
+    if (typeof v === "string") { if (v) { budget--; pairs.push([key, v]); } return; }
+    if (Array.isArray(v)) {
+      const all = v.filter((x): x is string => typeof x === "string" && !!x);
+      const strs = all.slice(0, budget);
+      if (strs.length < all.length) truncated = true;
+      if (strs.length > 0) { budget -= strs.length; pairs.push([key, strs]); }
+      for (const x of v) if (x && typeof x === "object") walk(key, x, depth + 1);
+      return;
+    }
+    if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(k, x, depth + 1);
+  };
+  for (const [k, v] of Object.entries(input)) walk(k, v, 1);
+  return { pairs, truncated };
+}
+
+/**
+ * A path argument → the absolute paths it could name: resolved against the
+ * vault and against every cwd-like argument of the same call. `file:` URLs
+ * are converted; any other `scheme:` value is still resolved as a path
+ * (harmless for a real URL, and `ab:/../../…` is a relative path to a tool).
+ */
+function _resolveArgPaths(value: string, bases: string[]): string[] {
+  if (/^file:/i.test(value)) {
+    try { return [require("url").fileURLToPath(value)]; } catch (_) { return []; }
+  }
+  if (/^~(?=$|[\\/])/.test(value)) return [path.join(os.homedir(), value.slice(1))];
+  if (path.isAbsolute(value)) return [value];
+  return bases.map((b) => path.resolve(b, value));
+}
+
+// Normalize command strings before regex matching. NFKC collapses
+// Unicode compatibility characters (fullwidth `ｒｍ` → ASCII `rm`),
+// and the second pass strips zero-width characters that would otherwise
+// break `\brm\b` style boundaries ("r​m" with a ZWSP in the middle).
+function normalizeForMatch(s: unknown): string {
+  return String(s)
+    .normalize("NFKC")
+    .replace(/[​-‍﻿⁠]/g, "");
+}
+
+function _fileToolVerdict(input: Record<string, unknown>, cwd: string | null, opts: GuardOpts): string | null {
+  // Cheap pass first; past its bounds (padding, deep nesting) walk the whole
+  // call, so the bound limits work, never coverage.
+  let walked = _argStrings(input, WALK_MAX_DEPTH, WALK_MAX_STRINGS);
+  if (walked.truncated) {
+    walked = _argStrings(input, WALK_HARD_DEPTH, WALK_HARD_STRINGS);
+    if (walked.truncated) return `Arguments:       too large to inspect`;
+  }
+  const rootBases = cwd ? [cwd] : [];
+  const baseSet = new Set(rootBases);
+  for (const [key, value] of walked.pairs) {
+    if (!BASE_ARG_RE.test(key)) continue;
+    for (const v of Array.isArray(value) ? value : [value]) for (const b of _resolveArgPaths(v, rootBases)) baseSet.add(b);
+  }
+  if (baseSet.size > MAX_BASES) return `Arguments:       too many directories to inspect`;
+  const bases = [...baseSet];
+  for (const [key, value] of walked.pairs) {
+    if (PATH_ARG_RE.test(key)) {
+      for (const v of Array.isArray(value) ? value : [value]) {
+        if (_resolveArgPaths(v, bases).some((abs) => isApprovalsStorePath(abs, opts))) return `Target path:     ${v}`;
+      }
+    }
+    if (_isCommandKey(key)) {
+      const raw = Array.isArray(value) ? value.join(" ") : value;
+      if (mentionsApprovalsStore(normalizeForMatch(raw), opts)) return `Command:         ${raw}`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Issue #30: the approvals-store rule as one pure function. `classify` and
+ * the store-guard hook both call it, so the two can't disagree (A8).
+ *
+ * Returns `{ tool, what }` — the canonical tool name and a one-line
+ * description of what matched — when the call writes, edits or runs a
+ * command aimed at Gryphon's own trust stores; null otherwise. Read-only
+ * tools are never matched. Any tool that isn't read-only or a shell is
+ * walked for path-like and command-like arguments, nested ones included,
+ * so a tool missing from TOOL_ALIASES can't write the store by default.
+ *
+ * `cwd` is the directory relative path arguments resolve against (the vault
+ * for classify, the CLI's reported cwd for the hook). `extraDirs` widens
+ * the guarded set (see GuardOpts). Depends only on node builtins and the
+ * alias table, so it bundles into the standalone hook.
+ */
+function approvalsStoreVerdict(
+  tool: string, input: Record<string, unknown> | null | undefined,
+  opts: GuardOpts & { cwd?: string | null } = {},
+): { tool: string; what: string } | null {
+  if (typeof tool !== "string" || !tool || !input || typeof input !== "object") return null;
+  const canonical = TOOL_ALIASES[tool] || tool;
+  if (READ_ONLY_TOOLS.has(canonical)) return null;
+  if (canonical === "Bash" || canonical === "PowerShell") {
+    const raw = typeof input.command === "string" ? input.command : "";
+    return raw && mentionsApprovalsStore(normalizeForMatch(raw), opts)
+      ? { tool: canonical, what: `Command:         ${raw}` }
+      : null;
+  }
+  const what = _fileToolVerdict(input, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
+  return what ? { tool: canonical, what } : null;
 }
 
 module.exports = {
@@ -303,5 +462,7 @@ module.exports = {
   reader,
   isApprovalsStorePath,
   mentionsApprovalsStore,
+  approvalsStoreVerdict,
+  normalizeForMatch,
   STORE_COMMAND_RE,
 };

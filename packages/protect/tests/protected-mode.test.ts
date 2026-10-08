@@ -42,9 +42,12 @@ function ctxWithSettings(settings) {
   // permission-gate reads settings from ctx.plugin.settings; ctx.plugin.app
   // must be defined for the modal path to be reachable (we test paths
   // that return before the modal).
+  // #30 (G4): security toggles come from an explicit config (ctx.settings),
+  // never from plugin.settings.
   return {
     vaultRoot: "/tmp/fake",
     permissionMode: settings.permissionMode || "default",
+    settings,
     plugin: { settings, app: {} },
   };
 }

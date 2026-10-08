@@ -150,3 +150,71 @@ test("QA-V13H-A: _createCodexHomeOverlay rolls back tmpdir when a write fails", 
     }
   }
 });
+
+// Issue #31: Codex >= 0.145 skips untrusted hooks silently. The overlay
+// must trust every hook it writes, with Codex's own hash and key.
+test("#31: _codexHookTrustHash matches Codex's canonical-JSON sha256 (verified live, codex 0.145)", () => {
+  // sha256 of {"event_name":"pre_tool_use","hooks":[{"async":false,"command":"node /x/pretool.js","timeout":300,"type":"command"}],"matcher":""}
+  assert.equal(
+    adapter._codexHookTrustHash("PreToolUse", "", "node /x/pretool.js", 300),
+    "sha256:425c5a1875dd70a65d18b62585543a832b671b349933cdbafa2f6a4717fea6ed",
+  );
+});
+
+test("#31: SessionEnd timeout is clamped to 3s before hashing, as Codex does", () => {
+  assert.equal(
+    adapter._codexHookTrustHash("SessionEnd", "", "c", 5),
+    adapter._codexHookTrustHash("SessionEnd", "", "c", 3),
+  );
+  assert.notEqual(
+    adapter._codexHookTrustHash("PreToolUse", "", "c", 5),
+    adapter._codexHookTrustHash("PreToolUse", "", "c", 3),
+  );
+});
+
+test("#31: events Codex doesn't know (Notification) get no trust entry", () => {
+  assert.equal(adapter._codexHookTrustHash("Notification", "", "c", 2), null);
+});
+
+test("#31: every Codex hook in the overlay config is trusted under <configPath>:<event>:0:0", () => {
+  const configPath = "/tmp/overlay/config.toml";
+  const toml = adapter._buildHooksToml({
+    pluginDir: "/fake/plugin", nodePath: "/usr/local/bin/node", modelInstructionsFile: "", configPath,
+  });
+  for (const label of ["pre_tool_use", "post_tool_use", "session_start", "session_end", "user_prompt_submit"]) {
+    assert.match(toml, new RegExp(`\\[hooks\\.state\\.${JSON.stringify(`${configPath}:${label}:0:0`).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}\\]\\ntrusted_hash = "sha256:[0-9a-f]{64}"`));
+  }
+  assert.equal((toml.match(/trusted_hash/g) || []).length, 5);
+  // The trusted hash is the hash of the command actually rendered.
+  const cmd = `${JSON.stringify("/usr/local/bin/node")} ${JSON.stringify(path.join("/fake/plugin", "hooks", "pretool.js"))}`;
+  if (process.platform !== "win32") {
+    assert.ok(toml.includes(adapter._codexHookTrustHash("PreToolUse", "", cmd, 300)));
+  }
+});
+
+test("#31: the overlay is built under a realpath and trusts its own config.toml path", () => {
+  const extras = adapter.buildSpawnExtras({ pluginDir: "/fake/plugin", ipcSocketPath: "/tmp/x.sock", nodePath: "/usr/local/bin/node" });
+  try {
+    const overlay = extras.env.CODEX_HOME;
+    assert.equal(fs.realpathSync(overlay), overlay);
+    const toml = fs.readFileSync(extras.settingsFile, "utf8");
+    assert.ok(toml.includes(JSON.stringify(`${path.join(overlay, "config.toml")}:pre_tool_use:0:0`)));
+  } finally {
+    extras.cleanup();
+  }
+});
+
+test("#31/#30: the store-guard-only overlay trusts its PreToolUse guard", () => {
+  const extras = adapter.buildSpawnExtras({
+    nodePath: "/usr/local/bin/node",
+    storeGuardOnly: { scriptPath: "/tmp/gryphon/hooks/store-guard-0123456789abcdef.js", approvalsDir: "/tmp/gryphon" },
+  });
+  try {
+    const toml = fs.readFileSync(extras.settingsFile, "utf8");
+    const key = `${path.join(extras.env.CODEX_HOME, "config.toml")}:pre_tool_use:0:0`;
+    assert.ok(toml.includes(`[hooks.state.${JSON.stringify(key)}]`), toml);
+    assert.equal((toml.match(/trusted_hash = "sha256:[0-9a-f]{64}"/g) || []).length, 1);
+  } finally {
+    extras.cleanup();
+  }
+});

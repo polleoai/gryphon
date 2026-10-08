@@ -53,7 +53,27 @@ const {
   GRYPHON_FALLBACK_DENY_HINT,
 } = require("../system-prompt-hints");
 
+const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
+
 const KIND = "gemini-cli";
+
+type StoreGuardOnly = { scriptPath: string; approvalsDir: string };
+
+/**
+ * Issue #30: store-guard-only settings — a single BeforeTool hook. Gemini's
+ * `timeout` is MILLISECONDS (see _buildHooksJson).
+ */
+function _buildStoreGuardJson({ nodePath, storeGuard }: { nodePath: string; storeGuard: StoreGuardOnly }) {
+  const cmd = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "gemini" });
+  const hook: Record<string, unknown> = {
+    name: "gryphon-store-guard",
+    type: "command",
+    command: cmd.command,
+    timeout: STORE_GUARD_TIMEOUT_S * 1000,
+  };
+  if (cmd.shell) hook.shell = cmd.shell;
+  return { hooks: { BeforeTool: [{ matcher: "*", hooks: [hook] }] } };
+}
 
 /**
  * Mapping from Gryphon's canonical hook events (Claude-Code-named)
@@ -194,7 +214,20 @@ function _cleanupFile(file: string | null | undefined) {
  *     to emit Gemini's `{decision, reason}` output shape instead of
  *     Claude Code's `{hookSpecificOutput: {permissionDecision, ...}}`
  */
-function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath }: { pluginDir: string; ipcSocketPath: string; nodePath: string }) {
+function buildSpawnExtras(
+  { pluginDir, ipcSocketPath, nodePath, storeGuardOnly }:
+  { pluginDir?: string; ipcSocketPath?: string; nodePath: string; storeGuardOnly?: StoreGuardOnly },
+) {
+  if (storeGuardOnly) {
+    if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir) return null;
+    const file = _writeSettingsFile(_buildStoreGuardJson({ nodePath, storeGuard: storeGuardOnly }));
+    return {
+      env: { GEMINI_CLI_SYSTEM_SETTINGS_PATH: file, GRYPHON_HOOK_PROVIDER: KIND },
+      args: [],
+      cleanup: () => _cleanupFile(file),
+      settingsFile: file,
+    };
+  }
   if (!pluginDir || !ipcSocketPath || !nodePath) {
     return null;
   }
@@ -253,6 +286,7 @@ module.exports = {
   kind: KIND,
   buildSpawnExtras,
   _buildHooksJson,
+  _buildStoreGuardJson,
   _buildModelInstructions,
   _writeSettingsFile,
   _cleanupFile,

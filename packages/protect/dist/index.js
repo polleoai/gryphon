@@ -82,6 +82,7 @@ const permissionGate = require("./permission-gate");
 const constants = require("./constants");
 const mcpApprovals = require("./mcp-approvals");
 const securitySettings = require("./security-settings-store");
+const storeGuard = require("./store-guard");
 module.exports = {
     // Namespace exports — whole modules
     attackDetector,
@@ -101,6 +102,7 @@ module.exports = {
     constants,
     mcpApprovals,
     securitySettings,
+    storeGuard,
     // Promoted named exports — frequent destructure targets
     classify: attackDetector.classify,
     normalizeToolName: attackDetector.normalizeToolName,
@@ -127,6 +129,18 @@ module.exports = {
     isWeakening: securitySettings.isWeakening,
     effectiveSecuritySettings: securitySettings.effectiveSecuritySettings,
     securityInputsOf: securitySettings.securityInputsOf,
+    // Issue #30: machine-scoped CLI binary paths — the one resolver every
+    // spawn and probe uses (sync, never throws, returns the realpath to
+    // spawn), and its write API.
+    EXECUTABLE_KEYS: securitySettings.EXECUTABLE_KEYS,
+    resolveCliPath: securitySettings.resolveCliPath,
+    setMachineCliPath: securitySettings.setMachineCliPath,
+    CliPathRejectedError: securitySettings.CliPathRejectedError,
+    // Issue #30: the store guard (Protected Mode off) and the turn-end check.
+    approvalsStoreVerdict: mcpApprovals.approvalsStoreVerdict,
+    ensureStoreGuardScript: storeGuard.ensureStoreGuardScript,
+    snapshotSecurityStore: securitySettings.snapshotSecurityStore,
+    checkSecurityStoreTamper: securitySettings.checkSecurityStoreTamper,
     // Promoted from constants — protected-pattern catalog data
     DEFAULT_PROTECTED_PATHS: constants.DEFAULT_PROTECTED_PATHS,
     DEFAULT_PROTECTED_COMMANDS: constants.DEFAULT_PROTECTED_COMMANDS,
@@ -152,7 +166,8 @@ module.exports = {
  *
  * @param {object} args
  *   plugin      — host plugin instance (Obsidian plugin shell)
- *   settings    — settings snapshot (falls back to plugin.settings)
+ *   settings    — settings snapshot (falls back to plugin.settings for
+ *                 non-security reads only; never a security input — #30)
  *   security    — issue #29 security snapshot (effectiveSecuritySettings);
  *                 when given, it — not settings — decides every protection
  *                 toggle and the default permission mode
@@ -189,7 +204,10 @@ module.exports = {
 function createProtectionContext({ plugin, settings, config, hostAdapter, onDecision, security, } = {}) {
     const _settings = config || settings || (plugin && plugin.settings) || {};
     const _hostAdapter = hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
-    const _security = securitySettings.securityInputsOf({ security, settings: _settings });
+    // Issue #30 (G4): the security input is the snapshot, else an explicit
+    // config/settings from the caller's code — never `plugin.settings` (the
+    // host's data.json). With neither, securityInputsOf returns the defaults.
+    const _security = securitySettings.securityInputsOf({ security, settings: config || settings || undefined, plugin });
     return {
         prepareSpawn({ kind, cwd, providerOptions = {} }) {
             // Delegate to the existing hook-dispatcher entry. Its signature

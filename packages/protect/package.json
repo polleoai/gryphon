@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "build:dist": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "gen:store-guard": "node --import tsx scripts/build-store-guard.ts"
   }
 }

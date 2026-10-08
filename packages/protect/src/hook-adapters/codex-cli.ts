@@ -33,8 +33,11 @@ const {
   GRYPHON_SYSTEM_PROMPT_HINT,
   GRYPHON_FALLBACK_DENY_HINT,
 } = require("../system-prompt-hints");
+const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
 
 const KIND = "codex-cli";
+
+type StoreGuardOnly = { scriptPath: string; approvalsDir: string };
 
 // Files we symlink from the real ~/.codex/ into our overlay so Codex
 // retains login state and can resume prior sessions. Kept minimal:
@@ -88,6 +91,74 @@ function _renderHookBlock(eventName: string, matcher: string, command: string, t
 }
 
 /**
+ * Issue #31: Codex ≥ 0.145 runs a configured hook only once it is
+ * TRUSTED — `[hooks.state."<key>"] trusted_hash = "<hash>"` in the same
+ * config layer — and silently skips untrusted hooks. Our overlay is
+ * fresh per spawn, so without this every Gryphon hook was skipped and
+ * every tool call was allowed. Gryphon wrote these hooks itself, so it
+ * vouches for exactly them (and nothing else) instead of passing
+ * `--dangerously-bypass-hook-trust`, which would trust any hook.
+ *
+ * Mirrors codex-rs `hooks/src/engine/discovery.rs` (`command_hook_hash`,
+ * `hook_key`) and `config/src/fingerprint.rs` (`version_for_toml`) at
+ * rust-v0.145.0: sha256 over sorted-key compact JSON of
+ * `{event_name, matcher, hooks:[normalized handler]}`, where the handler
+ * omits unset options and its timeout is normalized the way Codex does.
+ */
+const CODEX_EVENT_LABELS: Record<string, string> = {
+  PreToolUse: "pre_tool_use",
+  PostToolUse: "post_tool_use",
+  SessionStart: "session_start",
+  SessionEnd: "session_end",
+  UserPromptSubmit: "user_prompt_submit",
+};
+const CODEX_SESSION_END_MAX_TIMEOUT_SEC = 3;
+
+function _canonicalJson(v: unknown): unknown {
+  if (Array.isArray(v)) return v.map(_canonicalJson);
+  if (v && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = _canonicalJson((v as Record<string, unknown>)[k]);
+    return out;
+  }
+  return v;
+}
+
+function _codexNormalizedTimeout(eventName: string, timeout: number): number {
+  if (eventName === "SessionEnd") return Math.min(Math.max(timeout, 1), CODEX_SESSION_END_MAX_TIMEOUT_SEC);
+  return Math.max(timeout, 1);
+}
+
+/** Codex's trust hash for one command hook (null for an event Codex doesn't know). */
+function _codexHookTrustHash(eventName: string, matcher: string, command: string, timeout: number): string | null {
+  const label = CODEX_EVENT_LABELS[eventName];
+  if (!label) return null;
+  const identity = {
+    event_name: label,
+    matcher,
+    hooks: [{ type: "command", command, timeout: _codexNormalizedTimeout(eventName, timeout), async: false }],
+  };
+  return "sha256:" + crypto.createHash("sha256").update(JSON.stringify(_canonicalJson(identity))).digest("hex");
+}
+
+/**
+ * The `[hooks.state]` tables that trust each rendered hook. Each event
+ * has exactly one matcher group with one handler, so its key is
+ * `<configPath>:<label>:0:0`. `configPath` must be the exact path Codex
+ * will read (the overlay is built under a realpath for this reason).
+ */
+function _renderTrustState(configPath: string, hooks: Array<[string, string, string, number]>): string {
+  let toml = "";
+  for (const [eventName, matcher, command, timeout] of hooks) {
+    const hash = _codexHookTrustHash(eventName, matcher, command, timeout);
+    if (!hash) continue;
+    const key = `${configPath}:${CODEX_EVENT_LABELS[eventName]}:0:0`;
+    toml += `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(hash)}\n\n`;
+  }
+  return toml;
+}
+
+/**
  * Convert GRYPHON_SYSTEM_PROMPT_HINT (newline-free, "·"-bulleted)
  * into a markdown document suitable for Codex's
  * `model_instructions_file` config. Codex prepends/uses this file
@@ -125,7 +196,7 @@ function _buildModelInstructions(): string {
  * _createCodexHomeOverlay) so Codex's model receives Gryphon's
  * anti-leak + compound-request directives on every session.
  */
-function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile }: { pluginDir: string; nodePath: string; modelInstructionsFile: string }) {
+function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPath }: { pluginDir: string; nodePath: string; modelInstructionsFile: string; configPath?: string }) {
   const hooksDir = path.join(pluginDir, "hooks");
   const isWindows = process.platform === "win32";
 
@@ -160,12 +231,28 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile }: { plugi
   if (modelInstructionsFile) {
     toml += `model_instructions_file = ${JSON.stringify(modelInstructionsFile)}\n\n`;
   }
+  const rendered: Array<[string, string, string, number]> = [];
   for (const [event, matcher, scriptName] of events) {
     const cmd = makeCommand(scriptName);
     toml += _renderHookBlock(event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]);
     toml += "\n";
+    rendered.push([event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]]);
   }
+  if (configPath) toml += _renderTrustState(configPath, rendered);
   return toml;
+}
+
+/**
+ * Issue #30: store-guard-only config — a single PreToolUse hook, nothing
+ * else (no other events, no model instructions). Protected Mode is off, so
+ * the only thing Gryphon adds is the trust-store check.
+ */
+function _buildStoreGuardToml({ nodePath, storeGuard, configPath }: { nodePath: string; storeGuard: StoreGuardOnly; configPath?: string }) {
+  const { command } = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "codex" });
+  // #31: an untrusted hook is skipped silently by Codex, so the guard must be trusted too.
+  return "# Gryphon-managed Codex hook config (regenerated per spawn): store guard only.\n\n" +
+    _renderHookBlock("PreToolUse", "", command, STORE_GUARD_TIMEOUT_S) + "\n" +
+    (configPath ? _renderTrustState(configPath, [["PreToolUse", "", command, STORE_GUARD_TIMEOUT_S]]) : "");
 }
 
 /**
@@ -178,11 +265,15 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile }: { plugi
  * config from the user's interactive `codex` use, and protects
  * against multi-vault cross-contamination.
  */
-function _createCodexHomeOverlay({ pluginDir, nodePath }: { pluginDir: string; nodePath: string }): string {
+function _createCodexHomeOverlay({ pluginDir, nodePath, storeGuard }: { pluginDir?: string; nodePath: string; storeGuard?: StoreGuardOnly }): string {
   const realHome = path.join(os.homedir(), ".codex");
   const rand = crypto.randomBytes(4).toString("hex");
+  // Realpath: Codex keys hook trust by the config path it reads, and on
+  // macOS os.tmpdir() (/var/folders/…) is a symlink to /private/var/….
+  let tmpBase = os.tmpdir();
+  try { tmpBase = fs.realpathSync(tmpBase); } catch { /* keep os.tmpdir() */ }
   const overlay = path.join(
-    os.tmpdir(),
+    tmpBase,
     `gryphon-codex-home-${process.pid}-${Date.now()}-${rand}`,
   );
 
@@ -223,6 +314,11 @@ function _createCodexHomeOverlay({ pluginDir, nodePath }: { pluginDir: string; n
   // and the caller never gets the cleanup callback — without this
   // rollback every failed spawn leaves a 4-KB stub in tmpdir.
   try {
+    if (storeGuard) {
+      const sgConfigPath = path.join(overlay, "config.toml");
+      fs.writeFileSync(sgConfigPath, _buildStoreGuardToml({ nodePath, storeGuard, configPath: sgConfigPath }), { flag: "wx", mode: 0o600 });
+      return overlay;
+    }
     const modelInstructionsFile = path.join(overlay, "model-instructions.md");
     fs.writeFileSync(modelInstructionsFile, _buildModelInstructions(), {
       flag: "wx",
@@ -237,7 +333,7 @@ function _createCodexHomeOverlay({ pluginDir, nodePath }: { pluginDir: string; n
     const configPath = path.join(overlay, "config.toml");
     fs.writeFileSync(
       configPath,
-      _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile }),
+      _buildHooksToml({ pluginDir: pluginDir as string, nodePath, modelInstructionsFile, configPath }),
       { flag: "wx", mode: 0o600 },
     );
   } catch (e) {
@@ -269,7 +365,20 @@ function _cleanupOverlay(overlay: string | null) {
 /**
  * Adapter contract — see hook-dispatcher.js for the schema.
  */
-function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath }: { pluginDir: string; ipcSocketPath: string; nodePath: string }) {
+function buildSpawnExtras(
+  { pluginDir, ipcSocketPath, nodePath, storeGuardOnly }:
+  { pluginDir?: string; ipcSocketPath?: string; nodePath: string; storeGuardOnly?: StoreGuardOnly },
+) {
+  if (storeGuardOnly) {
+    if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir) return null;
+    const overlay = _createCodexHomeOverlay({ nodePath, storeGuard: storeGuardOnly });
+    return {
+      env: { CODEX_HOME: overlay, GRYPHON_HOOK_PROVIDER: KIND },
+      args: [],
+      cleanup: () => _cleanupOverlay(overlay),
+      settingsFile: path.join(overlay, "config.toml"),
+    };
+  }
   if (!pluginDir || !ipcSocketPath || !nodePath) {
     // Dispatcher pre-flight should have caught these; defensive only.
     return null;
@@ -296,6 +405,9 @@ module.exports = {
   buildSpawnExtras,
   // Internals exposed for tests:
   _buildHooksToml,
+  _codexHookTrustHash,
+  _renderTrustState,
+  _buildStoreGuardToml,
   _buildModelInstructions,
   _createCodexHomeOverlay,
   _cleanupOverlay,

@@ -159,28 +159,46 @@ function _credentialFieldsFor(pref) {
  * guidance), a path text field, and a Re-detect button that clears the binary
  * discovery cache and re-probes.
  *
- * @param opts.settingsKey  the `settings.*` key holding the manual path override
+ * Issue #30: the path is machine-scoped. The field shows and writes THIS
+ * machine's confirmed location for the renderer's `securityHostId` (an
+ * embedder's own id, or "gryphon" standalone), never the vault's data.json;
+ * a path inside the vault, relative, missing or not executable is refused
+ * inline. The pill shows the binary a spawn would actually run.
+ *
+ * @param opts.settingsKey  the store key (claudePath / codexPath / geminiCliPath / antigravityPath)
  * @param opts.findKey      provider-runtime export name (findClaudeBinary / …)
  * @param opts.cliLabel     human label for the pill tooltip ("Gemini CLI")
  * @param opts.installHint  not-detected tooltip (non-Flatpak)
  * @param opts.flatpakHint  short install pointer shown in the Flatpak tooltip
  */
-function renderCliPathRow(host, panelEl, opts) {
+function renderCliPathRow(host, panelEl, opts, sec) {
     const { name, tooltip, settingsKey, findKey, defaultPlaceholder, cliLabel, installHint, flatpakHint } = opts;
+    const kind = securityUi.cliKindForPathKey(settingsKey);
+    const secOpts = _securityOpts(sec);
     const cliSetting = descToTooltip(new Setting(panelEl).setName(name), tooltip);
     const cliStatusPill = cliSetting.nameEl.createEl("span", { cls: "gryphon-cli-status-pill" });
+    let rejectedText = "";
+    const resolved = () => require("@gryphon/protect").resolveCliPath(kind, {
+        app: host.app, hostPlugin: host, hostId: secOpts.hostId,
+        overrides: { paths: (secOpts.overrides && secOpts.overrides.paths) || {} },
+    });
     const renderCliStatus = () => {
         cliStatusPill.empty();
         cliStatusPill.className = "gryphon-cli-status-pill";
-        const manualPath = (host.settings[settingsKey] || "").trim();
         const runtime = require("@gryphon/provider-runtime");
         const flatpak = runtime.detectFlatpakSandbox();
-        const detected = manualPath || runtime[findKey]();
-        if (detected) {
+        const r = resolved();
+        if (rejectedText) {
+            cliStatusPill.addClass("is-warn");
+            cliStatusPill.setText("⚠ Not saved");
+            attachHoverTooltip(cliStatusPill, rejectedText);
+        }
+        else if (r.path) {
             cliStatusPill.addClass("is-ok");
-            const shown = runtime.displayPath(detected);
+            const shown = runtime.displayPath(r.path);
             cliStatusPill.setText(`✓ ${shown}`);
-            attachHoverTooltip(cliStatusPill, `${cliLabel} detected at:\n${shown}`);
+            const how = r.source === "machine" ? "set on this computer" : r.source === "override" ? `set by ${securityUi.hostDisplayName(host, secOpts.hostId)}` : "detected";
+            attachHoverTooltip(cliStatusPill, `${cliLabel} (${how}):\n${shown}`);
         }
         else if (flatpak.isFlatpak) {
             cliStatusPill.addClass("is-warn");
@@ -202,12 +220,21 @@ function renderCliPathRow(host, panelEl, opts) {
         .addText((text) => {
         const runtime = require("@gryphon/provider-runtime");
         const detected = runtime[findKey]();
+        const eff = securityUi.effectiveSecurityFor(host, secOpts);
         return text
             .setPlaceholder(detected ? runtime.displayPath(detected) : defaultPlaceholder)
-            .setValue(host.settings[settingsKey] || "")
+            .setValue((eff.paths && eff.paths[settingsKey]) || "")
             .onChange(async (value) => {
-            host.settings[settingsKey] = value.trim();
-            await host.saveSettings();
+            try {
+                await securityUi.applyCliPathSetting(host, settingsKey, value.trim() || null, secOpts);
+                rejectedText = "";
+            }
+            catch (e) {
+                // Refused (relative, missing, inside the vault, …): nothing is
+                // saved, and the row says why. Typing a path passes through
+                // invalid prefixes, so this is inline rather than a Notice.
+                rejectedText = (e && e.message) || String(e);
+            }
             host._resetActiveSessions?.();
             renderCliStatus();
         });
@@ -226,7 +253,7 @@ function renderCliPathRow(host, panelEl, opts) {
     }));
     renderCliStatus();
 }
-function renderClaudePathRow(host, panelEl) {
+function renderClaudePathRow(host, panelEl, sec) {
     renderCliPathRow(host, panelEl, {
         name: "Claude Code path",
         tooltip: "Leave empty for auto-detect (checks common locations + your " +
@@ -240,7 +267,7 @@ function renderClaudePathRow(host, panelEl) {
             "path in the field on the right if it's already installed in a " +
             "non-standard location.",
         flatpakHint: "e.g. npm config set prefix ~/.npm-global && npm install -g @anthropic-ai/claude-code",
-    });
+    }, sec);
 }
 function renderAnthropicKeyRow(host, panelEl, refreshChip) {
     let keyStatusEl = null;
@@ -364,7 +391,7 @@ function renderGoogleKeyRow(host, panelEl, refreshChip) {
         googleKeyStatusEl.setCssStyles({ marginTop: "4px" });
     });
 }
-function renderCodexPathRow(host, panelEl) {
+function renderCodexPathRow(host, panelEl, sec) {
     renderCliPathRow(host, panelEl, {
         name: "Codex CLI path",
         tooltip: "Optional. Required only when Provider is Codex CLI. Empty string " +
@@ -380,9 +407,9 @@ function renderCodexPathRow(host, panelEl) {
             "CLI), or set the full path in the field on the right if it's already " +
             "installed in a non-standard location. After installing, run `codex login`.",
         flatpakHint: "see https://chatgpt.com/codex",
-    });
+    }, sec);
 }
-function renderGeminiPathRow(host, panelEl) {
+function renderGeminiPathRow(host, panelEl, sec) {
     renderCliPathRow(host, panelEl, {
         name: "Gemini CLI path",
         tooltip: "Optional. Required only when Provider is Gemini CLI. Empty string " +
@@ -398,9 +425,9 @@ function renderGeminiPathRow(host, panelEl) {
             "or set the full path in the field on the right if it's already " +
             "installed in a non-standard location.",
         flatpakHint: "e.g. npm config set prefix ~/.npm-global && npm install -g @google/gemini-cli",
-    });
+    }, sec);
 }
-function renderAntigravityPathRow(host, panelEl) {
+function renderAntigravityPathRow(host, panelEl, sec) {
     renderCliPathRow(host, panelEl, {
         name: "Antigravity CLI path",
         tooltip: "Optional. Required only when Provider is Antigravity CLI. Empty " +
@@ -424,18 +451,18 @@ function renderAntigravityPathRow(host, panelEl) {
             "if it's already installed in a non-standard location. After installing, " +
             "run `agy` once to authenticate.",
         flatpakHint: "e.g. curl -fsSL https://antigravity.google/cli/install.sh | bash",
-    });
+    }, sec);
 }
 // credential-key -> renderer. Key rows take refreshChip; path rows ignore it.
-function _renderCredentialRow(key, host, panelEl, refreshChip) {
+function _renderCredentialRow(key, host, panelEl, refreshChip, sec) {
     switch (key) {
         case "anthropicKey": return renderAnthropicKeyRow(host, panelEl, refreshChip);
         case "openaiKey": return renderOpenAIKeyRow(host, panelEl, refreshChip);
         case "googleKey": return renderGoogleKeyRow(host, panelEl, refreshChip);
-        case "claudePath": return renderClaudePathRow(host, panelEl);
-        case "codexPath": return renderCodexPathRow(host, panelEl);
-        case "geminiPath": return renderGeminiPathRow(host, panelEl);
-        case "antigravityPath": return renderAntigravityPathRow(host, panelEl);
+        case "claudePath": return renderClaudePathRow(host, panelEl, sec);
+        case "codexPath": return renderCodexPathRow(host, panelEl, sec);
+        case "geminiPath": return renderGeminiPathRow(host, panelEl, sec);
+        case "antigravityPath": return renderAntigravityPathRow(host, panelEl, sec);
         default: throw new Error(`unknown credential key: ${key}`);
     }
 }
@@ -451,8 +478,10 @@ const ALL_CREDENTIAL_KEYS = [
  * @param hostPlugin  minimal duck type `{ settings, saveSettings }`.
  * @param panelEl     element this panel owns and renders into.
  * @param ctx         `{ rerenderSelf, rerenderAll }` from the tab harness.
+ * @param sec         issue #29/#30 `{ securityOverrides, securityHostId }` —
+ *                    CLI-path rows write under that host's scope.
  */
-function renderSetupPanel(hostPlugin, panelEl, ctx) {
+function renderSetupPanel(hostPlugin, panelEl, ctx, sec) {
     // No "Provider" section heading — the tab is already labelled "Models" and
     // the Provider dropdown immediately follows, so a heading would just repeat
     // the word "Provider".
@@ -511,7 +540,7 @@ function renderSetupPanel(hostPlugin, panelEl, ctx) {
     const fields = _credentialFieldsFor(pref);
     if (fields) {
         for (const key of fields) {
-            _renderCredentialRow(key, hostPlugin, panelEl, updateProviderReadiness);
+            _renderCredentialRow(key, hostPlugin, panelEl, updateProviderReadiness, sec);
         }
     }
     else {
@@ -519,7 +548,7 @@ function renderSetupPanel(hostPlugin, panelEl, ctx) {
         const details = panelEl.createEl("details", { cls: "gryphon-credentials-group" });
         details.createEl("summary", { text: "Configure credentials", cls: "gryphon-credentials-summary" });
         for (const key of ALL_CREDENTIAL_KEYS) {
-            _renderCredentialRow(key, hostPlugin, details, updateProviderReadiness);
+            _renderCredentialRow(key, hostPlugin, details, updateProviderReadiness, sec);
         }
     }
 }
@@ -812,7 +841,7 @@ function renderGryphonSettings(hostPlugin, containerEl, options) {
                 // own "Fallback" group below it.
                 const modelGroup = panelEl.createDiv("gryphon-settings-group");
                 modelGroup.createDiv({ cls: "gryphon-settings-group-label", text: "Model" });
-                renderSetupPanel(hostPlugin, modelGroup, ctx);
+                renderSetupPanel(hostPlugin, modelGroup, ctx, sec);
                 renderDefaultsPanel(hostPlugin, modelGroup, ctx, { ...sec, rerender: () => ctx && ctx.rerenderSelf && ctx.rerenderSelf() });
                 const fallbackGroup = panelEl.createDiv("gryphon-settings-group");
                 fallbackGroup.createDiv({ cls: "gryphon-settings-group-label", text: "Fallback" });

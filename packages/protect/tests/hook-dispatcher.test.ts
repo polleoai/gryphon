@@ -69,9 +69,11 @@ test("prepareSpawn returns degraded result when kind has no adapter", () => {
 });
 
 test("prepareSpawn returns degraded result when protectedMode is off", () => {
+  // claude-code keeps its deny-glob path with Protected Mode off (#30).
   const r = dispatcher.prepareSpawn({
     kind: "claude-code",
     plugin: makePluginStub({ protectedMode: false }),
+    options: { security: { protectedMode: false } },
   });
   assert.equal(r.ok, false);
   assert.match(r.degradationReason, /protectedMode is off/);

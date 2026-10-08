@@ -16,11 +16,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * tool calls only; downstream threat intel is a separate concern.
  */
 const path = require("path");
-const os = require("os");
 const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PROTECTED_CATEGORIES, } = require("./constants");
 const { matchProtectedPath, resolveVaultPath, PathOutsideVaultError, } = require("./path-utils");
 const { checkPermission } = require("./permission-gate");
-const { isApprovalsStorePath, mentionsApprovalsStore } = require("./mcp-approvals");
+const { approvalsStoreVerdict, normalizeForMatch } = require("./mcp-approvals");
 const { securityInputsOf } = require("./security-settings-store");
 /**
  * Per-pattern de-duplication so a user with one broken regex doesn't
@@ -101,87 +100,10 @@ function _categoryTitle(category) {
  *   { tool, matchedPattern, category, title, userRisk, technicalDetail }
  */
 /**
- * Cross-CLI tool-name aliases. Different CLIs name the same tool
- * differently — Claude Code's "Bash" is Gemini's "run_shell_command",
- * Codex's "command_execution", and so on. The classifier internally
- * speaks Claude Code's tool vocabulary (Bash / Write / Edit /
- * PowerShell), so we normalize incoming names before dispatching.
- *
- * Adding a new CLI = add its tool names here. The classifier itself
- * stays vocabulary-pure.
+ * Cross-CLI tool-name aliases (issue #30: their own module, so the bundled
+ * store-guard hook canonicalises tool names exactly as classify does).
  */
-const TOOL_ALIASES = {
-    // Shell / command execution
-    "Bash": "Bash",
-    "PowerShell": "PowerShell",
-    "run_shell_command": "Bash", // Gemini CLI / Gemini SDK
-    "shell": "Bash", // Gemini variants seen in older builds
-    "bash": "Bash", // ditto
-    "command_execution": "Bash", // Codex JSONL item.type (defensive — Codex's hook
-    //   uses tool_name, not item.type, but hook input
-    //   shape may evolve)
-    "run_command": "Bash", // Antigravity CLI (`agy`) — args {CommandLine, Cwd};
-    //   the field mapping lives in hooks/dialects.ts,
-    //   since an alias can rename a tool but not its args
-    // File mutation
-    "Write": "Write",
-    "Edit": "Edit",
-    "MultiEdit": "Edit", // Claude Code — {file_path, edits[]}
-    "NotebookEdit": "Edit", // Claude Code — {notebook_path, ...}; see classify()
-    "write_file": "Write", // Gemini CLI / SDK
-    "replace": "Edit", // Gemini CLI / SDK
-    "edit_file": "Edit", // Gemini variant
-    // Antigravity CLI (`agy`). A tool absent from this table falls through to
-    // "not currently gated" — silently, with no error anywhere. v2.9.1/2.9.2
-    // shipped with only `run_command` mapped, so every file-mutating
-    // Antigravity tool bypassed protected-path enforcement entirely, including
-    // writes to `.obsidian/plugins/gryphon/`. Caught by the 04-hook-spawn E2E
-    // spec, not by any unit test. Argument-field mapping is separate and lives
-    // in hooks/common/dialects.ts — an alias renames a tool, not its args, and
-    // BOTH are required for a tool to actually be gated.
-    "write_to_file": "Write", // {TargetFile, CodeContent} — captured live
-    "replace_file_content": "Edit", // {TargetFile, ReplacementContent} — captured live
-    "propose_code": "Edit",
-    "edit_notebook": "Edit",
-    // Mutates a path, so it belongs on the file branch: this is what makes
-    // protected-path rules apply to a directory deletion.
-    "delete_directory": "Write",
-    // Enumerated from the agy v1.1.8 binary's embedded tool identifiers
-    // (2026-07-30), not from docs — agy publishes no tool list. Its surface is
-    // far larger than the handful seen in live turns and varies by mode, so
-    // these are mapped defensively: an extra alias costs nothing, a missing one
-    // is a silent bypass. Argument fields for these are NOT live-captured; the
-    // generic path/command derivation in hooks/common/dialects.ts is what makes
-    // them gate correctly without a per-tool mapper.
-    "shell_exec": "Bash",
-    "send_command_input": "Bash", // drives an already-running command
-    "execute_notebook": "Bash", // arbitrary code execution
-    "execute_browser_javascript": "Bash",
-    "restart_dev_server": "Bash",
-    "install_applet_dependencies": "Bash", // package installs — see blockPackageInstall
-    "install_applet_package": "Bash",
-    "notebook_edit": "Edit", // binary carries BOTH spellings of this
-    "write_blob": "Write",
-    "move": "Write", // mutates destination, removes source
-    // File read — not protected (read-only tools never reach the
-    // permission gate), but listed here so downstream consumers like
-    // chat-view's status-line normalizer can map snake_case SDK names
-    // ("read_file") to a single user-friendly label ("Reading...")
-    // without leaking the raw identifier into the UI.
-    "Read": "Read",
-    "read_file": "Read", // OpenAI / Gemini SDK
-    "view_file": "Read", // Antigravity — {AbsolutePath}, captured live
-    "Glob": "Glob",
-    "glob": "Glob",
-    "list_directory": "Glob", // Gemini SDK
-    "list_files": "Glob", // OpenAI / common variant
-    "list_dir": "Glob", // Antigravity — {DirectoryPath}, captured live
-    "Grep": "Grep",
-    "grep": "Grep",
-    "search_files": "Grep", // common SDK variant
-    "search_file_content": "Grep", // Gemini SDK
-    "grep_search": "Grep", // Antigravity — {Query, SearchPath}, captured live
-};
+const { TOOL_ALIASES } = require("./tool-aliases");
 function classify(tool, input, ctx) {
     if (!tool || !input)
         return null;
@@ -204,11 +126,11 @@ function classify(tool, input, ctx) {
     // for ANY tool that isn't read-only, so a tool missing from TOOL_ALIASES
     // can't write it by default. Path-like and command-like arguments are
     // both checked, nested ones included (issue #28).
-    if (!READ_ONLY_TOOLS.has(canonical) && canonical !== "Bash" && canonical !== "PowerShell") {
-        const store = _classifyApprovalsStoreWrite(canonical, input, ctx);
-        if (store)
-            return store;
-    }
+    // Issue #30: one rule, shared with the store-guard hook (approvalsStoreVerdict).
+    const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
+    const store = approvalsStoreVerdict(tool, input, { cwd: vaultRoot });
+    if (store)
+        return _approvalsStoreVerdict(canonical, store.what);
     if (canonical === "Write" || canonical === "Edit") {
         // Master toggle — when the user turns off Protected file paths
         // entirely, return null so gate() treats it as non-protected and
@@ -229,9 +151,6 @@ function classify(tool, input, ctx) {
     // CC's cwd-restriction happened to catch obvious cases but missed any
     // destructive command targeting a path inside the vault.
     if (canonical === "Bash" || canonical === "PowerShell") {
-        const store = _classifyApprovalsStoreCommand(canonical, input);
-        if (store)
-            return store;
         if (security.protectedCommandsEnabled === false)
             return null;
         return _classifyCommand(canonical, input, ctx, security);
@@ -260,8 +179,9 @@ function classify(tool, input, ctx) {
  * The store lives OUTSIDE the vault, so it can't be a vault-relative
  * DEFAULT_PROTECTED_PATHS entry (those resolve inside the vault and are
  * user-toggleable). No per-pattern or master toggle switches this off.
- * With Protected Mode off there are no hooks, but the claude-code provider
- * still emits the store's permissions.deny rules.
+ * With Protected Mode off the claude-code provider still emits the store's
+ * permissions.deny rules, and codex / gemini / antigravity get the
+ * store-guard hook (issue #30), which runs this same rule out of process.
  */
 const APPROVALS_STORE_RISK = "This is where Gryphon records which of a vault's MCP servers you've approved to run. " +
     "A change here could approve a server on your behalf — and an MCP server is a program " +
@@ -282,142 +202,6 @@ function _approvalsStoreVerdict(tool, what) {
             `${what}\n` +
             `Matched pattern: gryphon MCP approval store`,
     };
-}
-/** Read-only tools: never gated, even when they name the store. */
-const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
-/** Argument names that may carry a target path, across CLIs and MCP tools. */
-// Content-ish names (`new_source`, `content`, `new_string`) are left out on
-// purpose: a note that MENTIONS the store path must not raise the modal.
-const PATH_ARG_RE = /path|file|target|dest|dst|dir|uri|url|location|cwd|^(?:source|src|to|from|output|out|folders?)$/i;
-/** Names of a directory that relative path arguments may resolve against. */
-const BASE_ARG_RE = /cwd|dir(?:ectory)?s?$|folders?$|^(?:root|base)$/i;
-/**
- * Argument names that carry a command line (issue #28), checked lexically
- * like Bash. Matched per word of the key, so `shellCommand`, `run_cmd` and
- * `tool-args` all count.
- */
-const COMMAND_WORDS = new Set(["command", "cmd", "cmdline", "script", "code", "args", "argv", "shell", "exec", "program"]);
-function _isCommandKey(key) {
-    return key.replace(/([a-z\d])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z\d]+/).some((w) => COMMAND_WORDS.has(w));
-}
-/** The first, cheap pass. A call past these bounds is walked again in full. */
-const WALK_MAX_DEPTH = 4;
-const WALK_MAX_STRINGS = 256;
-/** The full pass's caps: tool input past them is refused, not waved through. */
-const WALK_HARD_DEPTH = 64;
-const WALK_HARD_STRINGS = 10000;
-const MAX_BASES = 32;
-/**
- * The string arguments of a tool call as `[key, value]` pairs, walked to a
- * bounded depth and count. An array of strings stays one entry under the
- * key that holds it (so `args: ["sh","-c","…"]` can be read as one command
- * line); an object's properties go under their own keys, so
- * `{edits: [{file_path}]}` reaches `file_path`. `truncated` is set when a
- * bound cut the walk short — the caller must not read that as "clean".
- */
-function _argStrings(input, maxDepth, maxStrings) {
-    const pairs = [];
-    let budget = maxStrings;
-    let truncated = false;
-    const walk = (key, v, depth) => {
-        if (budget <= 0 || depth > maxDepth) {
-            truncated = true;
-            return;
-        }
-        if (typeof v === "string") {
-            if (v) {
-                budget--;
-                pairs.push([key, v]);
-            }
-            return;
-        }
-        if (Array.isArray(v)) {
-            const all = v.filter((x) => typeof x === "string" && !!x);
-            const strs = all.slice(0, budget);
-            if (strs.length < all.length)
-                truncated = true;
-            if (strs.length > 0) {
-                budget -= strs.length;
-                pairs.push([key, strs]);
-            }
-            for (const x of v)
-                if (x && typeof x === "object")
-                    walk(key, x, depth + 1);
-            return;
-        }
-        if (v && typeof v === "object")
-            for (const [k, x] of Object.entries(v))
-                walk(k, x, depth + 1);
-    };
-    for (const [k, v] of Object.entries(input))
-        walk(k, v, 1);
-    return { pairs, truncated };
-}
-/**
- * A path argument → the absolute paths it could name: resolved against the
- * vault and against every cwd-like argument of the same call. `file:` URLs
- * are converted; any other `scheme:` value is still resolved as a path
- * (harmless for a real URL, and `ab:/../../…` is a relative path to a tool).
- */
-function _resolveArgPaths(value, bases) {
-    if (/^file:/i.test(value)) {
-        try {
-            return [require("url").fileURLToPath(value)];
-        }
-        catch (_) {
-            return [];
-        }
-    }
-    if (/^~(?=$|[\\/])/.test(value))
-        return [path.join(os.homedir(), value.slice(1))];
-    if (path.isAbsolute(value))
-        return [value];
-    return bases.map((b) => path.resolve(b, value));
-}
-function _classifyApprovalsStoreWrite(tool, input, ctx) {
-    const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
-    // Cheap pass first; past its bounds (padding, deep nesting) walk the whole
-    // call, so the bound limits work, never coverage.
-    let walked = _argStrings(input, WALK_MAX_DEPTH, WALK_MAX_STRINGS);
-    if (walked.truncated) {
-        walked = _argStrings(input, WALK_HARD_DEPTH, WALK_HARD_STRINGS);
-        if (walked.truncated)
-            return _approvalsStoreVerdict(tool, `Arguments:       too large to inspect`);
-    }
-    const vaultBases = vaultRoot ? [vaultRoot] : [];
-    const baseSet = new Set(vaultBases);
-    for (const [key, value] of walked.pairs) {
-        if (!BASE_ARG_RE.test(key))
-            continue;
-        for (const v of Array.isArray(value) ? value : [value])
-            for (const b of _resolveArgPaths(v, vaultBases))
-                baseSet.add(b);
-    }
-    if (baseSet.size > MAX_BASES)
-        return _approvalsStoreVerdict(tool, `Arguments:       too many directories to inspect`);
-    const bases = [...baseSet];
-    for (const [key, value] of walked.pairs) {
-        if (PATH_ARG_RE.test(key)) {
-            for (const v of Array.isArray(value) ? value : [value]) {
-                if (_resolveArgPaths(v, bases).some((abs) => isApprovalsStorePath(abs)))
-                    return _approvalsStoreVerdict(tool, `Target path:     ${v}`);
-            }
-        }
-        if (_isCommandKey(key)) {
-            const raw = Array.isArray(value) ? value.join(" ") : value;
-            if (mentionsApprovalsStore(_normalizeForMatch(raw)))
-                return _approvalsStoreVerdict(tool, `Command:         ${raw}`);
-        }
-    }
-    return null;
-}
-function _classifyApprovalsStoreCommand(tool, input) {
-    const raw = input && typeof input.command === "string" ? input.command : "";
-    if (!raw)
-        return null;
-    return mentionsApprovalsStore(_normalizeForMatch(raw))
-        ? _approvalsStoreVerdict(tool, `Command:         ${raw}`)
-        : null;
 }
 function _classifyFilePath(tool, input, ctx, security) {
     const vaultRoot = ctx && ctx.vaultRoot;
@@ -466,18 +250,12 @@ function _classifyFilePath(tool, input, ctx, security) {
     }
     return null;
 }
-// Normalize command strings before regex matching. NFKC collapses
-// Unicode compatibility characters (fullwidth `ｒｍ` → ASCII `rm`),
-// and the second pass strips zero-width characters that would otherwise
-// break `\brm\b` style boundaries ("r​m" with a ZWSP in the middle).
-// Cyrillic homoglyphs (`рm`) use distinct codepoints — a confusables
-// fold table could close that gap, but the threat profile doesn't
-// justify the table's bundle-size cost. See docs/adr/0001.
-function _normalizeForMatch(s) {
-    return String(s)
-        .normalize("NFKC")
-        .replace(/[​-‍﻿⁠]/g, "");
-}
+// Command / path normalisation (NFKC + zero-width strip) is shared with the
+// store rule — see mcp-approvals.normalizeForMatch. Cyrillic homoglyphs
+// (`рm`) use distinct codepoints — a confusables fold table could close
+// that gap, but the threat profile doesn't justify the table's bundle-size
+// cost. See docs/adr/0001.
+const _normalizeForMatch = normalizeForMatch;
 function _classifyCommand(tool, input, ctx, security) {
     const rawCommand = input && typeof input.command === "string" ? input.command : "";
     if (!rawCommand)

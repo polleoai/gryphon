@@ -30,10 +30,26 @@ const utils = require("../src/utils");
 const origCodex = utils.findCodexBinary;
 const origGemini = utils.findGeminiBinary;
 const origClaude = utils.findClaudeBinary;
+
+// #30: every resolved binary is validated (absolute, an executable file,
+// outside the vault) before it's probed or spawned, so a stubbed detection
+// result must exist. fake(p) materializes an executable at <tmp>/<p>.
+const _FAKE_ROOT = require("fs").realpathSync(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "g30-fake-bins-")));
+function fake(p) {
+  if (!p) return p;
+  const fsm = require("fs"); const pm = require("path");
+  const full = pm.join(_FAKE_ROOT, p);
+  if (!fsm.existsSync(full)) {
+    fsm.mkdirSync(pm.dirname(full), { recursive: true });
+    const sig = pm.basename(p) === "claude" ? " (Claude Code)" : "";
+    fsm.writeFileSync(full, `#!/bin/sh\necho "9.9.9${sig}"\n`, { mode: 0o755 });
+  }
+  return full;
+}
 function stubBinaries({ codex = null, gemini = null, claude = null } = {}) {
-  utils.findCodexBinary = () => codex;
-  utils.findGeminiBinary = () => gemini;
-  utils.findClaudeBinary = () => claude;
+  utils.findCodexBinary = () => fake(codex);
+  utils.findGeminiBinary = () => fake(gemini);
+  utils.findClaudeBinary = () => fake(claude);
 }
 function restoreBinaries() {
   utils.findCodexBinary = origCodex;

@@ -69,8 +69,17 @@
  *                            inputs: until the user confirms them on this
  *                            machine (toolbar, Settings, the one-time
  *                            prompt), protections stay on.
- *   - securityHostId       — issue #29. The store namespace when the host
- *                            has no `manifest.id`.
+ *   - securityHostId       — issue #29; REQUIRED since #30. The store
+ *                            namespace for this host's confirmed security
+ *                            values and CLI paths. There is no manifest.id
+ *                            fallback (the manifest is vault-resident):
+ *                            without it, protections stay on and security
+ *                            writes raise a visible error. Pass the id your
+ *                            plugin used before to keep its stored values.
+ *   - securityOverrides.paths — issue #30. CLI binaries pinned in code
+ *                            ({ claudePath, codexPath, geminiCliPath,
+ *                            antigravityPath }); they win over this
+ *                            machine's confirmed paths and detection.
  *
  * This file knows nothing about any specific consuming plugin's domain.
  * All coupling comes through the options bag; consumers wire their own
@@ -883,7 +892,12 @@ class GryphonChatView extends ItemView {
         this.onBeforeSend = options.onBeforeSend || null;
         // Issue #29: consumer capability constraints + store namespace.
         this.securityOverrides = _securityStore.sanitizeSecurityOverrides(options.securityOverrides);
+        this.securityPathOverrides = _securityStore.sanitizeCliPathOverrides(options.securityOverrides && options.securityOverrides.paths);
         this.securityHostId = typeof options.securityHostId === "string" ? options.securityHostId : undefined;
+        if (!this.securityHostId) {
+            console.warn("[gryphon] GryphonChatView: no securityHostId in the view options. Protections stay on and " +
+                "security settings can't be saved for this host until one is set.");
+        }
         securityUi.installSecurityStoreErrorNotice();
         this.viewType = options.viewType || "gryphon-view";
         this.viewDisplayText = options.displayText || "Gryphon";
@@ -1366,7 +1380,73 @@ class GryphonChatView extends ItemView {
      * this; the host's settings object only supplies suggestions.
      */
     _effectiveSecurity() {
-        return _securityStore.effectiveSecuritySettings((this.plugin && this.plugin.settings) || {}, this._securityScope(), this.securityOverrides);
+        return _securityStore.effectiveSecuritySettings((this.plugin && this.plugin.settings) || {}, this._securityScope(), this._overridesWithPaths());
+    }
+    /** Issue #30: the consumer's overrides plus its code-set CLI paths. */
+    _overridesWithPaths() {
+        return { ...(this.securityOverrides || {}), paths: this.securityPathOverrides || {} };
+    }
+    /**
+     * Issue #30: the factory-facing scope for CLI path resolution — this
+     * view's host id and code-set path overrides. The factory resolves each
+     * kind it needs through `resolveCliPath` with exactly these.
+     */
+    _cliPathScope() {
+        return { securityHostId: this.securityHostId, securityOverrides: { paths: this.securityPathOverrides || {} } };
+    }
+    /**
+     * Issue #30: every CLI kind's binary, resolved for THIS view (its host id
+     * and overrides; never the host's data.json). A stored path that no longer
+     * validates falls back to detection and is reported once.
+     */
+    _resolveCliPaths() {
+        const { resolveCliPath } = require("@gryphon/protect");
+        const out = {};
+        for (const kind of ["claude-code", "codex-cli", "gemini-cli", "antigravity-cli"]) {
+            const r = resolveCliPath(kind, {
+                app: this.app, hostPlugin: this.plugin, hostId: this.securityHostId,
+                overrides: { paths: this.securityPathOverrides || {} },
+            });
+            out[kind] = r.path || null;
+            if (r.rejected)
+                securityUi.reportCliPathRejected(r.rejected);
+        }
+        return out;
+    }
+    /** Issue #30: the scope plus the resolved map — what a spawn is built from. */
+    _cliPathOptions() {
+        return { ...this._cliPathScope(), cliPaths: this._resolveCliPaths() };
+    }
+    /**
+     * Issue #30 (G2): the turn-window tamper check. With Protected Mode off
+     * and no hook (or a CLI that ignores hooks), an agent could rewrite
+     * Gryphon's security settings mid-reply. At turn end, any change that
+     * wasn't Gryphon's own and that WEAKENS a setting is undone, and the user
+     * is told which provider's turn it happened in. Never throws.
+     */
+    _beginTurnTamperWindow() {
+        try {
+            return _securityStore.snapshotSecurityStore();
+        }
+        catch (e) {
+            console.error("[gryphon] security tamper check couldn't start:", e);
+            return null;
+        }
+    }
+    _endTurnTamperWindow(before, kind) {
+        if (!before)
+            return;
+        try {
+            const r = _securityStore.checkSecurityStoreTamper(before);
+            if (!r.reverted.length)
+                return;
+            securityUi.reportSecurityTamperReverted(r.reverted, _providerLabelFor(kind) || "the assistant");
+            this.refreshToolbarLabels();
+            this._updateRestApiChip();
+        }
+        catch (e) {
+            console.error("[gryphon] security tamper check failed:", e);
+        }
     }
     /**
      * Issue #29 public API: set a weakening key from a user gesture on this
@@ -1406,7 +1486,7 @@ class GryphonChatView extends ItemView {
     _maybePromptVaultSecurity(force = false) {
         try {
             return securityUi.maybePromptVaultSecurity(this.app, this.plugin, {
-                app: this.app, hostId: this.securityHostId, overrides: this.securityOverrides, force,
+                app: this.app, hostId: this.securityHostId, overrides: this._overridesWithPaths(), force,
                 onDone: () => { this.refreshToolbarLabels(); this._updateRestApiChip(); },
             });
         }
@@ -1438,7 +1518,7 @@ class GryphonChatView extends ItemView {
             // "claude-code" sentinel: a live process only exists when createProvider
             // succeeded, which means getActiveProviderKind already returned a real
             // kind; baking a sentinel here could only desync the two sides.
-            kind: getActiveProviderKind(this.plugin) || s.providerPreference || null,
+            kind: getActiveProviderKind(this.plugin, this._cliPathScope()) || s.providerPreference || null,
             model: s.model || null,
             effort: s.effort || null,
             permissionMode: this._effectiveSecurity().permissionMode || null,
@@ -1696,7 +1776,7 @@ class GryphonChatView extends ItemView {
         //   \u2022 openai-api \u2192 OpenAI dropdown options (Stage 2 shipped)
         //   \u2022 google-api \u2192 still adapter-pending, Notice instead of menu (Stage 3)
         const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-        const kind = getActiveProviderKind(this.plugin) ||
+        const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
             this.plugin.settings.providerPreference;
         const modelList = _modelOptionsForKind(kind);
         const menu = new Menu();
@@ -1742,7 +1822,7 @@ class GryphonChatView extends ItemView {
         if (!this.permBtn)
             return;
         const eff = this._effectiveSecurity();
-        const warn = !eff.scopeAvailable || eff.unconfirmed.length > 0;
+        const warn = !eff.scopeAvailable || eff.unconfirmed.length > 0 || (eff.unconfirmedPaths || []).length > 0;
         this.permBtn.setText(labelFor(PERMS, eff.permissionMode) + (warn ? " \u26a0" : "") + " \u25be");
         // YOLO highlight class \u2014 toggled to match the active mode each refresh.
         this.permBtn.classList.toggle("gryphon-perm-yolo", eff.permissionMode === "bypassPermissions");
@@ -2277,7 +2357,7 @@ class GryphonChatView extends ItemView {
                     // Validate against the ACTIVE provider's list, not Anthropic's —
                     // same source as the toolbar menu (see _modelOptionsForKind).
                     const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-                    const kind = getActiveProviderKind(this.plugin) ||
+                    const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                         this.plugin.settings.providerPreference;
                     this._applyDirectSetting("model", text.trim().substring(7).trim(), _modelOptionsForKind(kind), this.modelBtn, "Model");
                 } },
@@ -2933,7 +3013,8 @@ class GryphonChatView extends ItemView {
             contextPct: ctxPct,
             windowSize,
             hasApiKey: !!(settings.anthropicApiKey || (typeof process !== "undefined" && process.env && process.env.ANTHROPIC_API_KEY)),
-            hasClaudeCli: !!settings.claudePath,
+            // Issue #30: the binary a claude-code spawn would actually run.
+            claudeCliPath: this._resolveCliPaths()["claude-code"],
         };
     }
     /**
@@ -3030,7 +3111,7 @@ class GryphonChatView extends ItemView {
             `Provider: ${d.provider} (preference: ${settings.providerPreference || "auto"})`,
             `Model: ${d.model} · Effort: ${d.effort} · Permissions: ${d.permissionMode}`,
             `Anthropic API key: ${d.hasApiKey ? "present" : "NOT SET"}`,
-            `Claude Code path: ${d.hasClaudeCli ? settings.claudePath : "(not configured)"}`,
+            `Claude Code path: ${d.claudeCliPath || "(not found)"}`,
             `Plugin directory: ${pluginDir || "(unknown)"}`,
             ``,
             `**Hook scripts**`,
@@ -4891,7 +4972,7 @@ class GryphonChatView extends ItemView {
      * changes hide it without requiring a reload.
      */
     _renderWelcomePanelIfNeeded() {
-        const provider = createProvider(this.plugin, this.app.vault.adapter.basePath, { hostAdapter: this.plugin.hostAdapter });
+        const provider = createProvider(this.plugin, this.app.vault.adapter.basePath, { hostAdapter: this.plugin.hostAdapter, ...this._cliPathScope() });
         if (provider)
             return; // a provider can resolve — nothing to show
         // Bug #23 fix: skip the welcome panel when the user already has
@@ -4907,7 +4988,7 @@ class GryphonChatView extends ItemView {
         // for first-time users with an empty chat.
         if (this.messages && this.messages.length > 0)
             return;
-        const detected = detectAvailable(this.plugin);
+        const detected = detectAvailable(this.plugin, this._cliPathScope());
         const panel = this.messagesEl.createDiv("gryphon-welcome");
         this._welcomePanelEl = panel;
         panel.createEl("h2", { text: "Welcome to Gryphon" });
@@ -5113,7 +5194,7 @@ class GryphonChatView extends ItemView {
             this._welcomePanelEl = null;
             return;
         }
-        const provider = createProvider(this.plugin, this.app.vault.adapter.basePath, { hostAdapter: this.plugin.hostAdapter });
+        const provider = createProvider(this.plugin, this.app.vault.adapter.basePath, { hostAdapter: this.plugin.hostAdapter, ...this._cliPathScope() });
         if (provider) {
             this._welcomePanelEl.remove();
             this._welcomePanelEl = null;
@@ -5815,7 +5896,7 @@ class GryphonChatView extends ItemView {
         if (cls.kind !== "availability") {
             throw a.error;
         }
-        const fb = resolveFallback(this.plugin);
+        const fb = resolveFallback(this.plugin, this._cliPathScope());
         // Refine the construct-null reason so the reported signal names WHY the
         // active provider couldn't be built (e.g. an API kind with no key).
         const reason = cls.reason === "construct-null"
@@ -6032,6 +6113,10 @@ class GryphonChatView extends ItemView {
         // Issue #29: one frozen security snapshot per send — the CLI spawn
         // snapshots it; API/SDK providers enforce from it on this send.
         const security = this._effectiveSecurity();
+        // Issue #30 (G2): hash Gryphon's security settings now; the finally
+        // below undoes any weakening change made during the reply that Gryphon
+        // didn't write itself.
+        const tamperBefore = this._beginTurnTamperWindow();
         if (isNewProcess) {
             this._logSecurityAudit(security);
             // v0.5.13: pass any pending compaction summary as a dedicated
@@ -6105,6 +6190,8 @@ class GryphonChatView extends ItemView {
                 claudeCodeScope: this._resolveClaudeCodeScope(),
                 initialHistory: sdkInitialHistory,
                 hostAdapter: this.plugin.hostAdapter,
+                // Issue #30: binaries resolved for this view — never data.json.
+                ...this._cliPathOptions(),
             };
         }
         if (isNewProcess && this.streamingEl) {
@@ -6112,7 +6199,7 @@ class GryphonChatView extends ItemView {
             // say "Connecting to Claude". Same naming convention as the
             // approve/deny modal and the toolbar Model button.
             const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-            const kind = getActiveProviderKind(this.plugin) ||
+            const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                 this.plugin.settings.providerPreference;
             const assistant = (kind === "openai-api" || kind === "codex-cli") ? "Codex" :
                 (kind === "google-api" || kind === "gemini-cli" ||
@@ -6301,6 +6388,7 @@ class GryphonChatView extends ItemView {
                 extraArgsByProvider: this.extraProcessArgsByProvider,
                 claudeCodeScope: this._resolveClaudeCodeScope(),
                 hostAdapter: this.plugin.hostAdapter,
+                ...this._cliPathOptions(),
             };
             // The re-runnable construct+wire+send unit driven by _runFailover.
             // `modelOverride === undefined` ⇒ the active attempt (settings-driven,
@@ -6356,7 +6444,7 @@ class GryphonChatView extends ItemView {
             // Resolve the active kind exactly as the spawn path does so the
             // same-kind failover guard reasons about the concrete provider.
             const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-            const activeKind = getActiveProviderKind(this.plugin) ||
+            const activeKind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                 this.plugin.settings.providerPreference;
             const decision = await this._runFailover(activeKind, attempt);
             if (this._connTimeout) {
@@ -6376,7 +6464,7 @@ class GryphonChatView extends ItemView {
                 if (lastUserMsg && lastUserMsg.role === "user") {
                     lastUserMsg.sessionId = null;
                 }
-                this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin) });
+                this._cleanupStreamingState({ bubbleText: explainUnavailable(this.plugin, this._cliPathScope()) });
                 // Mirror the pre-failover early-return: this turn failed, so the
                 // finally block must NOT auto-drain queued prompts (issue #7).
                 this._sendErroredThisTurn = true;
@@ -6651,6 +6739,7 @@ class GryphonChatView extends ItemView {
             this._sendErroredThisTurn = true;
         }
         finally {
+            this._endTurnTamperWindow(tamperBefore, getActiveProviderKindSafe(this));
             this.isStreaming = false;
             this.inputEl.focus();
             // Auto-compact takes priority over queued drain — if SDK context is
@@ -6670,6 +6759,16 @@ class GryphonChatView extends ItemView {
                 this._drainQueuedPrompts();
             }
         }
+    }
+}
+/** The provider kind a view is talking to, for a notice; null on failure. */
+function getActiveProviderKindSafe(view) {
+    try {
+        const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+        return getActiveProviderKind(view.plugin, view._cliPathScope()) || (view.plugin && view.plugin.settings && view.plugin.settings.providerPreference) || null;
+    }
+    catch (_) {
+        return null;
     }
 }
 module.exports = {

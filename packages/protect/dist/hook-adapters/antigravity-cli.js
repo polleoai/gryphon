@@ -49,12 +49,22 @@ const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
 const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
 const KIND = "antigravity-cli";
+const OWNER_RE = /gryphon-owner=([0-9a-f]{16,})/;
 /**
  * Top-level key we own inside the shared hooks.json. Antigravity keys hook
  * specs by name and merges across names, so this is our whole footprint.
  */
 const HOOK_KEY = "gryphon";
+/**
+ * Issue #30: store-guard-only installs use their OWN key. Two Obsidian
+ * windows share hooks.json; if a Protected-Mode-off spawn replaced the
+ * full-mode key, another window's live turn would drop from full gating to
+ * the store guard mid-reply. Antigravity merges handlers across keys, so
+ * both run and a deny from either blocks the tool.
+ */
+const STORE_GUARD_HOOK_KEY = "gryphon-store-guard";
 /**
  * The one location `agy` reads hooks from (see header). Not configurable.
  */
@@ -239,6 +249,43 @@ function _makeCommand(nodePath, scriptPath, ipcSocketPath) {
     return `${assigns} ${_shQuote(nodePath)} ${_shQuote(scriptPath)}`;
 }
 /**
+ * Issue #30: the store-guard command. POSIX: the quoted argv plus a trailing
+ * owner marker the script ignores. Windows: a shim (same quoting constraints
+ * as `_makeCommand` above) whose body runs the script and carries the
+ * marker in a `rem` line.
+ */
+function _makeStoreGuardCommand(nodePath, sg, owner) {
+    if (process.platform === "win32") {
+        for (const v of [nodePath, sg.scriptPath, sg.approvalsDir]) {
+            if (WIN_SHIM_UNSAFE.test(v)) {
+                console.warn(`[gryphon/antigravity-hooks] refusing to build the store-guard command: ` +
+                    `"${v}" contains a character that cannot be embedded in a cmd shim.`);
+                return null;
+            }
+        }
+        const shimPath = _winShimPath(`owner:${owner}`);
+        if (!shimPath)
+            return null;
+        const body = [
+            "@echo off",
+            `rem gryphon-owner=${owner}`,
+            `"${nodePath}" "${sg.scriptPath}" antigravity "${sg.approvalsDir}"`,
+            "",
+        ].join("\r\n");
+        try {
+            fs.mkdirSync(path.dirname(shimPath), { recursive: true });
+            fs.writeFileSync(shimPath, body, { mode: 0o600 });
+        }
+        catch (e) {
+            console.warn(`[gryphon/antigravity-hooks] could not write the hook shim ${shimPath}: ${e.message}`);
+            return null;
+        }
+        return shimPath;
+    }
+    const { command } = storeGuardCommand({ nodePath, scriptPath: sg.scriptPath, approvalsDir: sg.approvalsDir, dialect: "antigravity" });
+    return `${command} ${_shQuote(`gryphon-owner=${owner}`)}`;
+}
+/**
  * Build the hook spec stored under our key.
  *
  * Timeout is in SECONDS. Antigravity's embedded docs: "Execution timeout in
@@ -248,7 +295,15 @@ function _makeCommand(nodePath, scriptPath, ipcSocketPath) {
  * default-allow long before a user finishes reading the approve/deny modal
  * (the exact bug reported against Gemini on 2026-05-03).
  */
-function _buildHookEntry({ pluginDir, nodePath, ipcSocketPath = "" }) {
+function _buildHookEntry({ pluginDir, nodePath, ipcSocketPath = "", storeGuard, owner }) {
+    if (storeGuard) {
+        const cmd = _makeStoreGuardCommand(nodePath, storeGuard, String(owner || ""));
+        if (!cmd)
+            return null;
+        return {
+            PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: cmd, timeout: STORE_GUARD_TIMEOUT_S }] }],
+        };
+    }
     const hooksDir = path.join(pluginDir, "hooks");
     const pre = _makeCommand(nodePath, path.join(hooksDir, String(HOOK_FILES.PreToolUse)), ipcSocketPath);
     if (!pre)
@@ -291,6 +346,9 @@ function _socketOf(entry) {
         const m = cmd.match(/GRYPHON_PERMISSION_SOCKET=(?:'((?:[^']|'\\'')*)'|"([^"]*)")/);
         if (m)
             return (m[1] !== undefined ? m[1].replace(/'\\''/g, "'") : m[2]) || null;
+        const o = cmd.match(OWNER_RE);
+        if (o)
+            return `owner:${o[1]}`;
         // Windows: the command is a bare path to our shim, so the socket lives in
         // the shim's body. Without this the multi-vault guard silently degrades to
         // "no recoverable owner", and a cleanup would strip a live vault's key.
@@ -307,7 +365,10 @@ function _socketOfShim(cmd) {
     try {
         const body = fs.readFileSync(cmd, "utf8");
         const m = body.match(/set "GRYPHON_PERMISSION_SOCKET=([^"]*)"/);
-        return (m && m[1]) || null;
+        if (m && m[1])
+            return m[1];
+        const o = body.match(OWNER_RE);
+        return o ? `owner:${o[1]}` : null;
     }
     catch {
         return null; // shim already gone; caller treats as unknown owner
@@ -363,17 +424,17 @@ function _writeHooks(file, json) {
  * Merge our key into `file`. Exported unbound from the real path so tests
  * never touch the user's global config.
  */
-function _installInto(file, { pluginDir, nodePath, ipcSocketPath = "" }) {
+function _installInto(file, { pluginDir, nodePath, ipcSocketPath = "", storeGuard, owner }, key = storeGuard ? STORE_GUARD_HOOK_KEY : HOOK_KEY) {
     const existing = _readHooks(file);
     if (existing === null && fs.existsSync(file)) {
         // Unparseable — rule 3 in the header. Degrade rather than destroy.
         return false;
     }
     const json = existing || {};
-    const entry = _buildHookEntry({ pluginDir, nodePath, ipcSocketPath });
+    const entry = _buildHookEntry({ pluginDir, nodePath, ipcSocketPath, storeGuard, owner });
     if (!entry)
         return false; // unquotable path — degrade, never emit an injectable command
-    json[HOOK_KEY] = entry;
+    json[key] = entry;
     try {
         _writeHooks(file, json);
         return true;
@@ -394,14 +455,14 @@ function _installInto(file, { pluginDir, nodePath, ipcSocketPath = "" }) {
  * per-spawn cleanup only removes the key if it is still the one it installed.
  * Pass nothing to force removal (self-heal path).
  */
-function _uninstallFrom(file, ownedSocket) {
+function _uninstallFrom(file, ownedSocket, key = HOOK_KEY) {
     const json = _readHooks(file);
     if (!json)
         return false;
-    if (!(HOOK_KEY in json))
+    if (!(key in json))
         return false;
     if (ownedSocket) {
-        const installed = _socketOf(json[HOOK_KEY]);
+        const installed = _socketOf(json[key]);
         if (installed && installed !== ownedSocket) {
             // Another live Gryphon owns the key now. Leave it alone.
             return false;
@@ -409,14 +470,14 @@ function _uninstallFrom(file, ownedSocket) {
     }
     // Remove the shim too, before dropping the key that names it — otherwise
     // every spawn leaves a .cmd behind in LOCALAPPDATA forever.
-    const shim = json[HOOK_KEY]?.PreToolUse?.[0]?.hooks?.[0]?.command;
+    const shim = json[key]?.PreToolUse?.[0]?.hooks?.[0]?.command;
     if (typeof shim === "string" && /\.cmd$/i.test(shim)) {
         try {
             fs.unlinkSync(shim);
         }
         catch { /* already gone, or never ours */ }
     }
-    delete json[HOOK_KEY];
+    delete json[key];
     try {
         if (Object.keys(json).length === 0) {
             fs.unlinkSync(file);
@@ -436,17 +497,19 @@ function _uninstallFrom(file, ownedSocket) {
  * uninstall; named separately because the intent (and the logging) differ —
  * this one runs when we do NOT expect to own the key.
  */
-function _stripStaleFrom(file) {
-    const removed = _uninstallFrom(file);
+function _stripStaleFrom(file, key = HOOK_KEY) {
+    const removed = _uninstallFrom(file, undefined, key);
     if (removed) {
-        console.warn(`[gryphon/antigravity-hooks] cleared a stale "${HOOK_KEY}" hook left in ${file} ` +
+        console.warn(`[gryphon/antigravity-hooks] cleared a stale "${key}" hook left in ${file} ` +
             `by a previous session — your own \`agy\` runs are no longer gated by it`);
     }
     return removed;
 }
 /** Public self-heal entry point — call on plugin load. */
 function stripStaleHooks() {
-    return _stripStaleFrom(hooksFilePath());
+    const a = _stripStaleFrom(hooksFilePath());
+    const b = _stripStaleFrom(hooksFilePath(), STORE_GUARD_HOOK_KEY);
+    return a || b;
 }
 /**
  * Adapter contract — see hook-dispatcher.ts.
@@ -456,7 +519,30 @@ function stripStaleHooks() {
  *
  * @param _hooksFile test seam — overrides the global path.
  */
-function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, _hooksFile }) {
+function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, storeGuardOnly, _hooksFile }) {
+    if (storeGuardOnly) {
+        if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir)
+            return null;
+        const file = _hooksFile || hooksFilePath();
+        const owner = crypto.randomBytes(8).toString("hex");
+        // Only our own store-guard key: a full-mode key (another window's live
+        // guardrail) is never stripped or replaced from here.
+        _stripStaleFrom(file, STORE_GUARD_HOOK_KEY);
+        if (!_installInto(file, { nodePath, storeGuard: storeGuardOnly, owner }))
+            return null;
+        let done = false;
+        return {
+            env: { GRYPHON_HOOK_PROVIDER: KIND },
+            args: [],
+            cleanup: () => {
+                if (done)
+                    return;
+                done = true;
+                _uninstallFrom(file, `owner:${owner}`, STORE_GUARD_HOOK_KEY);
+            },
+            hooksFile: file,
+        };
+    }
     if (!pluginDir || !ipcSocketPath || !nodePath) {
         return null;
     }
@@ -470,7 +556,7 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, _hooksFile }) {
     // refuse to build a command for -- in every one of those cases there is no
     // guardrail, and the caller has to know that before it decides whether to
     // pass --dangerously-skip-permissions.
-    if (!_installInto(file, { pluginDir, nodePath, ipcSocketPath }))
+    if (!_installInto(file, { pluginDir: pluginDir, nodePath, ipcSocketPath }))
         return null;
     let cleaned = false;
     const cleanup = () => {
@@ -501,6 +587,7 @@ module.exports = {
     hooksFilePath,
     stripStaleHooks,
     HOOK_KEY,
+    STORE_GUARD_HOOK_KEY,
     _buildHookEntry,
     _socketOf,
     _installInto,

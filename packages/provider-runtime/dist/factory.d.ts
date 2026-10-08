@@ -48,8 +48,11 @@ import type { LLMProvider, ProviderKind } from "./types";
  * @param {string} [cwd]        — (legacy form) vault root for the provider
  * @param {object} [options={}] — (legacy form) per-turn options
  *
- *   `claudePath` is read from settings, NOT from options — it's a
- *   provider-selection input, not a per-turn override.
+ *   CLI binary paths are NEVER read from settings (issue #30): settings is
+ *   the vault's data.json. They come from `options.cliPaths` (resolved by
+ *   the chat view), else `resolveCliPath` (code override → this machine's
+ *   store for `options.securityHostId ?? plugin.securityHostId` →
+ *   detection).
  *
  * @returns {object|null}     — LLMProvider instance, or null if no
  *                              provider can be constructed (caller shows
@@ -89,7 +92,7 @@ declare function defaultModelForKind(kind: string): string;
  * `fallbackModel` is unset. Pure over `plugin.settings` + binary detection —
  * no chat-view dependency, so headless consumers can call it directly.
  */
-declare function resolveFallback(plugin: any): {
+declare function resolveFallback(plugin: any, options?: Record<string, any>): {
     kind: ProviderKind;
     model: string;
 } | null;
@@ -97,7 +100,7 @@ declare function resolveFallback(plugin: any): {
  * Returns a human-readable explanation of why createProvider returned
  * null, used by chat-view to surface a setup hint to the user.
  */
-declare function explainUnavailable(plugin: any): string;
+declare function explainUnavailable(plugin: any, options?: Record<string, any>): string;
 /**
  * Inspect what's available right now, regardless of the user's selected
  * preference. Used by the welcome panel to render adaptive guidance:
@@ -119,17 +122,17 @@ declare function explainUnavailable(plugin: any): string;
  *   apiKeySource: "settings" | "env" | null,
  * }}
  */
-declare function detectAvailable(plugin: any): {
-    cliPath: any;
+declare function detectAvailable(plugin: any, options?: Record<string, any>): {
+    cliPath: string | null;
     apiKey: string;
     apiKeySource: string | null;
     openaiKey: string;
     openaiKeySource: string | null;
     googleKey: string;
     googleKeySource: string | null;
-    codexPath: any;
-    geminiCliPath: any;
-    antigravityPath: any;
+    codexPath: string | null;
+    geminiCliPath: string | null;
+    antigravityPath: string | null;
 };
 /**
  * Returns the resolved provider kind that createProvider would pick for the
@@ -144,5 +147,5 @@ declare function detectAvailable(plugin: any): {
  * Returns one of: "claude-code" | "anthropic-api" | "openai-api" | "google-api" | null.
  * Mirrors createProvider's selection logic exactly (any divergence = bug).
  */
-declare function getActiveProviderKind(plugin: any): ProviderKind | null;
+declare function getActiveProviderKind(plugin: any, options?: Record<string, any>): ProviderKind | null;
 export { createProvider, explainUnavailable, detectAvailable, getActiveProviderKind, createProviderForKind, resolveFallback, defaultModelForKind, };

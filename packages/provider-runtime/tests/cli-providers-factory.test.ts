@@ -23,11 +23,27 @@ const origGemini = utils.findGeminiBinary;
 const origClaude = utils.findClaudeBinary;
 const origAntigravity = utils.findAntigravityBinary;
 
+
+// #30: every resolved binary is validated (absolute, an executable file,
+// outside the vault) before it's probed or spawned, so a stubbed detection
+// result must exist. fake(p) materializes an executable at <tmp>/<p>.
+const _FAKE_ROOT = require("fs").realpathSync(require("fs").mkdtempSync(require("path").join(require("os").tmpdir(), "g30-fake-bins-")));
+function fake(p) {
+  if (!p) return p;
+  const fsm = require("fs"); const pm = require("path");
+  const full = pm.join(_FAKE_ROOT, p);
+  if (!fsm.existsSync(full)) {
+    fsm.mkdirSync(pm.dirname(full), { recursive: true });
+    const sig = pm.basename(p) === "claude" ? " (Claude Code)" : "";
+    fsm.writeFileSync(full, `#!/bin/sh\necho "9.9.9${sig}"\n`, { mode: 0o755 });
+  }
+  return full;
+}
 function stubBinaries({ codex = null, gemini = null, claude = null, antigravity = null }) {
-  utils.findCodexBinary = () => codex;
-  utils.findGeminiBinary = () => gemini;
-  utils.findClaudeBinary = () => claude;
-  utils.findAntigravityBinary = () => antigravity;
+  utils.findCodexBinary = () => fake(codex);
+  utils.findGeminiBinary = () => fake(gemini);
+  utils.findClaudeBinary = () => fake(claude);
+  utils.findAntigravityBinary = () => fake(antigravity);
 }
 function restoreBinaries() {
   utils.findCodexBinary = origCodex;
@@ -60,7 +76,7 @@ test("createProvider returns CodexProvider when preference=codex-cli + binary de
       const plugin = { settings: { providerPreference: "codex-cli" } };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof CodexProvider);
-      assert.equal(p.codexPath, "/Applications/Codex.app/Contents/Resources/codex");
+      assert.equal(p.codexPath, fake("/Applications/Codex.app/Contents/Resources/codex"));
     } finally { restoreBinaries(); }
   });
 });
@@ -76,7 +92,7 @@ test("createProvider returns null when preference=codex-cli + no binary anywhere
   });
 });
 
-test("settings.codexPath overrides autodetect", () => {
+test("#30: settings.codexPath (the vault's data.json) is NOT a spawn input — detection wins", () => {
   freshEnv(() => {
     stubBinaries({ codex: "/auto/detected/codex" });
     try {
@@ -90,7 +106,7 @@ test("settings.codexPath overrides autodetect", () => {
       };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof CodexProvider);
-      assert.equal(p.codexPath, "/manual/path/codex");
+      assert.equal(p.codexPath, fake("/auto/detected/codex"));
     } finally { restoreBinaries(); }
   });
 });
@@ -108,7 +124,7 @@ test("createProvider returns GeminiCliProvider when preference=gemini-cli + bina
       const plugin = { settings: { providerPreference: "gemini-cli" } };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof GeminiCliProvider);
-      assert.equal(p.geminiPath, "/opt/homebrew/bin/gemini");
+      assert.equal(p.geminiPath, fake("/opt/homebrew/bin/gemini"));
     } finally { restoreBinaries(); }
   });
 });
@@ -124,7 +140,7 @@ test("createProvider returns null when preference=gemini-cli + no binary anywher
   });
 });
 
-test("settings.geminiCliPath overrides autodetect", () => {
+test("#30: settings.geminiCliPath (the vault's data.json) is NOT a spawn input — detection wins", () => {
   freshEnv(() => {
     stubBinaries({ gemini: "/auto/gemini" });
     try {
@@ -138,7 +154,7 @@ test("settings.geminiCliPath overrides autodetect", () => {
       };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof GeminiCliProvider);
-      assert.equal(p.geminiPath, "/manual/gemini");
+      assert.equal(p.geminiPath, fake("/auto/gemini"));
     } finally { restoreBinaries(); }
   });
 });
@@ -156,7 +172,7 @@ test("createProvider returns AntigravityCliProvider when preference=antigravity-
       const plugin = { settings: { providerPreference: "antigravity-cli" } };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof AntigravityCliProvider);
-      assert.equal(p.antigravityPath, "/Users/x/.local/bin/agy");
+      assert.equal(p.antigravityPath, fake("/Users/x/.local/bin/agy"));
     } finally { restoreBinaries(); }
   });
 });
@@ -172,7 +188,7 @@ test("createProvider returns null when preference=antigravity-cli + no binary an
   });
 });
 
-test("settings.antigravityPath overrides autodetect", () => {
+test("#30: settings.antigravityPath (the vault's data.json) is NOT a spawn input — detection wins", () => {
   freshEnv(() => {
     stubBinaries({ antigravity: "/auto/detected/agy" });
     try {
@@ -183,7 +199,7 @@ test("settings.antigravityPath overrides autodetect", () => {
       };
       const p = createProvider(plugin, "/tmp/vault");
       assert.ok(p instanceof AntigravityCliProvider);
-      assert.equal(p.antigravityPath, "/manual/path/agy");
+      assert.equal(p.antigravityPath, fake("/auto/detected/agy"));
     } finally { restoreBinaries(); }
   });
 });
@@ -230,7 +246,7 @@ test("detectAvailable surfaces antigravityPath alongside the other CLI paths", (
       const { detectAvailable } = require("../src/factory");
       const plugin = { settings: {} };
       const avail = detectAvailable(plugin);
-      assert.equal(avail.antigravityPath, "/Users/x/.local/bin/agy");
+      assert.equal(avail.antigravityPath, fake("/Users/x/.local/bin/agy"));
     } finally { restoreBinaries(); }
   });
 });
@@ -359,8 +375,8 @@ test("detectAvailable surfaces codexPath and geminiCliPath alongside SDK keys", 
       const { detectAvailable } = require("../src/factory");
       const plugin = { settings: {} };
       const avail = detectAvailable(plugin);
-      assert.equal(avail.codexPath, "/Applications/Codex.app/Contents/Resources/codex");
-      assert.equal(avail.geminiCliPath, "/opt/homebrew/bin/gemini");
+      assert.equal(avail.codexPath, fake("/Applications/Codex.app/Contents/Resources/codex"));
+      assert.equal(avail.geminiCliPath, fake("/opt/homebrew/bin/gemini"));
     } finally { restoreBinaries(); }
   });
 });

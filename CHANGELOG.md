@@ -4,6 +4,23 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.0] — 2026-10-07
+
+### Security
+
+- **Codex chats are protected again.** Recent versions of the Codex CLI only run safety checks that have been marked as trusted, and skip the rest without saying so. Gryphon's checks were never marked, so in Gryphon 2.10.4 and earlier, with a current Codex, **none of Gryphon's protections ran in Codex chats**: protected files and commands weren't checked and nothing asked for your approval. Gryphon now marks exactly the checks it adds as trusted, and only those. Claude Code and Antigravity chats were not affected. If you use Codex with Gryphon, please update.
+- **A vault can no longer choose which program Gryphon runs.** The locations of the Claude Code, Codex, Gemini and Antigravity programs were read from the vault's settings, so a shared or synced vault could point Gryphon at a program of its own. A custom location now counts only after you confirm it on this computer, and a location inside the vault is always refused. Gryphon also checks a location before it runs anything there, including the version check it does when it looks for these programs.
+- **Turning Protected Mode off no longer lets Codex, Gemini or Antigravity change Gryphon's security settings.** 2.10.4 gave this protection to Claude Code and the API providers; it now covers every command-line provider. After each reply, Gryphon also checks its security settings and undoes any weakening change made during that reply that Gryphon didn't make, with a notice saying so. With Protected Mode off an assistant can still run any command you could, including one that waits until the reply has ended; turning Protected Mode off remains a choice to trust the assistant with your computer.
+
+### Changed
+
+- **Custom program locations need a one-time confirmation.** If you had set a custom location for Claude Code, Codex, Gemini or Antigravity, Gryphon asks once whether to keep using it on this computer. Until you confirm, it uses the program it finds itself.
+
+### For plugins that build on Gryphon
+
+- **`securityHostId` is now required.** Pass it to the chat view and the settings renderer. Without it, security settings fall back to the protected defaults and changes to them are refused.
+- `resolveCliPath` is available from Gryphon's protection library, so a host plugin can find the same, checked program location Gryphon uses.
+
 ## [2.10.4] — 2026-10-07
 
 ### Security

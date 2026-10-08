@@ -31,28 +31,64 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * they read JSON from stdin, talk to the IPC server, write JSON to
  * stdout. This dispatcher is just the wiring layer between a CLI's
  * spawn-time config surface and Gryphon's existing decision pipeline.
+ *
+ * Two modes (issue #30):
+ *   full             — Protected Mode on. Needs the IPC server, the plugin
+ *                      dir, node and every hook script; installs them all.
+ *   store-guard-only — Protected Mode off, codex / gemini / antigravity.
+ *                      Needs only node and the materialized store-guard
+ *                      script (see store-guard.ts). Installs one deny-only
+ *                      PreToolUse / BeforeTool hook that refuses writes to
+ *                      Gryphon's own trust stores. No IPC, no plugin dir,
+ *                      so it works in an embedder that ships main.js only.
+ *                      claude-code keeps its permissions.deny globs instead.
  */
 const path = require("path");
 const fs = require("fs");
-const { findNodeBinary } = require("../../provider-runtime/dist/utils");
+const runtimeUtils = require("../../provider-runtime/dist/utils");
 const { getAdapter, listSupportedKinds } = require("./hook-adapters");
 const { securityInputsOf } = require("./security-settings-store");
+const { ensureStoreGuardScript } = require("./store-guard");
+const { approvalsDir } = require("./mcp-approvals");
 const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+function _protectedModeOn(plugin, security) {
+    // The spawn's security snapshot. Without one, securityInputsOf returns the
+    // protected defaults — never the vault's data.json (issue #30, G4).
+    return securityInputsOf({ security, plugin }).protectedMode !== false;
+}
 /**
- * Run pre-flight diagnostics. Returns `{ ok, reason, details }`.
- * `details` is the per-component breakdown so a debug log can show
- * exactly which check failed (matches the existing claude-code
- * `hookPreflight` shape).
+ * Run pre-flight diagnostics. Returns `{ ok, mode, reason, details,
+ * nodePath, storeGuardScript? }`. `details` is the per-component breakdown
+ * so a debug log can show exactly which check failed (matches the existing
+ * claude-code `hookPreflight` shape).
+ *
+ * Protected Mode on → mode "full" (IPC + plugin dir + node). Off → mode
+ * "store-guard-only": node + a verified store-guard script, and nothing
+ * else — `ipcServer` and `absolutePluginDir` are not consulted.
  */
 function _preflight(plugin, security) {
-    // Issue #29: the spawn's security snapshot, else the plugin's settings.
-    const protectedModeOn = securityInputsOf({ security, plugin }).protectedMode !== false;
+    const protectedModeOn = _protectedModeOn(plugin, security);
+    const nodePath = runtimeUtils.findNodeBinary();
+    const hasNodeBinary = !!nodePath;
+    if (!protectedModeOn) {
+        const details = { protectedModeOn, hasNodeBinary, storeGuardScript: null, storeGuardOk: false };
+        const mode = "store-guard-only";
+        if (!hasNodeBinary) {
+            return { ok: false, mode, reason: "no node binary found", details, nodePath };
+        }
+        const sg = ensureStoreGuardScript();
+        details.storeGuardOk = sg.ok;
+        if (!sg.ok) {
+            details.storeGuardError = sg.reason;
+            return { ok: false, mode, reason: "store-guard script unavailable", details, nodePath };
+        }
+        details.storeGuardScript = sg.path;
+        return { ok: true, mode, reason: null, details, nodePath, storeGuardScript: sg.path };
+    }
     const hasIpcServer = !!(plugin && plugin.ipcServer);
     const ipcServer = plugin && plugin.ipcServer;
     const ipcServerListening = !!(ipcServer && typeof ipcServer.isListening === "function" && ipcServer.isListening());
     const hasAbsolutePluginDir = !!(plugin && typeof plugin.absolutePluginDir === "function" && plugin.absolutePluginDir());
-    const nodePath = findNodeBinary();
-    const hasNodeBinary = !!nodePath;
     const details = {
         protectedModeOn,
         hasIpcServer,
@@ -60,19 +96,44 @@ function _preflight(plugin, security) {
         hasAbsolutePluginDir,
         hasNodeBinary,
     };
-    if (!protectedModeOn) {
-        return { ok: false, reason: "protectedMode is off", details, nodePath };
-    }
+    const mode = "full";
     if (!hasIpcServer || !ipcServerListening) {
-        return { ok: false, reason: "ipc server not listening", details, nodePath };
+        return { ok: false, mode, reason: "ipc server not listening", details, nodePath };
     }
     if (!hasAbsolutePluginDir) {
-        return { ok: false, reason: "plugin dir not resolvable", details, nodePath };
+        return { ok: false, mode, reason: "plugin dir not resolvable", details, nodePath };
     }
     if (!hasNodeBinary) {
-        return { ok: false, reason: "no node binary found", details, nodePath };
+        return { ok: false, mode, reason: "no node binary found", details, nodePath };
     }
-    return { ok: true, reason: null, details, nodePath };
+    return { ok: true, mode, reason: null, details, nodePath };
+}
+/**
+ * Issue #30: a store-guard that can't install is a visible degradation, not
+ * a console line. One notice per reason per process, through the host's
+ * adapter (the chat view's ObsidianHostAdapter, or any embedder's).
+ */
+const _storeGuardNoticed = new Set();
+function _noticeStoreGuardDegraded(kind, reason, options) {
+    const label = kind === "codex-cli" ? "Codex" : kind === "gemini-cli" ? "Gemini CLI" : kind === "antigravity-cli" ? "Antigravity" : kind;
+    const why = reason === "no node binary found"
+        ? "Gryphon couldn't find Node.js on this computer"
+        : `Gryphon couldn't write to its settings folder (${approvalsDir()})`;
+    const msg = `${why}, so with Protected Mode off it can't install the check that stops ${label} ` +
+        "from changing Gryphon's own security settings. Gryphon still undoes such changes " +
+        "when each reply ends. " +
+        (reason === "no node binary found"
+            ? "Install Node.js (or add it to your PATH) and restart Obsidian to restore the check."
+            : "Make that folder writable and restart Obsidian to restore the check.");
+    console.warn(`[gryphon/hooks] store guard unavailable for ${kind}: ${reason}`);
+    if (_storeGuardNoticed.has(reason))
+        return;
+    _storeGuardNoticed.add(reason);
+    const ha = options && options.hostAdapter;
+    try {
+        ha?.notify?.(msg, { level: "warn", timeoutMs: 15000 });
+    }
+    catch (_) { /* a notice must not break a spawn */ }
 }
 /**
  * Verify every hook script the adapter will reference actually exists
@@ -125,9 +186,44 @@ function prepareSpawn({ kind, plugin, options = {} }) {
             degradationReason: `no hook adapter for kind="${kind}" (supported: ${listSupportedKinds().join(", ")})`,
         };
     }
-    const pf = _preflight(plugin, options && options.security);
+    const security = options && options.security;
+    // claude-code with Protected Mode off keeps its permissions.deny globs
+    // (buildApprovalsStoreDenyGlobs) — it never gets the store-guard hook.
+    if (kind === "claude-code" && !_protectedModeOn(plugin, security)) {
+        return { ...empty, degradationReason: "protectedMode is off", details: { protectedModeOn: false }, mode: null };
+    }
+    const pf = _preflight(plugin, security);
     if (!pf.ok) {
-        return { ...empty, degradationReason: pf.reason, details: pf.details };
+        if (pf.mode === "store-guard-only")
+            _noticeStoreGuardDegraded(kind, String(pf.reason), options);
+        return { ...empty, degradationReason: pf.reason, details: pf.details, mode: pf.mode };
+    }
+    if (pf.mode === "store-guard-only") {
+        let extras;
+        try {
+            extras = adapter.buildSpawnExtras({
+                nodePath: pf.nodePath,
+                options,
+                storeGuardOnly: { scriptPath: pf.storeGuardScript, approvalsDir: approvalsDir() },
+            });
+        }
+        catch (e) {
+            return { ...empty, degradationReason: `adapter.buildSpawnExtras threw: ${e.message}`, details: pf.details, mode: pf.mode };
+        }
+        if (!extras) {
+            return { ...empty, degradationReason: `adapter "${kind}" couldn't install the store-guard hook`, details: pf.details, mode: pf.mode };
+        }
+        return {
+            ok: true,
+            mode: pf.mode,
+            env: extras.env || {},
+            args: extras.args || [],
+            cleanup: extras.cleanup || (() => { }),
+            degradationReason: null,
+            details: pf.details,
+            missing: [],
+            settingsFile: extras.settingsFile,
+        };
     }
     const pluginDir = plugin.absolutePluginDir();
     const missing = _verifyHookScripts(pluginDir);
@@ -171,6 +267,7 @@ function prepareSpawn({ kind, plugin, options = {} }) {
     }
     return {
         ok: true,
+        mode: pf.mode,
         env: extras.env || {},
         args: extras.args || [],
         cleanup: extras.cleanup || (() => { }),

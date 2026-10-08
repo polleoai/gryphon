@@ -196,8 +196,30 @@ function buildAntigravityDecision(decision: string, reason?: string | null) {
   );
 }
 
+/**
+ * A PreToolUse decision in the dialect the active CLI expects:
+ *   claude / codex (and absent): `{ hookSpecificOutput: { hookEventName,
+ *     permissionDecision, permissionDecisionReason } }`
+ *   gemini: flat `{ decision, reason }`, "ask" spelled "ask_user"
+ *   antigravity: flat `{ decision, reason }` — see buildAntigravityDecision
+ */
+function buildHookDecision(dialect: string | null | undefined, decision: string, reason?: string | null) {
+  if (dialect === "antigravity") return buildAntigravityDecision(decision, reason);
+  if (dialect === "gemini") {
+    const geminiDecision = decision === "ask" ? "ask_user" : decision;
+    return Object.assign({ decision: geminiDecision }, reason ? { reason } : {});
+  }
+  return {
+    hookSpecificOutput: Object.assign(
+      { hookEventName: "PreToolUse", permissionDecision: decision },
+      reason ? { permissionDecisionReason: reason } : {},
+    ),
+  };
+}
+
 module.exports = {
   normalizeAntigravityInput,
   buildAntigravityDecision,
+  buildHookDecision,
   ARG_MAPPERS,
 };

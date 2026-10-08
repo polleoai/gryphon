@@ -53,9 +53,12 @@ test("PACKAGE_INSTALL_COMMAND_PATTERNS is a non-empty string array", () => {
 
 const { buildDisallowedTools } = require("../src/cc-disallow-translator");
 
+const MUTED = { protectedCommandsEnabled: true, protectedCommandsDisabled: [], protectedCommandsCustom: [], blockPackageInstall: false };
+// #30 (G4): an explicit config; plugin.settings is never a security input.
 const ctxMuted = () => ({
   vaultRoot: "/tmp/vault",
-  plugin: { settings: { protectedCommandsEnabled: true, protectedCommandsDisabled: [], protectedCommandsCustom: [], blockPackageInstall: false } },
+  settings: MUTED,
+  plugin: { settings: MUTED },
 });
 
 test("blockPackageInstall=false mutes classify for installs", () => {
