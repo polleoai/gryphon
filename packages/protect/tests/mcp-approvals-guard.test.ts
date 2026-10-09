@@ -157,14 +157,14 @@ test("#28.2: store paths in arrays, nested edits, file:// URIs, cwd keys and com
   assert.match(p!.technicalDetail, /^Target path:/m);
 });
 
-test("#28.2: content, read-only tools, and athena's kb_add url (URL or local path) stay unprotected", () => {
+test("#28.2: content, read-only tools, and kbhost's kb_add url (URL or local path) stay unprotected", () => {
   for (const [tool, input] of [
     ["Write", { file_path: path.join(vault, "note.md"), content: "see ~/.config/gryphon/mcp-approvals.json" }],
     ["Edit", { file_path: path.join(vault, "note.md"), old_string: "a", new_string: `store is ${STORE}` }],
     ["Read", { file_path: STORE }],
-    ["mcp__athena__kb_add", { url: "https://example.com/x" }],
-    ["mcp__athena__kb_add", { url: "~/Documents/report.pdf" }],
-    ["mcp__athena__kb_add_content", { content: "cp x ~/.config/gryphon/", title: "notes" }],
+    ["mcp__kbhost__kb_add", { url: "https://example.com/x" }],
+    ["mcp__kbhost__kb_add", { url: "~/Documents/report.pdf" }],
+    ["mcp__kbhost__kb_add_content", { content: "cp x ~/.config/gryphon/", title: "notes" }],
   ] as const) {
     assert.equal(classify(tool, input as any, ctx()), null, `${tool} ${JSON.stringify(input)}`);
   }

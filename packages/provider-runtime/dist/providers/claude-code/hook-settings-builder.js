@@ -46,6 +46,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
+const { hookCommandLine } = require("../../shell-quote");
 const DEFAULT_HOOK_TIMEOUTS = {
     PreToolUse: 300, // user may read the modal for a while before deciding
     PostToolUse: 10, // automated, regex scan + IPC round-trip
@@ -132,14 +133,16 @@ function buildHookSettings(params) {
     //   spaces (e.g. "C:\Program Files\nodejs\...").
     const makeCommand = (scriptName) => {
         const scriptPath = path.join(hooksDir, scriptName);
+        // R43-1: real shell quoting — the script path is under the vault folder,
+        // whose name the vault's author chose.
         if (process.platform === "win32") {
             return {
-                command: `& '${nodePath}' '${scriptPath}'`,
+                command: hookCommandLine(nodePath, scriptPath, "win32"),
                 shell: "powershell",
             };
         }
         return {
-            command: `${JSON.stringify(nodePath)} ${JSON.stringify(scriptPath)}`,
+            command: hookCommandLine(nodePath, scriptPath),
         };
     };
     const makeEntry = (hookEvent, matcher) => {

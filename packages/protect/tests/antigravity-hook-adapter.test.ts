@@ -472,3 +472,27 @@ test("win32: the shim is written under LOCALAPPDATA, never a machine-wide dir", 
       "a machine-wide shim directory is a local privilege-escalation vector");
   });
 });
+
+test("R43-12: win32 store-guard shim lives inside Gryphon's guarded approvals dir", () => {
+  const { buildSpawnExtras, STORE_GUARD_HOOK_KEY } = require("../src/hook-adapters/antigravity-cli");
+  withWinShimDir((localDir: any) => {
+    const approvalsDir = fs.mkdtempSync(path.join(os.tmpdir(), "gryphon-agy-appr-"));
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "gryphon-agy-hj-")), "hooks.json");
+    try {
+      const x = buildSpawnExtras({
+        nodePath: "C:\\node\\node.exe",
+        storeGuardOnly: { scriptPath: "C:\\Users\\me\\AppData\\Roaming\\gryphon\\hooks\\store-guard-0123456789abcdef.js", approvalsDir },
+        _hooksFile: file,
+      });
+      assert.ok(x, "store-guard install");
+      const entry = JSON.parse(fs.readFileSync(file, "utf8"))[STORE_GUARD_HOOK_KEY];
+      const cmd = JSON.stringify(entry);
+      assert.ok(cmd.includes(path.join(approvalsDir, "agy-hooks").replace(/\\/g, "\\\\")) || cmd.includes(path.join(approvalsDir, "agy-hooks")),
+        `shim must be under the approvals dir ${approvalsDir}: ${cmd}`);
+      assert.ok(!cmd.includes(localDir), "not under LOCALAPPDATA any more");
+      x.cleanup();
+    } finally {
+      fs.rmSync(approvalsDir, { recursive: true, force: true });
+    }
+  });
+});

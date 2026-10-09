@@ -2,10 +2,10 @@
 
 The real source code lives under `packages/{plugin,protect,provider-runtime,provider-config}/src/...` since the v1.5.0 three-axis workspace split.
 
-The files in **this** directory are thin re-export shims at the **pre-v1.5 import paths** that consumer projects relied on. They exist solely to preserve the deep-import contract a downstream consumer (currently Athena) was depending on:
+The files in **this** directory are thin re-export shims at the **pre-v1.5 import paths** that consumer projects relied on. They exist solely to preserve the deep-import contract a downstream consumer (an embedding plugin) was depending on:
 
 ```js
-// Athena's src/athena/plugin.js (consumer-side)
+// an embedding plugin's own source (consumer-side)
 const { GryphonChatView }  = require("../../vendor/gryphon/src/chat-view");
 const { findClaudeBinary } = require("../../vendor/gryphon/src/utils");
 // ...
@@ -36,7 +36,7 @@ The standing model in `CLAUDE.md` says consumer projects "subclass `GryphonChatV
 
 The shims can be retired in a future major release when:
 
-1. Every known consumer (Athena, plus any future non-Obsidian consumer) has migrated its imports to the real package paths.
+1. Every known consumer (embedding plugins, plus any future non-Obsidian consumer) has migrated its imports to the real package paths.
 2. The breaking change is announced one minor version ahead in CHANGELOG.
 3. The drop happens on a major-version boundary (e.g., 2.0.0), not a minor.
 

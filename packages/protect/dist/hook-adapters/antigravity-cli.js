@@ -135,7 +135,7 @@ const WIN_SHIM_UNSAFE = /["%\r\n]/;
  * bare shim path and a short-path form both reached the IPC server and denied;
  * the inline form and a QUOTED shim path both failed with the error above.
  */
-function _winShimPath(ipcSocketPath) {
+function _winShimPath(ipcSocketPath, baseDir) {
     // Per-socket, so two vaults spawning concurrently write two shims and
     // neither can rewrite the other's out from under a live turn.
     const tag = crypto.createHash("sha256").update(ipcSocketPath).digest("hex").slice(0, 12);
@@ -152,10 +152,14 @@ function _winShimPath(ipcSocketPath) {
     // the only acceptable home. A spaced profile ("C:\Users\Jane Smith\...")
     // still needs a space-free command, which is what the 8.3 short name
     // provides — and an 8.3 alias of a per-user path is still per-user.
-    const base = process.env.LOCALAPPDATA;
-    if (!base)
+    // R43-12: the store-guard shim passes `baseDir` = Gryphon's approvals
+    // dir (%APPDATA%\gryphon, also per-user), so the store guard's own
+    // write-protection covers its launcher; the full-mode shim keeps
+    // %LOCALAPPDATA%.
+    const base = baseDir ? null : process.env.LOCALAPPDATA;
+    if (!baseDir && !base)
         return null;
-    const dir = path.join(base, "gryphon", "agy-hooks");
+    const dir = baseDir ? path.join(baseDir, "agy-hooks") : path.join(base, "gryphon", "agy-hooks");
     const direct = path.join(dir, `pretool-${tag}.cmd`);
     if (!direct.includes(" ") && !direct.includes('"'))
         return direct;
@@ -263,7 +267,7 @@ function _makeStoreGuardCommand(nodePath, sg, owner) {
                 return null;
             }
         }
-        const shimPath = _winShimPath(`owner:${owner}`);
+        const shimPath = _winShimPath(`owner:${owner}`, sg.approvalsDir);
         if (!shimPath)
             return null;
         const body = [

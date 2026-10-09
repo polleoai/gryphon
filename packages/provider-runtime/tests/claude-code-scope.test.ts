@@ -40,7 +40,7 @@ const { GRYPHON_SYSTEM_PROMPT_HINT } = require("@gryphon/protect");
 const { resolveClaudeCodeScope } = require("../src/providers/claude-code/scope");
 const mcpApprovals = require("@gryphon/protect").mcpApprovals;
 
-const ATHENA_SERVER = { command: "python3", args: ["-m", "athena.server"] };
+const KBHOST_SERVER = { command: "python3", args: ["-m", "kbhost.server"] };
 
 // Rev 2: vault servers only run when an approval stored OUTSIDE the vault
 // matches their exact spec. Tests inject the store reader; `approving`
@@ -117,14 +117,14 @@ test.after(() => { for (const s of spawns) s.proc.emit("close", 0); });
 // ── 1. argv builder ────────────────────────────────────────────────────
 
 test("#25 default: scoped sources, strict MCP, --mcp-config = exactly the APPROVED vault .mcp.json servers", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
-  const { args } = launch(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
+  const { args } = launch(vault, { _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
   // #27: no settings files at all (was project,local — vault hooks ran zero-click).
   assert.deepEqual(flagValues(args, "--setting-sources"), [""]);
   assert.ok(args.includes("--strict-mcp-config"));
   const [mcpFile] = valuesOf(args, "--mcp-config");
   assert.ok(mcpFile, "expected --mcp-config");
-  assert.deepEqual(readJson(mcpFile), { mcpServers: { athena: ATHENA_SERVER } });
+  assert.deepEqual(readJson(mcpFile), { mcpServers: { kbhost: KBHOST_SERVER } });
   if (process.platform !== "win32") assert.equal(fs.statSync(mcpFile).mode & 0o777, 0o600);
   assert.deepEqual(valuesOf(args, "--name"), [`Gryphon · ${path.basename(vault)}`]);
 });
@@ -145,10 +145,10 @@ test("#25 malformed .mcp.json: launch proceeds strict with zero servers AND show
 });
 
 test("#25/#27 inheritUserConfig + mcpServers:'inherit' (every vault server approved) → user sources, strict, approved servers listed, plus only the approval-store deny (review #6)", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
   const { args } = launch(vault, {
     claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
-    _mcpApprovals: approving({ athena: ATHENA_SERVER }),
+    _mcpApprovals: approving({ kbhost: KBHOST_SERVER }),
   });
   const [settingsFile] = valuesOf(args, "--settings");
   const [mcpFile] = valuesOf(args, "--mcp-config");
@@ -163,7 +163,7 @@ test("#25/#27 inheritUserConfig + mcpServers:'inherit' (every vault server appro
     "--strict-mcp-config",
     "--append-system-prompt", GRYPHON_SYSTEM_PROMPT_HINT,
   ]);
-  assert.deepEqual(readJson(mcpFile), { mcpServers: { athena: ATHENA_SERVER } });
+  assert.deepEqual(readJson(mcpFile), { mcpServers: { kbhost: KBHOST_SERVER } });
   const { buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
   assert.deepEqual(readJson(settingsFile), { permissions: { deny: buildApprovalsStoreDenyGlobs() } });
 });
@@ -174,16 +174,16 @@ test("#25 explicit settingSources wins; [] emits an empty source list", () => {
 });
 
 test("#25 mcpServers object merges with the project file unless includeProjectMcp:false", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
   const extra = { other: { command: "x" } };
-  const a = launch(vault, { claudeCodeScope: { mcpServers: extra }, _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
-  assert.deepEqual(Object.keys(readJson(valuesOf(a.args, "--mcp-config")[0]).mcpServers).sort(), ["athena", "other"]);
+  const a = launch(vault, { claudeCodeScope: { mcpServers: extra }, _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
+  assert.deepEqual(Object.keys(readJson(valuesOf(a.args, "--mcp-config")[0]).mcpServers).sort(), ["kbhost", "other"]);
   const b = launch(vault, { claudeCodeScope: { mcpServers: extra, includeProjectMcp: false } });
   assert.deepEqual(readJson(valuesOf(b.args, "--mcp-config")[0]).mcpServers, extra);
 });
 
 test("#25 consumer flags in extraArgs suppress Gryphon's own value for that flag", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
   const { args } = launch(vault, {
     extraArgs: ["--setting-sources", "user", "--strict-mcp-config", "--mcp-config", "/consumer.json"],
   });
@@ -228,8 +228,8 @@ test("#25 Protected off: a scope-only settings file is still written (plus the a
 });
 
 test("#25 both temp files are unlinked when the CLI closes", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
-  const { args, proc } = launch(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
+  const { args, proc } = launch(vault, { _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
   const settingsFile = valuesOf(args, "--settings")[0];
   const mcpFile = valuesOf(args, "--mcp-config")[0];
   assert.ok(fs.existsSync(settingsFile) && fs.existsSync(mcpFile));
@@ -241,14 +241,14 @@ test("#25 both temp files are unlinked when the CLI closes", () => {
 // ── consumer review #3: a configured server that fails to connect ─────
 
 test("#25 Notice when an allowlisted MCP server isn't connected at init; silent when connected", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
-  const bad = launch(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
-  bad.provider._processEvent({ type: "system", subtype: "init", session_id: "s", mcp_servers: [{ name: "athena", status: "failed" }] });
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
+  const bad = launch(vault, { _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
+  bad.provider._processEvent({ type: "system", subtype: "init", session_id: "s", mcp_servers: [{ name: "kbhost", status: "failed" }] });
   assert.equal(bad.notices.length, 1);
-  assert.match(bad.notices[0], /athena/);
+  assert.match(bad.notices[0], /kbhost/);
 
-  const ok = launch(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
-  ok.provider._processEvent({ type: "system", subtype: "init", session_id: "s", mcp_servers: [{ name: "athena", status: "connected" }] });
+  const ok = launch(vault, { _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
+  ok.provider._processEvent({ type: "system", subtype: "init", session_id: "s", mcp_servers: [{ name: "kbhost", status: "connected" }] });
   assert.deepEqual(ok.notices, []);
 });
 
@@ -298,18 +298,18 @@ test("#25 rev2: an approved name whose command / args / env / url changed is abs
 });
 
 test("#25 rev2: approved + unchanged runs; unapproved siblings in the same file don't", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER, evil: EVIL } }));
-  const { args, pending } = launchCapturing(vault, { _mcpApprovals: approving({ athena: ATHENA_SERVER }) });
-  assert.deepEqual(mcpConfigOf(args), { athena: ATHENA_SERVER });
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER, evil: EVIL } }));
+  const { args, pending } = launchCapturing(vault, { _mcpApprovals: approving({ kbhost: KBHOST_SERVER }) });
+  assert.deepEqual(mcpConfigOf(args), { kbhost: KBHOST_SERVER });
   assert.deepEqual(pending[0].pending.map((p: any) => p.name), ["evil"]);
 });
 
 test("#25 rev2: a consumer object server runs, is never pending, and shadows the vault entry of the same name", () => {
-  const consumerAthena = { command: "/opt/py/bin/python3", args: ["-m", "athena.server", "/v"] };
-  const tamperedVaultAthena = { command: "sh", args: ["-c", "evil"] };
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: tamperedVaultAthena } }));
-  const { args, pending, notices } = launchCapturing(vault, { claudeCodeScope: { mcpServers: { athena: consumerAthena } } });
-  assert.deepEqual(mcpConfigOf(args), { athena: consumerAthena });
+  const consumerKbhost = { command: "/opt/py/bin/python3", args: ["-m", "kbhost.server", "/v"] };
+  const tamperedVaultKbhost = { command: "sh", args: ["-c", "evil"] };
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: tamperedVaultKbhost } }));
+  const { args, pending, notices } = launchCapturing(vault, { claudeCodeScope: { mcpServers: { kbhost: consumerKbhost } } });
+  assert.deepEqual(mcpConfigOf(args), { kbhost: consumerKbhost });
   assert.deepEqual(pending, [], "no approval prompt for a name the consumer supplies");
   assert.deepEqual(notices, []);
 });
@@ -348,15 +348,15 @@ test("#25 rev2: a corrupt approval store approves nothing", () => {
 });
 
 test("#25 rev2 / #27 B: inherit mode leaves every unapproved vault server out of a strict --mcp-config (no disabledMcpjsonServers)", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER, evil: EVIL, other: { command: "x" } } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER, evil: EVIL, other: { command: "x" } } }));
   for (const plugin of [unprotected, hooked]) {
     const { args, pending } = launchCapturing(vault, {
       plugin: plugin(),
       claudeCodeScope: { inheritUserConfig: true, mcpServers: "inherit" },
-      _mcpApprovals: approving({ athena: ATHENA_SERVER }),
+      _mcpApprovals: approving({ kbhost: KBHOST_SERVER }),
     });
     assert.ok(args.includes("--strict-mcp-config"), "Claude Code never reads the vault .mcp.json itself (#27 B)");
-    assert.deepEqual(mcpConfigOf(args), { athena: ATHENA_SERVER });
+    assert.deepEqual(mcpConfigOf(args), { kbhost: KBHOST_SERVER });
     assert.deepEqual(pending[0].pending.map((p: any) => p.name).sort(), ["evil", "other"]);
     const files = valuesOf(args, "--settings");
     assert.equal(files.length, 1, "still exactly one --settings object");
@@ -391,7 +391,7 @@ test("#25 rev2 resolver: pure — pendingApprovals + no --mcp-config for an unap
 });
 
 test("#25 consumer review (rev2) #2: claudeCodeScope is ignored by non-claude-code providers — no argv, no temp files", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
   const before = new Set(fs.readdirSync(os.tmpdir()).filter((f: string) => f.startsWith("gryphon-cc-mcp")));
   for (const kind of ["codex-cli", "gemini-cli", "antigravity-cli"]) {
     const plugin: any = unprotected();
@@ -399,7 +399,7 @@ test("#25 consumer review (rev2) #2: claudeCodeScope is ignored by non-claude-co
     let provider: any;
     try {
       provider = createProviderForKind(plugin, kind, vault, {
-        claudeCodeScope: { mcpServers: { athena: ATHENA_SERVER } },
+        claudeCodeScope: { mcpServers: { kbhost: KBHOST_SERVER } },
         hostAdapter: { notify() {} },
         _spawnOverride: () => Promise.resolve({}),
       });
@@ -471,12 +471,12 @@ test("#25 review #3 / #27 B: a consumer --settings in extraArgs can't re-enable 
 });
 
 test("#27 B: inherit mode with every vault server approved is strict too, and lists them", () => {
-  const vault = makeVault(JSON.stringify({ mcpServers: { athena: ATHENA_SERVER } }));
+  const vault = makeVault(JSON.stringify({ mcpServers: { kbhost: KBHOST_SERVER } }));
   const { args, notices } = launchCapturing(vault, {
-    claudeCodeScope: INHERIT, extraArgs: ["--settings", "/consumer/settings.json"], _mcpApprovals: approving({ athena: ATHENA_SERVER }),
+    claudeCodeScope: INHERIT, extraArgs: ["--settings", "/consumer/settings.json"], _mcpApprovals: approving({ kbhost: KBHOST_SERVER }),
   });
   assert.ok(args.includes("--strict-mcp-config"));
-  assert.deepEqual(mcpConfigOf(args), { athena: ATHENA_SERVER });
+  assert.deepEqual(mcpConfigOf(args), { kbhost: KBHOST_SERVER });
   assert.deepEqual(notices, []);
 });
 

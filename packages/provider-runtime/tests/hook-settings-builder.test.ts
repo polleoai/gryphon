@@ -104,8 +104,8 @@ test("command string quotes both the node binary and the hook script path", () =
   const cmd = out.hooks.PreToolUse[0].hooks[0].command;
   // JSON.stringify renders paths with surrounding double quotes — that's
   // shell-safe for any path our users are likely to have.
-  assert.ok(cmd.startsWith(`"${EXAMPLE_NODE}"`), `expected node path quoted: ${cmd}`);
-  assert.ok(cmd.includes(`"${path.join(EXAMPLE_PLUGIN_DIR, "hooks", "pretool.js")}"`), cmd);
+  assert.ok(cmd.startsWith(`'${EXAMPLE_NODE}'`), `expected node path quoted: ${cmd}`);
+  assert.ok(cmd.includes(`'${path.join(EXAMPLE_PLUGIN_DIR, "hooks", "pretool.js")}'`), cmd);
 });
 
 test("paths with spaces are safely quoted", () => {
@@ -117,7 +117,7 @@ test("paths with spaces are safely quoted", () => {
   const cmd = out.hooks.PreToolUse[0].hooks[0].command;
   // The user's path appears wrapped in quotes so `sh -c` parses it as
   // a single argument rather than splitting on the spaces.
-  assert.ok(cmd.includes(`"${path.join(spacyDir, "hooks", "pretool.js")}"`), cmd);
+  assert.ok(cmd.includes(`'${path.join(spacyDir, "hooks", "pretool.js")}'`), cmd);
 });
 
 test("on POSIX, hook entries do NOT set the `shell` field", () => {

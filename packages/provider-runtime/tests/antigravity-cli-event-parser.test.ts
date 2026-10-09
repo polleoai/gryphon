@@ -438,9 +438,38 @@ test("protected mode OFF: the user's own opt-out is honoured, not overridden", (
     plugin: { settings: {} },
     security: { protectedMode: false },
   });
-  const d = p._autoApproveDecision({ ok: false, degradationReason: "store-guard script unavailable" });
+  // R43-7: the opt-out covers protected paths/commands, not the store guard
+  // (a fixed invariant). Only a missing Node.js — which nothing could fix
+  // from inside a chat — runs agy without it.
+  const d = p._autoApproveDecision({ ok: false, degradationReason: "no node binary found" });
   assert.equal(d.refuse, false, "an explicit opt-out must not be turned into an error");
   assert.equal(d.autoApprove, true);
+});
+
+test("R43-7: protected mode OFF but the store guard failed to install: REFUSE", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {
+    plugin: { settings: {} },
+    security: { protectedMode: false },
+  });
+  for (const [reason, fix] of [
+    ["store-guard script unavailable", /settings folder writable/],
+    ['adapter "antigravity-cli" couldn\'t install the store-guard hook', /hooks\.json/],
+  ] as Array<[string, RegExp]>) {
+    const d = p._autoApproveDecision({ ok: false, degradationReason: reason });
+    assert.equal(d.refuse, true, reason);
+    assert.equal(d.autoApprove, false);
+    assert.match(d.message, fix);
+  }
+});
+
+test("R43-7: protected mode ON with only the store-guard FALLBACK: REFUSE", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", {
+    plugin: { settings: {} },
+    security: { protectedMode: true },
+  });
+  const d = p._autoApproveDecision({ ok: true, mode: "store-guard-fallback", degradationReason: "ipc server not listening" });
+  assert.equal(d.refuse, true);
+  assert.equal(d.autoApprove, false);
 });
 
 test("protected mode ON but guardrail failed: REFUSE, do not spawn unguarded", () => {
@@ -450,8 +479,23 @@ test("protected mode ON but guardrail failed: REFUSE, do not spawn unguarded", (
   const d = p._autoApproveDecision({ ok: false, degradationReason: "hook scripts missing on disk" });
   assert.equal(d.refuse, true, "the exact case that shipped twice must now be loud");
   assert.equal(d.autoApprove, false);
-  assert.match(d.message, /hook scripts missing on disk/,
+  assert.match(d.message, /some of Gryphon's files are missing/,
     "the message must name the actual cause, not just say it failed");
-  assert.match(d.message, /Protected mode/,
+  assert.match(d.message, /Protected Mode/,
     "the message must state the supported way out");
+});
+
+test("QA P2-1: Antigravity refusals use plain words and the fix that matches the cause", () => {
+  for (const [security, reason, fix] of [
+    [{ protectedMode: true }, "ipc server not listening", /Restart Obsidian/],
+    [{ protectedMode: true }, "no node binary found", /Install Node\.js/],
+    [{ protectedMode: true }, "hook scripts missing on disk", /Reinstall or update Gryphon/],
+    [{ protectedMode: false }, "store-guard script unavailable", /settings folder writable/],
+  ] as Array<[any, string, RegExp]>) {
+    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} }, security });
+    const d = p._autoApproveDecision({ ok: false, degradationReason: reason });
+    assert.equal(d.refuse, true, reason);
+    assert.match(d.message, fix, reason);
+    assert.doesNotMatch(d.message, /`agy`|dangerously|PreToolUse|ipc server|hook scripts missing/i, reason);
+  }
 });

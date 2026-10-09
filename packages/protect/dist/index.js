@@ -138,6 +138,10 @@ module.exports = {
     CliPathRejectedError: securitySettings.CliPathRejectedError,
     // Issue #30: the store guard (Protected Mode off) and the turn-end check.
     approvalsStoreVerdict: mcpApprovals.approvalsStoreVerdict,
+    // R43-3: the files a Codex apply_patch names (for prompts and checks).
+    patchTargets: require("./tool-aliases").patchTargets,
+    // R3-1: a CODEX_HOME that only marks the vault untrusted (hooks down).
+    codexTrustOnlyOverlay: require("./hook-adapters/codex-cli").buildTrustOnlyOverlay,
     ensureStoreGuardScript: storeGuard.ensureStoreGuardScript,
     snapshotSecurityStore: securitySettings.snapshotSecurityStore,
     checkSecurityStoreTamper: securitySettings.checkSecurityStoreTamper,

@@ -39,7 +39,7 @@ test("_buildHooksToml uses POSIX quoting on macOS/Linux", () => {
     nodePath: "/usr/bin/node",
   });
   // POSIX command form: "node" "script" — JSON-quoted.
-  assert.match(toml, /command = "\\"\/usr\/bin\/node\\" \\"\/path with space\/hooks\/pretool\.js\\""/);
+  assert.match(toml, /command = "'\/usr\/bin\/node' '\/path with space\/hooks\/pretool\.js'"/);
 });
 
 test("_createCodexHomeOverlay creates a tmpdir with config.toml + symlinked auth.json (when real exists)", () => {
@@ -97,8 +97,9 @@ test("buildSpawnExtras returns env with CODEX_HOME + GRYPHON_PERMISSION_SOCKET",
   try {
     assert.ok(r.env.CODEX_HOME);
     assert.equal(r.env.GRYPHON_PERMISSION_SOCKET, "/tmp/gryphon.sock");
-    // No CLI args needed — Codex picks up hooks via env.
-    assert.deepEqual(r.args, []);
+    // Hooks come via env (CODEX_HOME); the one arg forces the hooks feature on
+    // so a vault's .codex/config.toml can't switch them off (R43-2).
+    assert.deepEqual(r.args, ["-c", "features.hooks=true"]);
     // settingsFile is the config.toml path inside the overlay.
     assert.match(r.settingsFile, /config\.toml$/);
     assert.equal(r.env.CODEX_HOME, path.dirname(r.settingsFile));
@@ -186,7 +187,7 @@ test("#31: every Codex hook in the overlay config is trusted under <configPath>:
   }
   assert.equal((toml.match(/trusted_hash/g) || []).length, 5);
   // The trusted hash is the hash of the command actually rendered.
-  const cmd = `${JSON.stringify("/usr/local/bin/node")} ${JSON.stringify(path.join("/fake/plugin", "hooks", "pretool.js"))}`;
+  const cmd = `'/usr/local/bin/node' '${path.join("/fake/plugin", "hooks", "pretool.js")}'`;
   if (process.platform !== "win32") {
     assert.ok(toml.includes(adapter._codexHookTrustHash("PreToolUse", "", cmd, 300)));
   }
@@ -217,4 +218,57 @@ test("#31/#30: the store-guard-only overlay trusts its PreToolUse guard", () => 
   } finally {
     extras.cleanup();
   }
+});
+
+test("R43-2: the store-guard-only spawn also forces the hooks feature on", () => {
+  const extras = adapter.buildSpawnExtras({
+    nodePath: "/usr/local/bin/node",
+    storeGuardOnly: { scriptPath: "/tmp/gryphon/hooks/store-guard-0123456789abcdef.js", approvalsDir: "/tmp/gryphon" },
+  });
+  try {
+    assert.deepEqual(extras.args, ["-c", "features.hooks=true"]);
+  } finally {
+    extras.cleanup();
+  }
+});
+
+test("R43-5: UserPromptSubmit (and Stop) are hashed WITHOUT a matcher, as Codex does", () => {
+  const crypto = require("crypto");
+  const expected = "sha256:" + crypto.createHash("sha256").update(JSON.stringify({
+    event_name: "user_prompt_submit",
+    hooks: [{ async: false, command: "c", timeout: 10, type: "command" }],
+  })).digest("hex");
+  assert.equal(adapter._codexHookTrustHash("UserPromptSubmit", "", "c", 10), expected);
+});
+
+// R3-1: a vault's own .codex/config.toml (Codex's project layer) could start
+// MCP servers at session start — verified live, codex 0.145. Every Gryphon
+// overlay marks the vault and every folder above it untrusted.
+test("R3-1: every overlay marks the project folder and its ancestors untrusted", () => {
+  const vault = fs.mkdtempSync(path.join(os.tmpdir(), "r3-1-"));
+  try {
+    const real = fs.realpathSync.native(vault);
+    for (const extras of [
+      adapter.buildSpawnExtras({ pluginDir: "/fake/plugin", ipcSocketPath: "/tmp/x.sock", nodePath: "/usr/local/bin/node", options: { projectDir: vault } }),
+      adapter.buildSpawnExtras({ nodePath: "/usr/local/bin/node", storeGuardOnly: { scriptPath: "/tmp/g/store-guard-0123456789abcdef.js", approvalsDir: "/tmp/g" }, options: { projectDir: vault } }),
+      adapter.buildTrustOnlyOverlay({ projectDir: vault }),
+    ]) {
+      try {
+        const toml = fs.readFileSync(path.join(extras.env.CODEX_HOME, "config.toml"), "utf8");
+        assert.ok(toml.includes(`[projects.${JSON.stringify(real)}]\ntrust_level = "untrusted"`), toml);
+        assert.ok(toml.includes(`[projects.${JSON.stringify(path.dirname(real))}]`), "ancestors too");
+      } finally {
+        extras.cleanup();
+      }
+    }
+  } finally {
+    fs.rmSync(vault, { recursive: true, force: true });
+  }
+});
+
+test("R2-2: TOML strings encode DEL and refuse unpaired surrogates", () => {
+  assert.equal(adapter._tomlString("a\u007fb"), '"a\\u007Fb"');
+  assert.equal(adapter._tomlString("C:\\v's \"x\""), '"C:\\\\v\'s \\"x\\""');
+  assert.throws(() => adapter._tomlString("a\ud800b"), /unpaired surrogate/);
+  assert.equal(adapter._tomlString("emoji \ud83d\ude00"), '"emoji \ud83d\ude00"');
 });

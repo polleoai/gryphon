@@ -61,6 +61,27 @@ test("probeVersion parses stdout and caches by path", () => {
   assert.equal(calls, 1, "second call served from cache");
 });
 
+test("R43-16: a symlink and its real file share one --version probe", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  utils.clearBinaryDiscoveryCache();
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "r43-16-"));
+  try {
+    const real = path.join(dir, "codex-real");
+    fs.writeFileSync(real, "", { mode: 0o755 });
+    fs.symlinkSync(real, path.join(dir, "codex"));
+    let calls = 0;
+    const fakeRun = () => { calls++; return "codex-cli 0.145.0"; };
+    assert.deepEqual(utils.probeVersion(path.join(dir, "codex"), fakeRun), [0, 145, 0]);
+    assert.deepEqual(utils.probeVersion(real, fakeRun), [0, 145, 0]);
+    assert.equal(calls, 1, "the realpath reuses the symlink's probe");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    utils.clearBinaryDiscoveryCache();
+  }
+});
+
 test("probeVersion recovers a version from a runner that throws with stderr", () => {
   utils.clearBinaryDiscoveryCache();
   const throwsWithStderr = () => {
@@ -547,5 +568,49 @@ test("resolveCliBinary rejects a configured claude path that isn't the CLI (issu
     assert.equal(res.path, cli, "falls through to the detected CLI");
   } finally {
     utils.findClaudeBinary = orig;
+  }
+});
+
+test("R43-11: a self-healed (detected) binary inside the vault is refused", { skip: process.platform === "win32" }, () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  utils.clearBinaryDiscoveryCache();
+  const vault = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "r43-11-"));
+  const bin = path.join(vault, ".bin", "codex");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho codex-cli 0.145.0\n", { mode: 0o755 });
+  const orig = utils.findCodexBinary;
+  utils.findCodexBinary = () => bin;
+  try {
+    const r = utils.resolveCliBinary("codex-cli", "/no/such/codex", undefined, { vaultRoot: vault });
+    assert.equal(r.ok, false, `spawned ${r.path}`);
+    const free = utils.resolveCliBinary("codex-cli", "/no/such/codex");
+    assert.equal(free.ok, true, "without a vault root the old behaviour stands");
+  } finally {
+    utils.findCodexBinary = orig;
+    fs.rmSync(vault, { recursive: true, force: true });
+    utils.clearBinaryDiscoveryCache();
+  }
+});
+
+test("R44 (security F2): a configured binary inside the vault is refused at spawn", { skip: process.platform === "win32" }, () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  utils.clearBinaryDiscoveryCache();
+  const vault = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "r44-f2-"));
+  const bin = path.join(vault, ".bin", "codex");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho codex-cli 0.145.0\n", { mode: 0o755 });
+  const orig = utils.findCodexBinary;
+  utils.findCodexBinary = () => null;
+  try {
+    const r = utils.resolveCliBinary("codex-cli", bin, undefined, { vaultRoot: vault });
+    assert.equal(r.ok, false, `spawned ${r.path}`);
+  } finally {
+    utils.findCodexBinary = orig;
+    fs.rmSync(vault, { recursive: true, force: true });
+    utils.clearBinaryDiscoveryCache();
   }
 });

@@ -31,6 +31,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports._UNSUPPORTED_CLIENT_MESSAGE = exports.DEFAULT_MODEL = exports.SESSION_PREFIX = exports.GeminiCliProvider = void 0;
 exports._mapPermissionToApproval = _mapPermissionToApproval;
+exports._hooksGateTools = _hooksGateTools;
 exports._wrapSession = _wrapSession;
 exports._unwrapSession = _unwrapSession;
 exports._scrubInternalLeaks = _scrubInternalLeaks;
@@ -46,6 +47,14 @@ const { computeCost, coerceToVendorModel, DEFAULT_MODEL, } = require("@gryphon/p
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
 const { hookDispatcher: dispatcher } = require("@gryphon/protect");
 const { winSpawn } = require("@gryphon/protect");
+/**
+ * R43-7 review: only hooks that gate EVERY tool call justify yolo. A
+ * store-guard FALLBACK (Protected Mode on, full checks down) protects only
+ * Gryphon's own settings, so Gemini keeps the user's own approval mode.
+ */
+function _hooksGateTools(hookExtras) {
+    return !!(hookExtras && hookExtras.ok && hookExtras.mode !== "store-guard-fallback");
+}
 /**
  * Map Gryphon's permissionMode to Gemini CLI's --approval-mode flag.
  *
@@ -488,7 +497,7 @@ class GeminiCliProvider {
         // a stale/empty configured path, or fail fast with an actionable message
         // rather than spawning an unresolved path and hanging to the timeout.
         {
-            const resolved = resolveCliBinary("gemini-cli", this.geminiPath);
+            const resolved = resolveCliBinary("gemini-cli", this.geminiPath, undefined, { vaultRoot: this.cwd });
             if (!resolved.ok) {
                 const msg = resolved.error === "too-old"
                     ? `Found ${resolved.detail}. Update the Gemini CLI, or set a newer path in Settings → Gryphon → Gemini CLI path.`
@@ -570,7 +579,7 @@ class GeminiCliProvider {
             // appear (model thinks "I have no shell tool") — see user
             // report 2026-05-03. Forcing yolo here exposes the full
             // palette; the hook still gates each call.
-            const args = this._buildArgs(prompt, { hooksWired: !!hookExtras.ok });
+            const args = this._buildArgs(prompt, { hooksWired: _hooksGateTools(hookExtras) });
             if (hookExtras.args && hookExtras.args.length > 0) {
                 args.push(...hookExtras.args);
             }
@@ -1022,7 +1031,7 @@ class GeminiCliProvider {
             console.warn(`[gryphon/gemini-cli] hooks degraded on stale-session retry: ${hookExtras.degradationReason}`);
         }
         this._hookCleanup = hookExtras.cleanup;
-        const args = this._buildArgs(prompt, { hooksWired: !!hookExtras.ok });
+        const args = this._buildArgs(prompt, { hooksWired: _hooksGateTools(hookExtras) });
         if (hookExtras.args && hookExtras.args.length > 0) {
             args.push(...hookExtras.args);
         }

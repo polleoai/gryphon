@@ -359,7 +359,7 @@ for (const mode of ["default", "acceptEdits", "bypassPermissions", "plan"]) {
 test("#29 review: a vault-renamed manifest id can't redirect Gryphon's own security scope", () => {
   const { describeSecurityScope } = require("../src/security-settings-store");
   const app = { vault: { adapter: { getBasePath: () => vaultDir() } } };
-  const gryphonHost = { securityHostId: "gryphon", manifest: { id: "athena" } }; // vault edited manifest.json
+  const gryphonHost = { securityHostId: "gryphon", manifest: { id: "kbhost" } }; // vault edited manifest.json
   assert.equal(describeSecurityScope({ app, hostPlugin: gryphonHost }).scope.hostId, "gryphon");
   // #30 (G3): an embedder with no code-pinned id gets NO scope — the manifest is vault-resident.
   const embedder = { manifest: { id: "host-b" } };

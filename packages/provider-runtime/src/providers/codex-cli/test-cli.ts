@@ -106,6 +106,14 @@ function testCli(codexPath: any) {
         return;
       }
 
+      // The account is out of usage (a ChatGPT plan limit): say so plainly,
+      // whichever stream Codex printed it on, instead of an unrelated tail.
+      const limit = /(?:hit your usage limit|usage limit|quota exceeded)[^\n"]*/i.exec(err + "\n" + out);
+      if (limit && !_extractAgentText(out)) {
+        finish({ ok: false, message: `Codex CLI has hit its usage limit: ${limit[0].trim()}` });
+        return;
+      }
+
       const text = _extractAgentText(out);
       if (code === 0 && text) {
         finish({ ok: true, message: `Codex CLI works: got a real completion (${text.length} chars).` });

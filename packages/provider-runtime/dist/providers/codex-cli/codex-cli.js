@@ -31,6 +31,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_MODEL = exports.SESSION_PREFIX = exports.CodexProvider = void 0;
 exports._mapPermissionToSandbox = _mapPermissionToSandbox;
+exports._insertBeforePrompt = _insertBeforePrompt;
 exports._supportsLandlockSandbox = _supportsLandlockSandbox;
 exports._wrapSession = _wrapSession;
 exports._unwrapSession = _unwrapSession;
@@ -89,6 +90,39 @@ function _supportsLandlockSandbox() {
         _landlockSupportCache = false;
     }
     return _landlockSupportCache;
+}
+/**
+ * R3-1: every Codex spawn runs with a Gryphon CODEX_HOME that marks the
+ * vault (and the folders above it) untrusted, so a vault's own
+ * `.codex/config.toml` can't start MCP servers or widen the sandbox. When
+ * hooks couldn't be installed there is no overlay yet — build a trust-only
+ * one. If even that fails, refuse: never spawn with the vault's config live.
+ */
+function _ensureProjectUntrusted(hookExtras, cwd) {
+    if (hookExtras.env && hookExtras.env.CODEX_HOME)
+        return;
+    const { codexTrustOnlyOverlay } = require("@gryphon/protect");
+    const t = codexTrustOnlyOverlay({ projectDir: cwd });
+    hookExtras.env = { ...(hookExtras.env || {}), ...t.env };
+    const prev = hookExtras.cleanup;
+    hookExtras.cleanup = () => { try {
+        prev && prev();
+    }
+    finally {
+        t.cleanup();
+    } };
+}
+/**
+ * Hook-adapter args are Codex OPTIONS (e.g. `-c features.hooks=true`, R43-2),
+ * so they must precede the `--` that ends options; after it Codex would read
+ * them as part of the prompt.
+ */
+function _insertBeforePrompt(args, extra) {
+    const end = args.indexOf("--");
+    if (end === -1)
+        args.push(...extra);
+    else
+        args.splice(end, 0, ...extra);
 }
 /**
  * Map Gryphon's permissionMode to Codex's --sandbox flag.
@@ -520,7 +554,7 @@ class CodexProvider {
         // a stale/empty configured path, or fail fast with an actionable message
         // rather than spawning an unresolved path and hanging to the timeout.
         {
-            const resolved = resolveCliBinary("codex-cli", this.codexPath);
+            const resolved = resolveCliBinary("codex-cli", this.codexPath, undefined, { vaultRoot: this.cwd });
             if (!resolved.ok) {
                 const msg = resolved.error === "too-old"
                     ? `Found ${resolved.detail}. Update the Codex CLI, or set a newer path in Settings → Gryphon → Codex CLI path.`
@@ -594,16 +628,17 @@ class CodexProvider {
             const hookExtras = dispatcher.prepareSpawn({
                 kind: "codex-cli",
                 plugin: this.options.plugin,
-                options: this.options,
+                options: { ...this.options, projectDir: this.cwd },
             });
             if (!hookExtras.ok && hookExtras.degradationReason) {
                 console.warn(`[gryphon/codex-cli] hooks degraded: ${hookExtras.degradationReason}`);
             }
+            _ensureProjectUntrusted(hookExtras, this.cwd);
             this._hookCleanup = hookExtras.cleanup;
             // Merge any hook-supplied args at the end of argv. None today
             // (Codex picks up hooks via env), but the contract supports it.
             if (hookExtras.args && hookExtras.args.length > 0) {
-                args.push(...hookExtras.args);
+                _insertBeforePrompt(args, hookExtras.args);
             }
             const spawnOpts = {
                 cwd: this.cwd,
@@ -886,15 +921,23 @@ class CodexProvider {
         const hookExtras = dispatcher.prepareSpawn({
             kind: "codex-cli",
             plugin: this.options.plugin,
-            options: this.options,
+            options: { ...this.options, projectDir: this.cwd },
         });
         if (!hookExtras.ok && hookExtras.degradationReason) {
             console.warn(`[gryphon/codex-cli] hooks degraded on stale-session retry: ${hookExtras.degradationReason}`);
         }
+        try {
+            _ensureProjectUntrusted(hookExtras, this.cwd);
+        }
+        catch (e) {
+            if (typeof this._currentReject === "function")
+                this._currentReject(e);
+            return;
+        }
         this._hookCleanup = hookExtras.cleanup;
         const args = this._buildArgs(prompt);
         if (hookExtras.args && hookExtras.args.length > 0) {
-            args.push(...hookExtras.args);
+            _insertBeforePrompt(args, hookExtras.args);
         }
         const spawnOpts = {
             cwd: this.cwd,

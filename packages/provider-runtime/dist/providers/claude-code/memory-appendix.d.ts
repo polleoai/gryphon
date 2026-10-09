@@ -3,7 +3,7 @@
  *
  * Scoped launches run with `--setting-sources=` (no settings files), and the
  * `project` source is also what makes Claude Code load the vault's
- * CLAUDE.md. A consumer that depends on its CLAUDE.md (Athena's immutable
+ * CLAUDE.md. A consumer that depends on its CLAUDE.md (e.g. one whose own
  * security rules live there) names it in `claudeCodeScope.memoryFiles`;
  * Gryphon assembles one file and passes it as `--append-system-prompt-file`.
  *

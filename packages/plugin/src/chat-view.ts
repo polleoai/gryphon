@@ -926,6 +926,8 @@ class GryphonChatView extends ItemView {
   declare _autoRetryTimeout: any;
   declare _projectionDebounceTimer: any;
   declare securityOverrides: Record<string, unknown>;
+  declare _fallbackHostAdapter: any;
+  declare _turnProviderKind: string | null;
   declare securityPathOverrides: Record<string, string>;
   declare securityHostId: string | undefined;
 
@@ -1572,6 +1574,25 @@ class GryphonChatView extends ItemView {
    * view's host id and code-set path overrides. The factory resolves each
    * kind it needs through `resolveCliPath` with exactly these.
    */
+  /**
+   * R43-7: the host adapter for spawns. Gryphon's own plugin supplies one;
+   * an embedding plugin that doesn't gets an Obsidian Notice adapter here,
+   * so "protection degraded" notices reach the user, not just the console.
+   */
+  _spawnHostAdapter() {
+    if (this.plugin && this.plugin.hostAdapter) return this.plugin.hostAdapter;
+    if (!this._fallbackHostAdapter) {
+      const { ObsidianHostAdapter } = require("./obsidian-host-adapter");
+      const { handlePendingApprovals } = require("./mcp-approval-ui");
+      // R44 CC-1: the same MCP-approval hook Gryphon's own adapter has — one
+      // notice per vault with a Review action, not a bare notice per spawn.
+      this._fallbackHostAdapter = new ObsidianHostAdapter({
+        onMcpApprovalsPending: (report) => handlePendingApprovals(this.plugin, report),
+      });
+    }
+    return this._fallbackHostAdapter;
+  }
+
   _cliPathScope() {
     return { securityHostId: this.securityHostId, securityOverrides: { paths: this.securityPathOverrides || {} } };
   }
@@ -1608,6 +1629,7 @@ class GryphonChatView extends ItemView {
    * is told which provider's turn it happened in. Never throws.
    */
   _beginTurnTamperWindow() {
+    this._turnProviderKind = null;
     try { return _securityStore.snapshotSecurityStore(); } catch (e) {
       console.error("[gryphon] security tamper check couldn't start:", e);
       return null;
@@ -1616,14 +1638,18 @@ class GryphonChatView extends ItemView {
 
   _endTurnTamperWindow(before, kind) {
     if (!before) return;
+    const label = _providerLabelFor(this._turnProviderKind || kind) || "the assistant";
     try {
       const r = _securityStore.checkSecurityStoreTamper(before);
       if (!r.reverted.length) return;
-      securityUi.reportSecurityTamperReverted(r.reverted, _providerLabelFor(kind) || "the assistant");
+      securityUi.reportSecurityTamperReverted(r.reverted, label);
       this.refreshToolbarLabels();
       this._updateRestApiChip();
     } catch (e) {
+      // R43-10: a change Gryphon found but couldn't undo (e.g. the file was
+      // made read-only/immutable) must reach the user, not just the console.
       console.error("[gryphon] security tamper check failed:", e);
+      securityUi.reportSecurityTamperUndoFailed(label, e);
     }
   }
 
@@ -5286,7 +5312,7 @@ class GryphonChatView extends ItemView {
     const provider = createProvider(
       this.plugin,
       (this.app.vault.adapter as any).basePath,
-      { hostAdapter: this.plugin.hostAdapter, ...this._cliPathScope() }
+      { hostAdapter: this._spawnHostAdapter(), ...this._cliPathScope() }
     );
     if (provider) return;  // a provider can resolve — nothing to show
 
@@ -5524,7 +5550,7 @@ class GryphonChatView extends ItemView {
     const provider = createProvider(
       this.plugin,
       (this.app.vault.adapter as any).basePath,
-      { hostAdapter: this.plugin.hostAdapter, ...this._cliPathScope() }
+      { hostAdapter: this._spawnHostAdapter(), ...this._cliPathScope() }
     );
     if (provider) {
       this._welcomePanelEl.remove();
@@ -6560,7 +6586,7 @@ class GryphonChatView extends ItemView {
         extraArgsByProvider: this.extraProcessArgsByProvider,
         claudeCodeScope: this._resolveClaudeCodeScope(),
         initialHistory: sdkInitialHistory,
-        hostAdapter: this.plugin.hostAdapter,
+        hostAdapter: this._spawnHostAdapter(),
         // Issue #30: binaries resolved for this view — never data.json.
         ...this._cliPathOptions(),
       };
@@ -6766,7 +6792,7 @@ class GryphonChatView extends ItemView {
         ...this._securitySpawnOptions(security),
         extraArgsByProvider: this.extraProcessArgsByProvider,
         claudeCodeScope: this._resolveClaudeCodeScope(),
-        hostAdapter: this.plugin.hostAdapter,
+        hostAdapter: this._spawnHostAdapter(),
         ...this._cliPathOptions(),
       };
 
@@ -6786,6 +6812,8 @@ class GryphonChatView extends ItemView {
           if (isActive) {
             provider = this.claudeProcess = createProvider(this.plugin, vaultPath, creationOptions);
           } else {
+            // R43-19: the tamper notice names the provider that actually ran.
+            this._turnProviderKind = kind;
             provider = this.claudeProcess = createProviderForKind(this.plugin, kind, vaultPath, creationOptions, modelOverride);
           }
           // Stamp the spawn signature. The active provider stamps the live

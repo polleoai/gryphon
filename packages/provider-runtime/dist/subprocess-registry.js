@@ -16,7 +16,7 @@
  *      `{ detached: true }` so it becomes its own group leader (pgid ==
  *      pid). Killing the GROUP (`process.kill(-pid, sig)`) reaps the
  *      child *and* every grandchild it spawned (the MCP servers). Killing
- *      only the `claude` pid would leave `athena.server` orphaned. On
+ *      only the `claude` pid would leave a vault MCP server orphaned. On
  *      Windows we never detach (it would pop a console and our CLI shims
  *      route through cmd.exe) — instead `taskkill /T /F` walks the tree.
  *

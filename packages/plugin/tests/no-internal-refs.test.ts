@@ -41,7 +41,7 @@ const FORBIDDEN_TOKENS = [
 // exclusions so this test doesn't flag content that isn't going
 // public anyway.
 const ALLOWLIST = new Set([
-  "tests/no-internal-refs.test.ts",
+  "packages/plugin/tests/no-internal-refs.test.ts",
   "CONTRIBUTING.md",  // may describe the policy itself — still scrubbed below
   // Dev-only scrub script that references forbidden tokens as part of
   // its own sed/perl rules. Not shipped to the public repo
@@ -70,6 +70,13 @@ const ALLOWLIST = new Set([
   // publish-release.sh's safelist, so never reach the public repo.
   "CLAUDE.md",
   "AGENTS.md",
+  // Historical public record (R44 D2): release notes and two ADRs describe
+  // past releases' relationship with the sister plugin, which is itself
+  // public. Rewriting shipped history is a separate decision; new mentions
+  // in code, tests and new docs are still refused.
+  "CHANGELOG.md",
+  "docs/adr/0006-three-axis-workspace-split.md",
+  "docs/adr/0008-typescript-migration.md",
   "scripts/cut-public-release.sh",
   "scripts/notify-athena-release.sh",
 ]);
@@ -93,13 +100,25 @@ function listTrackedFiles(repoRoot) {
   return out.split("\n").filter((l) => l.length > 0);
 }
 
+// R44 D2: scan the WHOLE repository, not just this package — the release
+// ships every workspace package (provider-runtime, protect, …), and a token
+// in their sources or tests reached the public repo unseen. Paths below are
+// relative to the repository root. Dev-only areas that publish-release.sh
+// never ships are skipped: scripts/, and docs/ except docs/adr/ and
+// docs/screenshots/.
+function _shipped(rel) {
+  if (rel.startsWith("scripts/")) return false;
+  if (rel.startsWith("docs/") && !rel.startsWith("docs/adr/") && !rel.startsWith("docs/screenshots/")) return false;
+  return true;
+}
+
 test("no forbidden internal-project tokens appear in tracked files", () => {
-  const repoRoot = path.resolve(__dirname, "..");
+  const repoRoot = execFileSync("git", ["-C", __dirname, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
   const files = listTrackedFiles(repoRoot);
   const leaks = [];
 
   for (const rel of files) {
-    if (ALLOWLIST.has(rel)) continue;
+    if (ALLOWLIST.has(rel) || !_shipped(rel)) continue;
     if (BINARY_EXTS.has(path.extname(rel).toLowerCase())) continue;
 
     const full = path.join(repoRoot, rel);

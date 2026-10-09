@@ -48,6 +48,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *     agent's and revert only the latter's weakening changes.
  */
 const fs = require("fs");
+const { isWithinByIdentity } = require("./path-identity");
 const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
@@ -390,9 +391,94 @@ function _requireScope(scope) {
     }
     return scope;
 }
+/**
+ * R43-8: what to write. Only the touched scopes are re-serialised from the
+ * validated store; every other vault/host, any unknown top-level field and
+ * (when `keepUnknown`) unknown fields inside a touched entry are carried
+ * over from the file as found. A different Gryphon version (older, or one
+ * that adds a field) must not wipe what this one doesn't understand — a
+ * 2.10.x copy erased every confirmed CLI path this way. Reads still
+ * validate everything. A file this copy can't parse is rebuilt as before.
+ */
+function _rawObject(raw) {
+    if (raw === null)
+        return null;
+    try {
+        const p = JSON.parse(raw);
+        return p && typeof p === "object" && !Array.isArray(p) ? p : null;
+    }
+    catch (_) {
+        return null;
+    }
+}
+function _isPlainObject(v) {
+    return !!v && typeof v === "object" && !Array.isArray(v);
+}
+/**
+ * Re-review: the validated values for a touched entry, MINUS keys whose raw
+ * value already reads as exactly that — those keep their raw form, so a
+ * longer list from a newer version (patterns this one drops when reading)
+ * isn't trimmed by an unrelated write. A key the write actually changed
+ * gets its new value.
+ */
+function _changedOnly(rawBag, validated) {
+    const raw = _isPlainObject(rawBag) ? rawBag : {};
+    const out = {};
+    for (const [k, v] of Object.entries(validated)) {
+        if (Object.prototype.hasOwnProperty.call(raw, k)) {
+            const r = validateSecurityValue(k, raw[k]);
+            if (r.ok && mcpApprovals.canonicalJSON(r.value) === mcpApprovals.canonicalJSON(v)) {
+                _setOwnKey(out, k, raw[k]);
+                continue;
+            }
+        }
+        _setOwnKey(out, k, v);
+    }
+    return out;
+}
+function _setOwnKey(o, k, v) {
+    Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+}
+function _composeForWrite(priorRaw, store, touched, keepUnknown) {
+    const base = _rawObject(priorRaw);
+    if (!base || !_isPlainObject(base.vaults))
+        return store;
+    const out = JSON.parse(JSON.stringify(base));
+    if (typeof out.version !== "number")
+        out.version = STORE_VERSION;
+    // Carried over: keys this version doesn't know, AND known keys whose raw
+    // value it can't read (R44 F1 — e.g. a future version's longer pattern
+    // list); the validated values this write produces then take precedence.
+    const unknownOnly = (bag, known, bagName) => Object.fromEntries(Object.entries(_isPlainObject(bag) ? bag : {}).filter(([k, v]) => !known(k) || !_cleanKnown(bagName, k, v)));
+    for (const [vk, hostId] of touched) {
+        if (!_isPlainObject(out.vaults[vk]))
+            out.vaults[vk] = { hosts: {} };
+        if (!_isPlainObject(out.vaults[vk].hosts))
+            out.vaults[vk].hosts = {};
+        const e = _entry(store, { vaultKey: vk, hostId });
+        if (!e) {
+            delete out.vaults[vk].hosts[hostId];
+            continue;
+        }
+        const rawE = keepUnknown && _isPlainObject(out.vaults[vk].hosts[hostId]) ? out.vaults[vk].hosts[hostId] : {};
+        out.vaults[vk].hosts[hostId] = {
+            ...rawE,
+            values: { ...unknownOnly(rawE.values, isWeakeningKey, "values"), ..._changedOnly(rawE.values, e.values) },
+            setAt: e.setAt,
+            dismissed: { ...unknownOnly(rawE.dismissed, (k) => isWeakeningKey(k) || isExecutableKey(k), "dismissed"), ...e.dismissed },
+            paths: { ...unknownOnly(rawE.paths, isExecutableKey, "paths"), ...e.paths },
+        };
+    }
+    return out;
+}
 /** Re-read right before writing; change only this scope's entry. */
 function _update(scope, file, fn) {
     const priorRaw = _readRaw(file);
+    // No "newer version, refuse to write" guard (commit review of 0d516c2):
+    // an assistant that planted a bigger `version` would lock the user out of
+    // their own security settings. Unknown fields are preserved instead, and
+    // an INCOMPATIBLE future format must use a new file name, never an
+    // in-place version bump.
     const store = priorRaw === null ? _empty() : _parse(priorRaw, file, "update");
     if (!store.vaults[scope.vaultKey])
         store.vaults[scope.vaultKey] = { hosts: Object.create(null) };
@@ -400,7 +486,7 @@ function _update(scope, file, fn) {
     if (!hosts[scope.hostId])
         hosts[scope.hostId] = { values: {}, setAt: "", dismissed: {}, paths: {} };
     fn(hosts[scope.hostId]);
-    _save(store, file, priorRaw);
+    _save(_composeForWrite(priorRaw, store, [[scope.vaultKey, scope.hostId]], true), file, priorRaw);
 }
 // ── public API ─────────────────────────────────────────────────────────
 /** This scope's confirmed values (validated). */
@@ -614,12 +700,19 @@ function securityInputsOf(holder) {
     });
 }
 /** Thrown by setMachineCliPath only; resolveCliPath never throws. */
+const CLI_PATH_PRODUCT = {
+    claudePath: "Claude Code",
+    codexPath: "Codex",
+    geminiCliPath: "Gemini CLI",
+    antigravityPath: "Antigravity",
+};
 class CliPathRejectedError extends Error {
     key;
     value;
     reason;
     constructor(key, value, reason) {
-        super(`Gryphon can't use ${JSON.stringify(value)} for ${key}: ${CLI_PATH_REASON_TEXT[reason]}`);
+        // R43-20: user-facing — product names, never the internal setting key.
+        super(`Gryphon can't use ${JSON.stringify(value)} as the ${CLI_PATH_PRODUCT[key] || "program"} location: ${CLI_PATH_REASON_TEXT[reason]}`);
         this.name = "CliPathRejectedError";
         this.key = key;
         this.value = value;
@@ -688,7 +781,11 @@ function validateCliPath(value, vaultRoot, platform = process.platform) {
     if (!configured || !_isAbsoluteAnywhere(configured))
         return { ok: false, reason: "relative" };
     const roots = _vaultRoots(vaultRoot);
-    if (roots.some((r) => _inside(configured, r)))
+    // R43-6: by string AND by file identity, so another name for the vault
+    // (a symlinked folder, a macOS firmlink, a Windows UNC/8.3 spelling)
+    // can't pass for "outside".
+    const inVault = (p) => roots.some((r) => _inside(p, r)) || isWithinByIdentity(p, roots);
+    if (inVault(configured))
         return { ok: false, reason: "inside-vault" };
     let real;
     try {
@@ -697,7 +794,7 @@ function validateCliPath(value, vaultRoot, platform = process.platform) {
     catch (_) {
         return { ok: false, reason: "missing" };
     }
-    if (roots.some((r) => _inside(real, r)))
+    if (inVault(real))
         return { ok: false, reason: "inside-vault" };
     let st;
     try {
@@ -965,6 +1062,22 @@ function _weakenings(cand, base) {
             }
         }
     }
+    // QA P3-1: an entry DELETED since `base` reads as the defaults — which
+    // are not always the strictest (permission mode "plan" is stricter than
+    // the default). Compare it as an empty entry so that loss is seen too.
+    for (const [vk, vault] of Object.entries(base.vaults)) {
+        for (const [hostId, b] of Object.entries(vault.hosts)) {
+            if (_entry(cand, { vaultKey: vk, hostId }))
+                continue;
+            for (const key of WEAKENING_KEYS) {
+                if (!Object.prototype.hasOwnProperty.call(b.values, key))
+                    continue;
+                if (_looser(key, DEFAULTS[key], b.values[key])) {
+                    out.push({ vaultKey: vk, hostId, field: "values", key, baseHas: true, baseVal: b.values[key], candVal: undefined });
+                }
+            }
+        }
+    }
     return out;
 }
 /**
@@ -981,6 +1094,243 @@ function _weakenings(cand, base) {
  * Strengthening changes, and a missing or unreadable file (it already reads
  * as the defaults), are left alone. The revert is ledgered like any write.
  */
+/**
+ * R43-8 review: Gryphon's writes now carry fields this version doesn't know
+ * forward untouched — so the turn-end check must police them too, or a
+ * field planted mid-reply (say, a weakening key a FUTURE Gryphon reads)
+ * would persist. Gryphon itself never changes unknown fields, so any change
+ * to them during a reply is foreign: they're restored to the turn start.
+ */
+const KNOWN_TOP = new Set(["version", "vaults"]);
+const KNOWN_ENTRY = new Set(["values", "setAt", "dismissed", "paths"]);
+const BAG_KNOWN = {
+    values: (k) => isWeakeningKey(k),
+    dismissed: (k) => isWeakeningKey(k) || isExecutableKey(k),
+    paths: (k) => isExecutableKey(k),
+};
+/**
+ * A known key's raw value that this version reads as-is. Anything else — a
+ * value it rejects or normalises — is opaque to it but may mean something
+ * to another Gryphon version, so it's policed like an unknown field.
+ */
+function _cleanKnown(bag, k, v) {
+    if (bag === "values") {
+        const r = validateSecurityValue(k, v);
+        return r.ok && mcpApprovals.canonicalJSON(r.value) === mcpApprovals.canonicalJSON(v);
+    }
+    if (bag === "dismissed")
+        return typeof v === "string" && HASH_RE.test(v);
+    if (bag === "paths")
+        return typeof v === "string" && !!v && _isAbsoluteAnywhere(v);
+    return true;
+}
+/**
+ * The unknown / unclean parts of a store, flattened under STRUCTURED keys
+ * (JSON arrays — R44 E7-3: a string key like "values.X" must never be
+ * confused with the bag key values → X, nor split on separators a vault
+ * key may contain):
+ *   ["t", k]                 unknown top-level field
+ *   ["e", vk, hid, k]        unknown entry field
+ *   ["b", vk, hid, bag, k]   unknown or unclean key inside a bag
+ *   ["B", vk, hid, bag]      a bag that isn't an object
+ */
+/**
+ * Re-review: a value nested deeper than this (a planted `[[[…]]]` thousands
+ * of levels deep) overflowed the recursive canonical compare and crashed
+ * the turn-end check before it could revert anything. Such values are
+ * never this version's data: they're left out of the expected parts, so
+ * the restore removes them (fails toward protection).
+ */
+const MAX_UNKNOWN_DEPTH = 64;
+const TOO_LARGE = Object.freeze({ "\u0000gryphon-too-large": true });
+function _shallowEnough(v) {
+    const stack = [[v, 0]];
+    let seen = 0;
+    while (stack.length) {
+        const [x, d] = stack.pop();
+        if (d > MAX_UNKNOWN_DEPTH || ++seen > 100000)
+            return false;
+        if (x && typeof x === "object")
+            for (const c of Object.values(x))
+                stack.push([c, d + 1]);
+    }
+    return true;
+}
+/**
+ * A copy of the parsed store with every value nested deeper than
+ * PRUNE_DEPTH removed, built iteratively (no recursion to overflow). The
+ * store's own data is ~7 levels deep; anything far deeper is a plant.
+ */
+const PRUNE_DEPTH = 32;
+function _pruneDeep(obj) {
+    if (!obj)
+        return obj;
+    const stack = [[obj, 0]];
+    while (stack.length) {
+        const [node, d] = stack.pop();
+        for (const k of Object.keys(node)) {
+            const v = node[k];
+            if (!v || typeof v !== "object")
+                continue;
+            if (d + 1 >= PRUNE_DEPTH)
+                delete node[k];
+            else
+                stack.push([v, d + 1]);
+        }
+    }
+    return obj;
+}
+function _unknownFlat(obj) {
+    const flat = new Map();
+    // Commit review of 9cbc11e: an oversized value must still COUNT (else a
+    // plant hides from the drift check) — it's recorded as a marker, never
+    // compared deeply and never written back (the restore drops it).
+    const m = { set: (k, v) => { flat.set(k, _shallowEnough(v) ? v : TOO_LARGE); } };
+    if (!obj)
+        return flat;
+    for (const [k, v] of Object.entries(obj))
+        if (!KNOWN_TOP.has(k))
+            m.set(JSON.stringify(["t", k]), v);
+    if (!_isPlainObject(obj.vaults))
+        return flat;
+    for (const [vk, vault] of Object.entries(obj.vaults)) {
+        if (!_isPlainObject(vault) || !_isPlainObject(vault.hosts))
+            continue;
+        for (const [hid, e] of Object.entries(vault.hosts)) {
+            if (!_isPlainObject(e))
+                continue;
+            for (const [k, v] of Object.entries(e))
+                if (!KNOWN_ENTRY.has(k))
+                    m.set(JSON.stringify(["e", vk, hid, k]), v);
+            for (const bag of Object.keys(BAG_KNOWN)) {
+                if (e[bag] === undefined)
+                    continue;
+                if (!_isPlainObject(e[bag])) {
+                    m.set(JSON.stringify(["B", vk, hid, bag]), e[bag]);
+                    continue;
+                }
+                for (const [k, v] of Object.entries(e[bag])) {
+                    if (!BAG_KNOWN[bag](k) || !_cleanKnown(bag, k, v))
+                        m.set(JSON.stringify(["b", vk, hid, bag, k]), v);
+                }
+            }
+        }
+    }
+    return flat;
+}
+function _flatCanon(m) {
+    return mcpApprovals.canonicalJSON([...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+}
+/** Own-property assignment: a key such as "__proto__" stays a plain key. */
+function _setOwn(o, k, v) {
+    Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
+}
+/**
+ * The unknown/unclean parts the file SHOULD hold at turn end: the turn
+ * start's, updated by every change Gryphon's own writes made to them this
+ * turn (the ledger). A key Gryphon rewrote — e.g. the user replacing an
+ * unclean list in Settings mid-reply — is credited to Gryphon, never put
+ * back (#33 R43-8 review 3). Everything else is foreign.
+ */
+function _expectedUnknown(startRaw, own) {
+    const exp = _unknownFlat(_rawObject(startRaw));
+    for (const w of own) {
+        const before = _unknownFlat(_rawObject(w.priorRaw));
+        const after = _unknownFlat(_rawObject(w.raw));
+        for (const k of new Set([...before.keys(), ...after.keys()])) {
+            // Presence first: canonicalJSON(null) and canonicalJSON(undefined) agree.
+            if (before.has(k) === after.has(k) && mcpApprovals.canonicalJSON(before.get(k)) === mcpApprovals.canonicalJSON(after.get(k)))
+                continue;
+            if (after.has(k))
+                exp.set(k, after.get(k));
+            else
+                exp.delete(k);
+        }
+    }
+    return exp;
+}
+/**
+ * Write the unknown-field restore, only when it changes something, then
+ * confirm it took. Returns whether anything was undone; throws when the
+ * restore didn't hold (the caller shows "couldn't undo", never "undid").
+ */
+function _applyUnknownRestore(nowSafe, expected, file, priorRaw) {
+    const current = _rawObject(nowSafe);
+    const restored = _restoreUnknown(current, expected);
+    // Unchanged only if the file itself needs nothing (pruning counts as a change).
+    if (current && nowSafe === priorRaw && mcpApprovals.canonicalJSON(restored) === mcpApprovals.canonicalJSON(current))
+        return false;
+    _save(restored, file, priorRaw);
+    const writtenBack = new Map([...expected].filter(([, v]) => v !== TOO_LARGE));
+    if (_flatCanon(_unknownFlat(_rawObject(_readRaw(file)))) !== _flatCanon(writtenBack)) {
+        throw new Error("unrecognised settings changed during the reply couldn't be put back");
+    }
+    console.warn("[gryphon/security-settings] undid unrecognised fields added to Gryphon's security settings during a reply");
+    return true;
+}
+/**
+ * `out` with every unknown/unclean part set to `expected`. Containers the
+ * expected parts live in are recreated when they were deleted (R44 DP-2) —
+ * a deleted entry that held only such fields comes back.
+ */
+function _restoreUnknown(out, expected) {
+    const res = _isPlainObject(out) ? JSON.parse(JSON.stringify(out)) : { version: STORE_VERSION, vaults: {} };
+    for (const k of Object.keys(res))
+        if (!KNOWN_TOP.has(k))
+            delete res[k];
+    if (!_isPlainObject(res.vaults))
+        res.vaults = {};
+    for (const vault of Object.values(res.vaults)) {
+        if (!_isPlainObject(vault) || !_isPlainObject(vault.hosts))
+            continue;
+        for (const e of Object.values(vault.hosts)) {
+            if (!_isPlainObject(e))
+                continue;
+            for (const k of Object.keys(e))
+                if (!KNOWN_ENTRY.has(k))
+                    delete e[k];
+            for (const bag of Object.keys(BAG_KNOWN)) {
+                if (e[bag] !== undefined && !_isPlainObject(e[bag])) {
+                    delete e[bag];
+                    continue;
+                }
+                if (_isPlainObject(e[bag])) {
+                    for (const k of Object.keys(e[bag]))
+                        if (!BAG_KNOWN[bag](k) || !_cleanKnown(bag, k, e[bag][k]))
+                            delete e[bag][k];
+                }
+            }
+        }
+    }
+    // Commit review of a1a8009: keys come from the file, so every container
+    // lookup is OWN-property only — res.vaults["__proto__"] must never reach
+    // Object.prototype (writing .hosts there would pollute every object).
+    const ownObj = (o, k) => {
+        if (!Object.prototype.hasOwnProperty.call(o, k) || !_isPlainObject(o[k]))
+            _setOwn(o, k, {});
+        return o[k];
+    };
+    const entryOf = (vk, hid) => {
+        const vault = ownObj(res.vaults, vk);
+        const hosts = ownObj(vault, "hosts");
+        return ownObj(hosts, hid);
+    };
+    for (const [key, v] of expected) {
+        if (v === TOO_LARGE)
+            continue; // never written back
+        const parts = JSON.parse(key);
+        if (parts[0] === "t")
+            _setOwn(res, parts[1], v);
+        else if (parts[0] === "e")
+            _setOwn(entryOf(parts[1], parts[2]), parts[3], v);
+        else if (parts[0] === "B")
+            _setOwn(entryOf(parts[1], parts[2]), parts[3], v);
+        else if (parts[0] === "b") {
+            _setOwn(ownObj(entryOf(parts[1], parts[2]), parts[3]), parts[4], v);
+        }
+    }
+    return res;
+}
 function checkSecurityStoreTamper(before) {
     const file = before.file;
     const now = _readRaw(file);
@@ -1009,11 +1359,32 @@ function checkSecurityStoreTamper(before) {
     });
     if (now === null || !parseable(now))
         return { changed: true, reverted: [] };
+    // Re-review: a planted value thousands of levels deep must not crash the
+    // check before it reverts anything. Everything below works from a copy
+    // with such values pruned; `now` stays the ledger's prior.
+    const nowObj = _pruneDeep(_rawObject(now));
+    const nowSafe = nowObj ? JSON.stringify(nowObj) : now;
     if (now !== known)
         for (const w of _weakenings(parse(now), parse(known)))
             foreign.push({ ...w, stage: mine.length });
-    if (!foreign.length)
-        return { changed: true, reverted: [] };
+    // The unknown-field pass must never block known reverts (re-review).
+    let expectedUnknown = new Map();
+    let unknownDrift = false;
+    try {
+        expectedUnknown = _expectedUnknown(before.raw, mine);
+        unknownDrift = _flatCanon(_unknownFlat(_rawObject(nowSafe))) !== _flatCanon(expectedUnknown);
+    }
+    catch (e) {
+        console.error("[gryphon/security-settings] couldn't compare unrecognised settings:", e);
+        unknownDrift = true;
+    }
+    if (!foreign.length) {
+        if (!unknownDrift)
+            return { changed: true, reverted: [] };
+        if (!_applyUnknownRestore(nowSafe, expectedUnknown, file, now))
+            return { changed: true, reverted: [] };
+        return { changed: true, reverted: [{ vaultKey: "", hostId: "", key: "unrecognised settings" }] };
+    }
     // What each of Gryphon's own writes changed, judged against the content
     // it was based on — never against the result, which may carry a foreign
     // change forward (a Settings list write re-saves the whole list).
@@ -1039,9 +1410,14 @@ function checkSecurityStoreTamper(before) {
     const reverted = [];
     for (const ws of groups.values()) {
         const w0 = ws[0];
-        const entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
-        if (!entry)
-            continue;
+        let entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
+        if (!entry) {
+            // QA P3-1: the entry was deleted — recreate it to put the value back.
+            if (!Object.prototype.hasOwnProperty.call(after.vaults, w0.vaultKey))
+                after.vaults[w0.vaultKey] = { hosts: Object.create(null) };
+            after.vaults[w0.vaultKey].hosts[w0.hostId] = _emptyEntry();
+            entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
+        }
         const bag = entry[w0.field] || (entry[w0.field] = {});
         const startEntry = _entry(start0, { vaultKey: w0.vaultKey, hostId: w0.hostId });
         const startBag = startEntry ? startEntry[w0.field] || {} : {};
@@ -1102,9 +1478,16 @@ function checkSecurityStoreTamper(before) {
             reverted.push({ vaultKey: w0.vaultKey, hostId: w0.hostId, key: w0.field === "values" ? w0.key : `${w0.field}.${w0.key}` });
     }
     if (reverted.length) {
-        _save(after, file, now);
+        // A reverted entry is rewritten whole (no unknown fields planted during
+        // the reply survive); everything else keeps its bytes' meaning.
+        const scopes = [...new Map(reverted.map((r) => [`${r.vaultKey}\u0000${r.hostId}`, [r.vaultKey, r.hostId]])).values()];
+        _save(_restoreUnknown(_composeForWrite(nowSafe, after, scopes, false), expectedUnknown), file, now);
         console.warn("[gryphon/security-settings] undid changes to Gryphon's security settings made outside Gryphon during a reply: " +
             reverted.map((r) => `${r.hostId}:${r.key}`).join(", "));
+    }
+    else if (unknownDrift) {
+        if (_applyUnknownRestore(nowSafe, expectedUnknown, file, now))
+            reverted.push({ vaultKey: "", hostId: "", key: "unrecognised settings" });
     }
     return { changed: true, reverted };
 }

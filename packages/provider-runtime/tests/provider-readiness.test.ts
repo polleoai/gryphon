@@ -56,7 +56,7 @@ function freshEnv(fn) {
 const runtime = require("../src/index");
 const { describeProviderReadiness, humanizeFailureReason, friendlyProviderLabel } = runtime;
 
-// ── exported from the package index (Athena consumes the same signal) ──
+// ── exported from the package index (the host consumes the same signal) ──
 
 test("issue #16: readiness helpers exported from index", () => {
   assert.equal(typeof describeProviderReadiness, "function");

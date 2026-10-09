@@ -30,6 +30,12 @@
 declare const DEFAULT_MODEL: any;
 declare function _supportsLandlockSandbox(): boolean;
 /**
+ * Hook-adapter args are Codex OPTIONS (e.g. `-c features.hooks=true`, R43-2),
+ * so they must precede the `--` that ends options; after it Codex would read
+ * them as part of the prompt.
+ */
+declare function _insertBeforePrompt(args: string[], extra: string[]): void;
+/**
  * Map Gryphon's permissionMode to Codex's --sandbox flag.
  *
  * Now that the HookDispatcher provides real pre-execution interception
@@ -144,4 +150,4 @@ declare class CodexProvider {
     isAlive(): any;
     get costIsEstimate(): boolean;
 }
-export { CodexProvider, _mapPermissionToSandbox, _supportsLandlockSandbox, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, };
+export { CodexProvider, _mapPermissionToSandbox, _insertBeforePrompt, _supportsLandlockSandbox, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, };

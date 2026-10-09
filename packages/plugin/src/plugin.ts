@@ -29,6 +29,7 @@ const {
   defaultSocketPath,
 } = require("@gryphon/protect");
 const { attackDetector } = require("@gryphon/protect");
+const { patchTargets } = require("@gryphon/protect");
 const { ProvenanceStore } = require("@gryphon/protect");
 const { sweepGryphonOrphans } = require("@gryphon/protect");
 
@@ -68,7 +69,11 @@ function _formatTaggedAt(iso) {
  */
 function _deriveActionTarget(tool, input) {
   if (tool === "Write") return { action: "write", target: input.file_path || "?" };
-  if (tool === "Edit") return { action: "edit", target: input.file_path || "?" };
+  if (tool === "Edit") {
+    // R43-3: a Codex apply_patch names its files in the patch text.
+    const targets = input.file_path ? [] : patchTargets(input);
+    return { action: "edit", target: input.file_path || (targets.length ? targets.join(", ") : "?") };
+  }
   // Both Bash (POSIX) and PowerShell (Windows) are shell-exec tools
   // with a `command` string and need the same modal wording.
   if (tool === "Bash" || tool === "PowerShell") {

@@ -109,31 +109,93 @@ function _preflight(plugin, security) {
     return { ok: true, mode, reason: null, details, nodePath };
 }
 /**
- * Issue #30: a store-guard that can't install is a visible degradation, not
- * a console line. One notice per reason per process, through the host's
- * adapter (the chat view's ObsidianHostAdapter, or any embedder's).
+ * Issues #30 / R43-7: degraded protection is a visible notice, not a console
+ * line — once per (kind, situation) per process, through the host's adapter
+ * (the chat view supplies one for every host, embedders included).
  */
-const _storeGuardNoticed = new Set();
-function _noticeStoreGuardDegraded(kind, reason, options) {
-    const label = kind === "codex-cli" ? "Codex" : kind === "gemini-cli" ? "Gemini CLI" : kind === "antigravity-cli" ? "Antigravity" : kind;
-    const why = reason === "no node binary found"
-        ? "Gryphon couldn't find Node.js on this computer"
-        : `Gryphon couldn't write to its settings folder (${approvalsDir()})`;
-    const msg = `${why}, so with Protected Mode off it can't install the check that stops ${label} ` +
-        "from changing Gryphon's own security settings. Gryphon still undoes such changes " +
-        "when each reply ends. " +
-        (reason === "no node binary found"
-            ? "Install Node.js (or add it to your PATH) and restart Obsidian to restore the check."
-            : "Make that folder writable and restart Obsidian to restore the check.");
-    console.warn(`[gryphon/hooks] store guard unavailable for ${kind}: ${reason}`);
-    if (_storeGuardNoticed.has(reason))
+const _degradedNoticed = new Set();
+function _cliLabel(kind) {
+    return kind === "codex-cli" ? "Codex" : kind === "gemini-cli" ? "Gemini CLI" : kind === "antigravity-cli" ? "Antigravity" : kind;
+}
+function _notify(options, key, msg) {
+    if (_degradedNoticed.has(key))
         return;
-    _storeGuardNoticed.add(reason);
+    _degradedNoticed.add(key);
     const ha = options && options.hostAdapter;
     try {
         ha?.notify?.(msg, { level: "warn", timeoutMs: 15000 });
     }
     catch (_) { /* a notice must not break a spawn */ }
+}
+function _noticeStoreGuardDegraded(kind, reason, options) {
+    const label = _cliLabel(kind);
+    const why = reason === "no node binary found"
+        ? "Gryphon couldn't find Node.js on this computer"
+        : reason === "store-guard script unavailable"
+            ? `Gryphon couldn't write to its settings folder (${approvalsDir()})`
+            : `Gryphon couldn't install its check for ${label}`;
+    const msg = `${why}, so it can't stop ${label} from changing Gryphon's own security settings. ` +
+        "Gryphon still undoes such changes when each reply ends. " +
+        (reason === "no node binary found"
+            ? "Install Node.js (or add it to your PATH) and restart Obsidian to restore the check."
+            : reason === "store-guard script unavailable"
+                ? "Make that folder writable and restart Obsidian to restore the check."
+                : "Check that the CLI's settings files are valid and writable, then start a new chat.");
+    console.warn(`[gryphon/hooks] store guard unavailable for ${kind}: ${reason}`);
+    _notify(options, `sg:${kind}:${reason}`, msg);
+}
+/**
+ * Plain-language cause for a user notice (R44 D1): internal reasons such as
+ * "ipc server not listening" or adapter errors stay in the console.
+ */
+function _plainCause(reason) {
+    if (/ipc server/i.test(reason))
+        return "Gryphon's approval service isn't running";
+    if (/plugin dir|hook scripts missing/i.test(reason))
+        return "some of Gryphon's files are missing";
+    if (/node binary/i.test(reason))
+        return "Node.js wasn't found on this computer";
+    return "Gryphon couldn't set its checks up";
+}
+/** QA P2-2: the fix that matches the cause (a restart doesn't fix them all). */
+function _restoreHint(reason) {
+    if (/plugin dir|hook scripts missing/i.test(reason))
+        return "Reinstall or update Gryphon to restore them — a sync tool may have renamed its files.";
+    if (/node binary/i.test(reason))
+        return "Install Node.js (or add it to your PATH) and restart Obsidian to restore them.";
+    return "Restart Obsidian to restore the checks.";
+}
+/** R43-7: Protected Mode is on but the full checks can't run for this CLI. */
+function _noticeFullDegraded(kind, reason, fallbackOk, options) {
+    const label = _cliLabel(kind);
+    const msg = `Protected Mode is on, but Gryphon's checks for ${label} aren't running (${_plainCause(reason)}), ` +
+        "so protected files and commands won't ask for approval in this chat. " +
+        (fallbackOk
+            ? `${label} still can't change Gryphon's own security settings. `
+            : `${label} could also change Gryphon's own security settings; Gryphon undoes such changes when each reply ends. `) +
+        _restoreHint(reason);
+    console.warn(`[gryphon/hooks] full hooks unavailable for ${kind}: ${reason} (store-guard fallback ${fallbackOk ? "on" : "off"})`);
+    // R44 SF-4: the fallback's outcome is part of the key — losing the store
+    // guard later must not hide behind the earlier "still protected" notice.
+    _notify(options, `full:${kind}:${reason}:${fallbackOk ? "sg" : "nosg"}`, msg);
+}
+/** Store-guard-only extras for `kind`, or why they couldn't be built. */
+function _storeGuardExtras(kind, adapter, nodePath, options) {
+    if (!nodePath)
+        return { ok: false, reason: "no node binary found" };
+    const sg = ensureStoreGuardScript();
+    if (!sg.ok)
+        return { ok: false, reason: "store-guard script unavailable" };
+    let extras;
+    try {
+        extras = adapter.buildSpawnExtras({ nodePath, options, storeGuardOnly: { scriptPath: sg.path, approvalsDir: approvalsDir() } });
+    }
+    catch (e) {
+        return { ok: false, reason: `adapter.buildSpawnExtras threw: ${e.message}` };
+    }
+    if (!extras)
+        return { ok: false, reason: `adapter "${kind}" couldn't install the store-guard hook` };
+    return { ok: true, extras, scriptPath: sg.path };
 }
 /**
  * Verify every hook script the adapter will reference actually exists
@@ -193,26 +255,47 @@ function prepareSpawn({ kind, plugin, options = {} }) {
         return { ...empty, degradationReason: "protectedMode is off", details: { protectedModeOn: false }, mode: null };
     }
     const pf = _preflight(plugin, security);
+    // R43-7: Protected Mode on but the full checks can't run (checker not
+    // listening, plugin dir/scripts missing, adapter failure) — a CLI other
+    // than claude-code keeps at least the store guard, and the user is told.
+    const fullFallback = (reason, details, extra = {}) => {
+        // claude-code has its own offline notice; antigravity refuses to start
+        // on a fallback (it can't run without auto-approve), so installing a
+        // hook into the user's global agy config first would be pointless.
+        if (kind === "claude-code" || kind === "antigravity-cli") {
+            return { ...empty, degradationReason: reason, details, mode: "full", ...extra };
+        }
+        const built = _storeGuardExtras(kind, adapter, pf.nodePath, options);
+        _noticeFullDegraded(kind, reason, built.ok, options);
+        if (!built.ok)
+            return { ...empty, degradationReason: reason, details, mode: "full", ...extra };
+        return {
+            ok: true,
+            mode: "store-guard-fallback",
+            env: built.extras.env || {},
+            args: built.extras.args || [],
+            cleanup: built.extras.cleanup || (() => { }),
+            degradationReason: reason,
+            details,
+            missing: [],
+            settingsFile: built.extras.settingsFile,
+            ...extra,
+        };
+    };
     if (!pf.ok) {
-        if (pf.mode === "store-guard-only")
+        if (pf.mode === "store-guard-only") {
             _noticeStoreGuardDegraded(kind, String(pf.reason), options);
-        return { ...empty, degradationReason: pf.reason, details: pf.details, mode: pf.mode };
+            return { ...empty, degradationReason: pf.reason, details: pf.details, mode: pf.mode };
+        }
+        return fullFallback(String(pf.reason), pf.details);
     }
     if (pf.mode === "store-guard-only") {
-        let extras;
-        try {
-            extras = adapter.buildSpawnExtras({
-                nodePath: pf.nodePath,
-                options,
-                storeGuardOnly: { scriptPath: pf.storeGuardScript, approvalsDir: approvalsDir() },
-            });
+        const built = _storeGuardExtras(kind, adapter, pf.nodePath, options);
+        if (!built.ok) {
+            _noticeStoreGuardDegraded(kind, built.reason, options);
+            return { ...empty, degradationReason: built.reason, details: pf.details, mode: pf.mode };
         }
-        catch (e) {
-            return { ...empty, degradationReason: `adapter.buildSpawnExtras threw: ${e.message}`, details: pf.details, mode: pf.mode };
-        }
-        if (!extras) {
-            return { ...empty, degradationReason: `adapter "${kind}" couldn't install the store-guard hook`, details: pf.details, mode: pf.mode };
-        }
+        const extras = built.extras;
         return {
             ok: true,
             mode: pf.mode,
@@ -228,12 +311,7 @@ function prepareSpawn({ kind, plugin, options = {} }) {
     const pluginDir = plugin.absolutePluginDir();
     const missing = _verifyHookScripts(pluginDir);
     if (missing.length > 0) {
-        return {
-            ...empty,
-            degradationReason: "hook scripts missing on disk",
-            details: pf.details,
-            missing,
-        };
+        return fullFallback("hook scripts missing on disk", pf.details, { missing });
     }
     const ipcSocketPath = (plugin.ipcServer).socketPath();
     let extras;
@@ -246,11 +324,7 @@ function prepareSpawn({ kind, plugin, options = {} }) {
         });
     }
     catch (e) {
-        return {
-            ...empty,
-            degradationReason: `adapter.buildSpawnExtras threw: ${e.message}`,
-            details: pf.details,
-        };
+        return fullFallback(`adapter.buildSpawnExtras threw: ${e.message}`, pf.details);
     }
     if (!extras) {
         // Adapter returned null defensively (e.g. missing pluginDir /
@@ -258,12 +332,8 @@ function prepareSpawn({ kind, plugin, options = {} }) {
         // these cases — if we reach here, it indicates pre-flight is
         // out of sync with adapter expectations. Surface a useful
         // diagnostic rather than the legacy "Stage 2/3 pending" copy.
-        return {
-            ...empty,
-            degradationReason: `adapter "${kind}" returned null (pre-flight should have caught the missing input — ` +
-                `check pluginDir, ipcSocketPath, nodePath)`,
-            details: pf.details,
-        };
+        return fullFallback(`adapter "${kind}" returned null (pre-flight should have caught the missing input — ` +
+            `check pluginDir, ipcSocketPath, nodePath)`, pf.details);
     }
     return {
         ok: true,

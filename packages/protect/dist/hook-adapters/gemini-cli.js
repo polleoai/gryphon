@@ -46,22 +46,35 @@ const crypto = require("crypto");
 const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 const { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT, } = require("../system-prompt-hints");
 const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
+const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
 const KIND = "gemini-cli";
+/**
+ * R43-4: a vault's own .gemini/settings.json (Gemini's workspace layer) can
+ * switch hooks off — `hooksConfig.enabled: false`, or `hooksConfig.disabled`
+ * (merged across layers by UNION) naming a hook. Gemini matches `disabled`
+ * against the hook's `name` (or its command when unnamed), so Gryphon's hook
+ * names carry a per-spawn random suffix a vault can't know in advance, and
+ * Gryphon's system-settings layer (which ranks above the workspace layer)
+ * sets `hooksConfig.enabled: true`.
+ */
+function _hookNameNonce() {
+    return crypto.randomBytes(6).toString("hex");
+}
 /**
  * Issue #30: store-guard-only settings — a single BeforeTool hook. Gemini's
  * `timeout` is MILLISECONDS (see _buildHooksJson).
  */
-function _buildStoreGuardJson({ nodePath, storeGuard }) {
+function _buildStoreGuardJson({ nodePath, storeGuard, nonce = _hookNameNonce() }) {
     const cmd = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "gemini" });
     const hook = {
-        name: "gryphon-store-guard",
+        name: `gryphon-store-guard-${nonce}`,
         type: "command",
         command: cmd.command,
         timeout: STORE_GUARD_TIMEOUT_S * 1000,
     };
     if (cmd.shell)
         hook.shell = cmd.shell;
-    return { hooks: { BeforeTool: [{ matcher: "*", hooks: [hook] }] } };
+    return { hooksConfig: { enabled: true }, hooks: { BeforeTool: [{ matcher: "*", hooks: [hook] }] } };
 }
 /**
  * Mapping from Gryphon's canonical hook events (Claude-Code-named)
@@ -86,26 +99,27 @@ const GEMINI_HOOK_EVENTS = [
  * for claude-code, just with different event names per the table
  * above and Gemini's per-hook `name` field (used in error logs).
  */
-function _buildHooksJson({ pluginDir, nodePath }) {
+function _buildHooksJson({ pluginDir, nodePath, nonce = _hookNameNonce() }) {
     const hooksDir = path.join(pluginDir, "hooks");
     const isWindows = process.platform === "win32";
     const makeCommand = (scriptName) => {
         const scriptPath = path.join(hooksDir, scriptName);
+        // R43-1: real shell quoting (the script path is under the vault folder).
         if (isWindows) {
             return {
-                command: `& '${nodePath}' '${scriptPath}'`,
+                command: hookCommandLine(nodePath, scriptPath, "win32"),
                 shell: "powershell",
             };
         }
         return {
-            command: `${JSON.stringify(nodePath)} ${JSON.stringify(scriptPath)}`,
+            command: hookCommandLine(nodePath, scriptPath),
         };
     };
     const hooksBlock = {};
     for (const [geminiEvent, scriptName, matcher, timeoutKey] of GEMINI_HOOK_EVENTS) {
         const cmd = makeCommand(scriptName);
         const hookEntry = {
-            name: `gryphon-${geminiEvent.toLowerCase()}`,
+            name: `gryphon-${geminiEvent.toLowerCase()}-${nonce}`,
             type: "command",
             command: cmd.command,
             // CRITICAL: Gemini interprets `timeout` in MILLISECONDS, while
@@ -128,7 +142,7 @@ function _buildHooksJson({ pluginDir, nodePath }) {
                 hooks: [hookEntry],
             }];
     }
-    return { hooks: hooksBlock };
+    return { hooksConfig: { enabled: true }, hooks: hooksBlock };
 }
 /**
  * Render the model-instructions content. Same source as Codex's

@@ -57,7 +57,7 @@ test("_buildHooksJson uses POSIX quoting on macOS/Linux", () => {
     nodePath: "/usr/bin/node",
   });
   const beforeToolCmd = settings.hooks.BeforeTool[0].hooks[0].command;
-  assert.match(beforeToolCmd, /^"\/usr\/bin\/node" "\/path with space\/hooks\/pretool\.js"$/);
+  assert.match(beforeToolCmd, /^'\/usr\/bin\/node' '\/path with space\/hooks\/pretool\.js'$/);
   // No `shell` field on POSIX (only set on Windows).
   assert.equal(settings.hooks.BeforeTool[0].hooks[0].shell, undefined);
 });
@@ -180,4 +180,26 @@ test("hooks/pretool.js source pins the dialect-aware buildDecision", () => {
   assert.equal(buildHookDecision("gemini", "ask").decision, "ask_user");
   assert.equal(buildHookDecision(undefined, "allow").hookSpecificOutput.permissionDecision, "allow",
     "Claude/Codex keep the {hookSpecificOutput} shape for the default dialect");
+});
+
+// R43-4: a vault .gemini/settings.json can disable hooks by NAME (merged by
+// union) or switch the hooks system off. Gryphon's system layer forces it on
+// and its hook names are unguessable per spawn.
+test("R43-4: Gemini hook names carry a per-spawn random suffix", () => {
+  const a = adapter._buildHooksJson({ pluginDir: "/p", nodePath: "/usr/bin/node" });
+  const b = adapter._buildHooksJson({ pluginDir: "/p", nodePath: "/usr/bin/node" });
+  const nameA = a.hooks.BeforeTool[0].hooks[0].name;
+  const nameB = b.hooks.BeforeTool[0].hooks[0].name;
+  assert.match(nameA, /^gryphon-beforetool-[0-9a-f]{12}$/);
+  assert.notEqual(nameA, nameB);
+  for (const groups of Object.values(a.hooks)) {
+    for (const g of groups) for (const h of g.hooks) assert.ok(!["gryphon-beforetool", "gryphon-aftertool"].includes(h.name));
+  }
+});
+
+test("R43-4: Gryphon's Gemini settings force the hooks system on (both modes)", () => {
+  assert.deepEqual(adapter._buildHooksJson({ pluginDir: "/p", nodePath: "/n" }).hooksConfig, { enabled: true });
+  const sg = adapter._buildStoreGuardJson({ nodePath: "/n", storeGuard: { scriptPath: "/s/store-guard-0123456789abcdef.js", approvalsDir: "/s" } });
+  assert.deepEqual(sg.hooksConfig, { enabled: true });
+  assert.match(sg.hooks.BeforeTool[0].hooks[0].name, /^gryphon-store-guard-[0-9a-f]{12}$/);
 });

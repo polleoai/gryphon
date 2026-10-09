@@ -4,6 +4,47 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.1] — 2026-10-08
+
+A security update from a full review of 2.11.0. Please update, especially if you use Codex.
+
+### Security
+
+- **A vault can no longer make Codex run a program as soon as a chat starts.** A vault could carry its own Codex settings file that started a program (an "MCP server") the moment a Codex chat began, before any safety check ran, and that could loosen Codex's sandbox. Every Gryphon version that runs Codex was affected. Gryphon now tells Codex not to use the vault's own Codex settings at all.
+- **A vault's folder name can no longer run commands.** Gryphon builds a command for each safety check, and the vault's folder path is part of it. A vault named with shell characters (for example `$( )` or backticks) could run commands every time a check ran, in Claude Code, Codex and Gemini chats. Paths are now quoted so they're treated as plain text. On Windows, a vault name containing an apostrophe (such as `Bob's Vault`) used to switch the checks off; it now works.
+- **A vault can no longer switch off Gryphon's Codex or Gemini checks** through its own Codex or Gemini settings files.
+- **Codex's file-editing tool is checked.** Codex edits files with a patch tool that Gryphon didn't recognise, so those edits weren't checked at all, even with Protected Mode on. Every file a patch touches is now checked like any other edit, including patches run from the shell and files reached through a shortcut.
+- **Codex's prompt check runs.** One of Gryphon's Codex checks (the one that looks at what you send) was still skipped by Codex. It now runs.
+- **Another name for the same folder no longer slips past.** Checks that compared folder paths as text could be fooled by a second name for the same place (a shortcut to the vault folder, `/System/Volumes/Data/…` on macOS, or Windows network-style paths). Gryphon now compares the actual folder, not its name.
+- **When protection can't run, you're told.** If Gryphon's full checks can't start for Codex, Gemini or Antigravity, those chats used to run without them and say nothing. Gryphon now shows a notice, keeps the check that protects its own security settings for Codex and Gemini, and won't start Antigravity unguarded.
+- **Your confirmed program locations are kept** when this version changes your settings, including settings it doesn't recognise. Gryphon 2.11.0 and older can still erase them when *they* change a setting, so update every copy of Gryphon you use (including one built into another plugin).
+- **A more reliable after-reply check.** The check that undoes unwanted changes to Gryphon's security settings now also catches settings it doesn't recognise, rebuilds entries that were deleted, and tells you if it couldn't undo a change instead of failing silently.
+- **A program inside the vault is never used to run a chat**, whether you set its location or Gryphon found it.
+- **Very large edits are checked within a time limit.** A huge patch could make the settings guard take so long that the program running it gave up — and some treat that as "allowed". Such edits are now refused (or, for vault files, sent to you to approve) instead.
+
+### Fixed
+
+- The first message of a session no longer pauses about a second longer than in 2.10 (each command-line program was being checked twice).
+- A note that merely *contains* patch-like text, and plugin tools that send deeply nested data, are no longer mistaken for changes to Gryphon's settings.
+- Notices about checks that can't run use plain words, and the notice about an undone change names the assistant that actually replied.
+- Error messages about program locations name the program, not an internal setting name.
+- On Windows, Antigravity's settings guard now lives in Gryphon's protected settings folder.
+
+### Corrections to the 2.11.0 notes
+
+- 2.11.0 said Gryphon checks a program's location "before it runs anything there, including the version check". Programs Gryphon finds automatically are still asked for their version while it looks for them; only a location you set is checked first.
+- Limits 2.11.0 should have stated, which still apply: the after-reply check can't catch a change timed to land after the reply ends; if Node.js isn't installed, the Codex, Gemini and Antigravity settings guard can't run (Gryphon tells you); Gemini CLI with a Google account can't be tested any more, because Google no longer offers it to individual accounts; a security setting changed in another Obsidian window — or by another copy of Gryphon — while this window's reply is running is undone and reported; and the after-reply check covers Gryphon's security settings, not its list of MCP servers you've approved (changes to that list are blocked by the settings guard, but not undone after the fact).
+- Codex on Windows hasn't been tested live; the Windows-specific Codex changes (including support for short folder names) are untested there.
+
+### For plugins that build on Gryphon
+
+- The provider functions (`createProvider`, `createProviderForKind`, `detectAvailable`, `getActiveProviderKind`, `resolveFallback`, `explainUnavailable`) no longer read program locations from your settings object. They use `securityHostId` from the options or from your plugin object, so set it there too. (2.11.0 also stopped reading protection settings from a plugin's settings object when no security snapshot is passed — they fall back to the protected defaults; that wasn't listed.)
+- `hookDispatcher.prepareSpawn` can now return `ok: true` with `mode: "store-guard-fallback"` when Protected Mode is on but the full checks can't run. In that mode only Gryphon's own settings are guarded — don't treat it as "tool calls are checked" (for example, don't auto-approve every tool on it).
+- The Codex hook setup now returns command-line arguments (`-c features.hooks=true`); put them before `--` and the prompt. `codexTrustOnlyOverlay({ projectDir })` gives a Codex home that ignores the vault's own Codex settings, for a launch without Gryphon's hooks; pass `projectDir` in the options so the hook setup does the same.
+- `resolveCliBinary` takes an optional fourth argument `{ vaultRoot }`; pass it to refuse programs inside the vault.
+- A chat view whose host plugin has no `hostAdapter` now shows Gryphon's notices in Obsidian (including the review prompt for a vault's MCP servers) instead of only logging them.
+- `patchTargets` is exported from the protection library.
+
 ## [2.11.0] — 2026-10-07
 
 ### Security

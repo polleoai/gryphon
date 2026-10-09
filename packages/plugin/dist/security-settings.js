@@ -204,6 +204,20 @@ function reportSecurityTamperReverted(reverted, providerLabel) {
     }
     catch { /* headless */ }
 }
+/**
+ * R43-10: the turn-end check found a change to the security settings but
+ * couldn't put it back. Nothing was undone, so the user must look.
+ */
+function reportSecurityTamperUndoFailed(providerLabel, e) {
+    const msg = `Gryphon found a change to its security settings during ${mcpApprovals.displaySafe(providerLabel)}'s reply ` +
+        `but couldn't undo it${e && e.code ? ` (${mcpApprovals.displaySafe(String(e.code))})` : ""}. ` +
+        "Open Gryphon's Security settings to check them, and make sure the settings file can be written.";
+    console.error("[gryphon]", msg, e);
+    try {
+        new Notice(msg, 0);
+    }
+    catch { /* headless */ }
+}
 /** The Notice + log a caller shows when a security write fails. */
 function reportSecurityWriteError(e) {
     const msg = e instanceof SecurityScopeUnavailableError
@@ -356,6 +370,7 @@ module.exports = {
     applyCliPathSetting,
     reportCliPathRejected,
     reportSecurityTamperReverted,
+    reportSecurityTamperUndoFailed,
     cliPathLabel,
     cliKindForPathKey,
     reportSecurityWriteError,

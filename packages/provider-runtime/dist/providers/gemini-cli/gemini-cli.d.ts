@@ -29,6 +29,12 @@
  */
 declare const DEFAULT_MODEL: any;
 /**
+ * R43-7 review: only hooks that gate EVERY tool call justify yolo. A
+ * store-guard FALLBACK (Protected Mode on, full checks down) protects only
+ * Gryphon's own settings, so Gemini keeps the user's own approval mode.
+ */
+declare function _hooksGateTools(hookExtras: any): boolean;
+/**
  * Map Gryphon's permissionMode to Gemini CLI's --approval-mode flag.
  *
  * Now that the HookDispatcher provides real pre-execution interception
@@ -100,4 +106,4 @@ declare class GeminiCliProvider {
     isAlive(): any;
     get costIsEstimate(): boolean;
 }
-export { GeminiCliProvider, _mapPermissionToApproval, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, _UNSUPPORTED_CLIENT_MESSAGE, };
+export { GeminiCliProvider, _mapPermissionToApproval, _hooksGateTools, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, _UNSUPPORTED_CLIENT_MESSAGE, };

@@ -12,18 +12,9 @@
  * syntax.
  */
 
-/**
- * POSIX single-quote: everything inside is literal to sh (no $, backtick or
- * backslash expansion), and shlex-style splitters read it the same way.
- */
-function shQuote(s: string): string {
-  return `'${String(s).replace(/'/g, `'\\''`)}'`;
-}
-
-/** PowerShell single-quote: literal; an embedded ' is doubled. */
-function psQuote(s: string): string {
-  return `'${String(s).replace(/'/g, "''")}'`;
-}
+// Shared with every hook-command builder (R43-1): one quoting
+// implementation, including PowerShell's typographic single quotes.
+const { shQuote, psQuote } = require("../../../provider-runtime/dist/shell-quote");
 
 /** Seconds — the decision is immediate; this only bounds a stuck stdin. */
 const STORE_GUARD_TIMEOUT_S = 30;

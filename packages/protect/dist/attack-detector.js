@@ -16,6 +16,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * tool calls only; downstream threat intel is a separate concern.
  */
 const path = require("path");
+const fs = require("fs");
 const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PROTECTED_CATEGORIES, } = require("./constants");
 const { matchProtectedPath, resolveVaultPath, PathOutsideVaultError, } = require("./path-utils");
 const { checkPermission } = require("./permission-gate");
@@ -103,7 +104,8 @@ function _categoryTitle(category) {
  * Cross-CLI tool-name aliases (issue #30: their own module, so the bundled
  * store-guard hook canonicalises tool names exactly as classify does).
  */
-const { TOOL_ALIASES } = require("./tool-aliases");
+const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
+const { rebaseOntoRoot } = require("./path-identity");
 function classify(tool, input, ctx) {
     if (!tool || !input)
         return null;
@@ -138,6 +140,12 @@ function classify(tool, input, ctx) {
         // respected as the user chose for routine operations).
         if (security.protectedPathsEnabled === false)
             return null;
+        // R43-3: Codex apply_patch carries its targets in the patch text; each
+        // one is classified like a Write/Edit of that file, and the most severe
+        // verdict wins (the others are named in its detail).
+        if (tool === "apply_patch" && typeof input.file_path !== "string") {
+            return _mostSevere(_patchVerdicts(canonical, input, ctx, security));
+        }
         // Gemini's write_file uses `file_path` already, but `replace`
         // uses `file_path` too (Gemini's docs). _classifyFilePath reads
         // input.file_path; if a future CLI uses a different field, add
@@ -151,9 +159,17 @@ function classify(tool, input, ctx) {
     // CC's cwd-restriction happened to catch obvious cases but missed any
     // destructive command targeting a path inside the vault.
     if (canonical === "Bash" || canonical === "PowerShell") {
-        if (security.protectedCommandsEnabled === false)
-            return null;
-        return _classifyCommand(canonical, input, ctx, security);
+        // R43-3: a shell `apply_patch <<'EOF' … EOF` edits files Codex applies
+        // itself; each patched file is classified as an Edit of that file.
+        // Only the command's own text can be a shell `apply_patch`.
+        const verdicts = security.protectedPathsEnabled !== false
+            ? _patchVerdicts("Edit", { command: input.command }, ctx, security, input) : [];
+        if (security.protectedCommandsEnabled !== false) {
+            const cmd = _classifyCommand(canonical, input, ctx, security);
+            if (cmd)
+                verdicts.unshift(cmd);
+        }
+        return _mostSevere(verdicts);
     }
     // Read / Glob / Grep / WebFetch / WebSearch are not currently gated —
     // their outputs carry the threat, not their inputs. Returning null
@@ -203,6 +219,103 @@ function _approvalsStoreVerdict(tool, what) {
             `Matched pattern: gryphon MCP approval store`,
     };
 }
+/**
+ * R43-3: verdicts for every file a patch names. Relative paths resolve
+ * from the vault root, from any dir argument the hook payload carries
+ * (workdir/cwd/…), and from any `cd` in a shell command — a protected match
+ * under ANY of those bases counts. Limit (R44 F5): Codex's exec_command hook
+ * payload carries only the command, not the tool's own `workdir`, so a
+ * relative patch run from another folder resolves from the vault root here;
+ * the store files are still caught by name (and see #32 for lexical gaps).
+ * A patch too large to scan is itself a verdict.
+ */
+const MAX_PATCH_RESOLUTIONS = 4000;
+function _patchVerdicts(tool, input, ctx, security, baseArgs = input) {
+    const info = patchTargetsInfo(input);
+    if (info.truncated) {
+        return [{
+                tool,
+                matchedPattern: "patch too large to inspect",
+                category: "runs-arbitrary-code",
+                title: _categoryTitle("runs-arbitrary-code"),
+                userRisk: "This change touches more files than Gryphon can check one by one, so it can't confirm none of them is protected.",
+                technicalDetail: `Tool:            ${tool}\nPatch:           more than the inspectable number of files`,
+            }];
+    }
+    if (!info.targets.length)
+        return [];
+    const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
+    if (!vaultRoot)
+        return [];
+    const bases = new Set([vaultRoot]);
+    const extra = [];
+    for (const [k, v] of Object.entries(baseArgs)) {
+        if (typeof v === "string" && /cwd|dir(?:ectory)?s?$|folders?$|^(?:root|base)$/i.test(k))
+            extra.push(v);
+    }
+    extra.push(...shellCdDirs(input.command));
+    for (const d of extra)
+        bases.add(path.resolve(vaultRoot, d));
+    // E7-1 / P8-1: bounded work — files × folders past the budget is itself
+    // a verdict (approvable), never a long freeze or a silent allow.
+    if (info.targets.length * bases.size > MAX_PATCH_RESOLUTIONS) {
+        return [{
+                tool,
+                matchedPattern: "patch too large to inspect",
+                category: "runs-arbitrary-code",
+                title: _categoryTitle("runs-arbitrary-code"),
+                userRisk: "This change touches more files than Gryphon can check one by one, so it can't confirm none of them is protected.",
+                technicalDetail: `Tool:            ${tool}\nPatch:           ${info.targets.length} files × ${bases.size} folders`,
+            }];
+    }
+    const out = [];
+    for (const target of info.targets) {
+        for (const base of bases) {
+            const abs = path.resolve(base, target);
+            const v = _classifyFilePath(tool, { ...input, file_path: abs }, ctx, security);
+            if (v) {
+                out.push({ ...v, technicalDetail: `${v.technicalDetail}\nPatched file:    ${target}` });
+                break;
+            }
+        }
+    }
+    return out;
+}
+const SEVERITY_ORDER = [
+    "modifies-gryphon", "escalates-privileges", "persistent-execution", "runs-arbitrary-code",
+    "accesses-system", "network-exec", "destructive-operation", "modifies-editor",
+    "network-fetch", "package-install", "user-custom",
+];
+/** The most severe verdict; the others are listed in its detail (R43-3 consent). */
+function _mostSevere(verdicts) {
+    const list = verdicts.filter(Boolean);
+    if (!list.length)
+        return null;
+    const rank = (v) => (v.fixedInvariant ? -1 : (SEVERITY_ORDER.indexOf(v.category) + 1 || SEVERITY_ORDER.length + 1));
+    const sorted = [...list].sort((a, b) => rank(a) - rank(b));
+    const [top, ...rest] = sorted;
+    if (!rest.length)
+        return top;
+    const also = rest.map((v) => `${v.title} (${v.matchedPattern})`).join("; ");
+    return { ...top, technicalDetail: `${top.technicalDetail}\nAlso matched:    ${also}` };
+}
+/** realpath of the deepest existing ancestor + the missing tail. */
+function _realishPath(p) {
+    let cur = p;
+    const tail = [];
+    for (let i = 0; i < 64; i++) {
+        try {
+            return path.join(fs.realpathSync(cur), ...tail.reverse());
+        }
+        catch (_) { /* walk up */ }
+        const parent = path.dirname(cur);
+        if (parent === cur)
+            break;
+        tail.push(path.basename(cur));
+        cur = parent;
+    }
+    return p;
+}
 function _classifyFilePath(tool, input, ctx, security) {
     const vaultRoot = ctx && ctx.vaultRoot;
     if (!vaultRoot)
@@ -224,9 +337,27 @@ function _classifyFilePath(tool, input, ctx, security) {
         // re-throwing so _handleClassifyRequest's outer catch returns
         // `{decision:"deny"}` with a visible reason, rather than
         // silently allowing an unclassifiable path.
-        if (e instanceof PathOutsideVaultError)
+        if (!(e instanceof PathOutsideVaultError))
+            throw e;
+        // R43-6: another NAME for a place inside the vault (symlinked vault
+        // folder, macOS firmlink, Windows UNC/8.3 spelling) is still inside it.
+        // R2-1: try `..`-collapsed and on-disk spellings too.
+        let rebased = null;
+        for (const spelling of [String(filePath), path.resolve(String(filePath)), _realishPath(String(filePath))]) {
+            rebased = rebaseOntoRoot(spelling, String(vaultRoot));
+            if (rebased)
+                break;
+        }
+        if (!rebased)
             return null;
-        throw e;
+        try {
+            resolved = resolveVaultPath(rebased, vaultRoot);
+        }
+        catch (e2) {
+            if (e2 instanceof PathOutsideVaultError)
+                return null;
+            throw e2;
+        }
     }
     const rawRel = path.relative(String(vaultRoot), String(resolved)).replace(/\\/g, "/");
     // Same normalization as command-path matching: NFKC + zero-width strip.

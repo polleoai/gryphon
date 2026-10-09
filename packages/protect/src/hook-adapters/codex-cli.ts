@@ -24,6 +24,7 @@ const path = require("path") as typeof import("path");
 const fs = require("fs") as typeof import("fs");
 const os = require("os") as typeof import("os");
 const crypto = require("crypto") as typeof import("crypto");
+const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
 const {
   DEFAULT_HOOK_TIMEOUTS,
   HOOK_FILES,
@@ -66,6 +67,59 @@ const PRESERVED_FROM_REAL_HOME = [
 ];
 
 /**
+ * R2-2: a TOML basic string. JSON.stringify is close but not TOML: it
+ * leaves U+007F raw (forbidden in TOML) and emits \uDXXX for a lone
+ * surrogate (also invalid). Vault paths reach these strings, and an invalid
+ * config makes Codex refuse to start — so encode DEL, and refuse a string
+ * that can't be represented at all.
+ */
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+function _tomlString(s: string): string {
+  if (LONE_SURROGATE_RE.test(s)) throw new Error("path can't be written to Codex's config (unpaired surrogate)");
+  return JSON.stringify(s).replace(/\u007f/g, "\\u007F");
+}
+
+/**
+ * R3-1: Codex applies the PROJECT config layer — a `.codex/config.toml` in
+ * the vault or any folder above it up to the repo root — even under
+ * `codex exec` with an overlay CODEX_HOME, and that layer can start
+ * `mcp_servers` at session start (no tool call, so no hook) or widen the
+ * sandbox (`sandbox_workspace_write.writable_roots`). Verified live, codex
+ * 0.145: a vault's MCP server ran on a plain "say hi". Marking the vault and
+ * every folder above it untrusted in OUR user layer stops Codex from
+ * applying those layers (a `-c projects…` override did not). These entries
+ * live only in Gryphon's per-spawn overlay; the user's own ~/.codex is
+ * untouched.
+ */
+function _projectTrustToml(projectDir: string | null | undefined): string {
+  if (!projectDir || typeof projectDir !== "string") return "";
+  const dirs = new Set<string>();
+  const starts = [path.resolve(projectDir)];
+  try { starts.push(fs.realpathSync.native(projectDir)); } catch { /* missing */ }
+  try { starts.push(fs.realpathSync(projectDir)); } catch { /* missing */ }
+  for (const start of starts) {
+    let cur = start;
+    for (let i = 0; i < 256; i++) {
+      dirs.add(cur);
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  }
+  let toml = "";
+  for (const d of dirs) {
+    try {
+      toml += `[projects.${_tomlString(d)}]\ntrust_level = "untrusted"\n\n`;
+    } catch {
+      // An unencodable folder name: without its entry Codex would apply
+      // that folder's project config, so refuse the whole overlay.
+      throw new Error(`Gryphon can't safely start Codex in ${JSON.stringify(projectDir)}`);
+    }
+  }
+  return toml;
+}
+
+/**
  * Render one [[hooks.<EventName>]] block in TOML form.
  *
  * Codex's TOML config schema mirrors Claude Code's JSON exactly:
@@ -80,11 +134,11 @@ const PRESERVED_FROM_REAL_HOME = [
 function _renderHookBlock(eventName: string, matcher: string, command: string, timeout: number) {
   return [
     `[[hooks.${eventName}]]`,
-    `matcher = ${JSON.stringify(matcher)}`,
+    `matcher = ${_tomlString(matcher)}`,
     ``,
     `[[hooks.${eventName}.hooks]]`,
     `type = "command"`,
-    `command = ${JSON.stringify(command)}`,
+    `command = ${_tomlString(command)}`,
     `timeout = ${timeout}`,
     ``,
   ].join("\n");
@@ -105,6 +159,14 @@ function _renderHookBlock(eventName: string, matcher: string, command: string, t
  * `{event_name, matcher, hooks:[normalized handler]}`, where the handler
  * omits unset options and its timeout is normalized the way Codex does.
  */
+/**
+ * R43-2: a vault's own `.codex/config.toml` (Codex's project layer) could set
+ * `[features] hooks = false` (or the `codex_hooks` alias) and switch off every
+ * Gryphon hook. Command-line `-c` overrides rank above the project layer, so
+ * every spawn that carries Gryphon hooks forces the feature back on.
+ */
+const CODEX_FORCE_HOOKS_ARGS = ["-c", "features.hooks=true"];
+
 const CODEX_EVENT_LABELS: Record<string, string> = {
   PreToolUse: "pre_tool_use",
   PostToolUse: "post_tool_use",
@@ -113,6 +175,8 @@ const CODEX_EVENT_LABELS: Record<string, string> = {
   UserPromptSubmit: "user_prompt_submit",
 };
 const CODEX_SESSION_END_MAX_TIMEOUT_SEC = 3;
+// hooks/src/events/common.rs matcher_pattern_for_event @ rust-v0.145.0.
+const CODEX_MATCHERLESS_EVENTS = new Set(["UserPromptSubmit", "Stop"]);
 
 function _canonicalJson(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(_canonicalJson);
@@ -133,9 +197,11 @@ function _codexNormalizedTimeout(eventName: string, timeout: number): number {
 function _codexHookTrustHash(eventName: string, matcher: string, command: string, timeout: number): string | null {
   const label = CODEX_EVENT_LABELS[eventName];
   if (!label) return null;
-  const identity = {
+  // R43-5: Codex hashes UserPromptSubmit and Stop with NO matcher
+  // (matcher_pattern_for_event → None), so the key is omitted, not "".
+  const identity: Record<string, unknown> = {
     event_name: label,
-    matcher,
+    ...(CODEX_MATCHERLESS_EVENTS.has(eventName) ? {} : { matcher }),
     hooks: [{ type: "command", command, timeout: _codexNormalizedTimeout(eventName, timeout), async: false }],
   };
   return "sha256:" + crypto.createHash("sha256").update(JSON.stringify(_canonicalJson(identity))).digest("hex");
@@ -153,7 +219,7 @@ function _renderTrustState(configPath: string, hooks: Array<[string, string, str
     const hash = _codexHookTrustHash(eventName, matcher, command, timeout);
     if (!hash) continue;
     const key = `${configPath}:${CODEX_EVENT_LABELS[eventName]}:0:0`;
-    toml += `[hooks.state.${JSON.stringify(key)}]\ntrusted_hash = ${JSON.stringify(hash)}\n\n`;
+    toml += `[hooks.state.${_tomlString(key)}]\ntrusted_hash = ${_tomlString(hash)}\n\n`;
   }
   return toml;
 }
@@ -205,10 +271,9 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
   // single-quoted PowerShell paths inside an `&` invocation.
   const makeCommand = (scriptName: string) => {
     const scriptPath = path.join(hooksDir, scriptName);
-    if (isWindows) {
-      return `& '${nodePath}' '${scriptPath}'`;
-    }
-    return `${JSON.stringify(nodePath)} ${JSON.stringify(scriptPath)}`;
+    // R43-1: real shell quoting (the script path is under the vault folder,
+    // and #31 makes Codex trust exactly this string).
+    return hookCommandLine(nodePath, scriptPath, isWindows ? "win32" : process.platform);
   };
 
   const events = [
@@ -229,7 +294,7 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
   // wording leaks) and the compound-request rule (complete safe sub-
   // tasks even when one is refused).
   if (modelInstructionsFile) {
-    toml += `model_instructions_file = ${JSON.stringify(modelInstructionsFile)}\n\n`;
+    toml += `model_instructions_file = ${_tomlString(modelInstructionsFile)}\n\n`;
   }
   const rendered: Array<[string, string, string, number]> = [];
   for (const [event, matcher, scriptName] of events) {
@@ -265,13 +330,19 @@ function _buildStoreGuardToml({ nodePath, storeGuard, configPath }: { nodePath: 
  * config from the user's interactive `codex` use, and protects
  * against multi-vault cross-contamination.
  */
-function _createCodexHomeOverlay({ pluginDir, nodePath, storeGuard }: { pluginDir?: string; nodePath: string; storeGuard?: StoreGuardOnly }): string {
+function _createCodexHomeOverlay({ pluginDir, nodePath, storeGuard, projectDir, trustOnly }: { pluginDir?: string; nodePath?: string; storeGuard?: StoreGuardOnly; projectDir?: string | null; trustOnly?: boolean }): string {
   const realHome = path.join(os.homedir(), ".codex");
   const rand = crypto.randomBytes(4).toString("hex");
   // Realpath: Codex keys hook trust by the config path it reads, and on
   // macOS os.tmpdir() (/var/folders/…) is a symlink to /private/var/….
+  // R43-13: the NATIVE realpath, which (unlike JS realpathSync) expands
+  // Windows 8.3 short names (C:\Users\RUNNER~1 → C:\Users\runneradmin) the way
+  // Codex canonicalizes CODEX_HOME — otherwise the trust keys don't match
+  // and Codex skips every hook. Same result as realpathSync elsewhere.
   let tmpBase = os.tmpdir();
-  try { tmpBase = fs.realpathSync(tmpBase); } catch { /* keep os.tmpdir() */ }
+  try { tmpBase = fs.realpathSync.native(tmpBase); } catch {
+    try { tmpBase = fs.realpathSync(tmpBase); } catch { /* keep os.tmpdir() */ }
+  }
   const overlay = path.join(
     tmpBase,
     `gryphon-codex-home-${process.pid}-${Date.now()}-${rand}`,
@@ -314,9 +385,18 @@ function _createCodexHomeOverlay({ pluginDir, nodePath, storeGuard }: { pluginDi
   // and the caller never gets the cleanup callback — without this
   // rollback every failed spawn leaves a 4-KB stub in tmpdir.
   try {
+    const trust = _projectTrustToml(projectDir);
+    if (trustOnly) {
+      // R3-1: hooks couldn't be set up, but the vault's own Codex config
+      // must still not apply.
+      fs.writeFileSync(path.join(overlay, "config.toml"),
+        "# Gryphon-managed Codex config (regenerated per spawn): project trust only.\n\n" + trust,
+        { flag: "wx", mode: 0o600 });
+      return overlay;
+    }
     if (storeGuard) {
       const sgConfigPath = path.join(overlay, "config.toml");
-      fs.writeFileSync(sgConfigPath, _buildStoreGuardToml({ nodePath, storeGuard, configPath: sgConfigPath }), { flag: "wx", mode: 0o600 });
+      fs.writeFileSync(sgConfigPath, _buildStoreGuardToml({ nodePath: nodePath as string, storeGuard, configPath: sgConfigPath }) + trust, { flag: "wx", mode: 0o600 });
       return overlay;
     }
     const modelInstructionsFile = path.join(overlay, "model-instructions.md");
@@ -333,7 +413,7 @@ function _createCodexHomeOverlay({ pluginDir, nodePath, storeGuard }: { pluginDi
     const configPath = path.join(overlay, "config.toml");
     fs.writeFileSync(
       configPath,
-      _buildHooksToml({ pluginDir: pluginDir as string, nodePath, modelInstructionsFile, configPath }),
+      _buildHooksToml({ pluginDir: pluginDir as string, nodePath: nodePath as string, modelInstructionsFile, configPath }) + trust,
       { flag: "wx", mode: 0o600 },
     );
   } catch (e) {
@@ -366,15 +446,16 @@ function _cleanupOverlay(overlay: string | null) {
  * Adapter contract — see hook-dispatcher.js for the schema.
  */
 function buildSpawnExtras(
-  { pluginDir, ipcSocketPath, nodePath, storeGuardOnly }:
-  { pluginDir?: string; ipcSocketPath?: string; nodePath: string; storeGuardOnly?: StoreGuardOnly },
+  { pluginDir, ipcSocketPath, nodePath, storeGuardOnly, options }:
+  { pluginDir?: string; ipcSocketPath?: string; nodePath: string; storeGuardOnly?: StoreGuardOnly; options?: Record<string, unknown> },
 ) {
+  const projectDir = options && typeof options.projectDir === "string" ? options.projectDir : null;
   if (storeGuardOnly) {
     if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir) return null;
-    const overlay = _createCodexHomeOverlay({ nodePath, storeGuard: storeGuardOnly });
+    const overlay = _createCodexHomeOverlay({ nodePath, storeGuard: storeGuardOnly, projectDir });
     return {
       env: { CODEX_HOME: overlay, GRYPHON_HOOK_PROVIDER: KIND },
-      args: [],
+      args: [...CODEX_FORCE_HOOKS_ARGS], // R43-2: a vault config can't switch the guard off.
       cleanup: () => _cleanupOverlay(overlay),
       settingsFile: path.join(overlay, "config.toml"),
     };
@@ -383,7 +464,7 @@ function buildSpawnExtras(
     // Dispatcher pre-flight should have caught these; defensive only.
     return null;
   }
-  const overlay = _createCodexHomeOverlay({ pluginDir, nodePath });
+  const overlay = _createCodexHomeOverlay({ pluginDir, nodePath, projectDir });
   return {
     env: {
       CODEX_HOME: overlay,
@@ -394,15 +475,28 @@ function buildSpawnExtras(
       // hook input's session_id matches what the provider tracks.
       GRYPHON_HOOK_PROVIDER: KIND,
     },
-    args: [], // Codex picks up hooks from <CODEX_HOME>/config.toml — no CLI flag needed.
+    args: [...CODEX_FORCE_HOOKS_ARGS], // hooks come from <CODEX_HOME>/config.toml; the flag only stops a vault switching them off (R43-2).
     cleanup: () => _cleanupOverlay(overlay),
     settingsFile: path.join(overlay, "config.toml"),
   };
 }
 
+/**
+ * R3-1: a CODEX_HOME that carries only the project-trust entries — for a
+ * spawn whose hooks couldn't be installed, so the vault's own Codex config
+ * still doesn't apply. Throws when the folder can't be encoded safely.
+ */
+function buildTrustOnlyOverlay({ projectDir }: { projectDir: string }) {
+  const overlay = _createCodexHomeOverlay({ projectDir, trustOnly: true });
+  return { env: { CODEX_HOME: overlay }, cleanup: () => _cleanupOverlay(overlay) };
+}
+
 module.exports = {
   kind: KIND,
   buildSpawnExtras,
+  buildTrustOnlyOverlay,
+  _projectTrustToml,
+  _tomlString,
   // Internals exposed for tests:
   _buildHooksToml,
   _codexHookTrustHash,

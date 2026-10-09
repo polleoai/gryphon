@@ -93,7 +93,7 @@ test("tree-kill reaps a grandchild sleeper, not just the direct child (acceptanc
   // The direct child spawns a detached grandchild sleeper, prints the
   // grandchild pid on stdout, then idles. We capture the grandchild pid,
   // tree-kill the child, and assert BOTH die. Without process-group kill
-  // the grandchild would survive (the original athena.server leak).
+  // the grandchild would survive (the original kbhost.server leak).
   const childSrc = `
     const { spawn } = require("child_process");
     const g = spawn(process.execPath, ["-e", "setTimeout(()=>{}, 60000)"], { stdio: "ignore" });

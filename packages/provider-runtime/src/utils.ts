@@ -180,8 +180,13 @@ function probeVersion(
   run: (p: string) => string = _runVersion,
   signature?: RegExp,
 ): number[] | null {
-  if (Object.prototype.hasOwnProperty.call(_versionCache, binPath)) {
-    return _versionCache[binPath];
+  // R43-16: cache by the real file too — detection probes the symlink
+  // (/opt/homebrew/bin/codex) and the path resolver probes its realpath;
+  // without this every CLI ran `--version` twice (~1 s extra freeze).
+  let realKey = binPath;
+  try { realKey = fs.realpathSync(binPath); } catch (_) { /* keep binPath */ }
+  for (const k of [binPath, realKey]) {
+    if (Object.prototype.hasOwnProperty.call(_versionCache, k)) return _versionCache[k];
   }
   let parsed: number[] | null = null;
   try {
@@ -202,7 +207,7 @@ function probeVersion(
   // garbage — and must NOT be cached, or one cold first probe poisons
   // detection for the whole session (the gemini "not found" bug). Leaving it
   // uncached lets the next probe re-run and self-heal once warm.
-  if (parsed) _versionCache[binPath] = parsed;
+  if (parsed) { _versionCache[binPath] = parsed; _versionCache[realKey] = parsed; }
   return parsed;
 }
 
@@ -700,10 +705,52 @@ function _detectFor(kind: string): string | null {
  *
  * Pure resolution: never spawns the model, only `--version` probes (cached).
  */
+/**
+ * R43-11: a self-healed (detected) binary is spawned without having gone
+ * through the machine-store resolver, so it gets the resolver's vault rule
+ * here: refused when it — or its realpath — lies inside the vault (by path
+ * and by file identity, so another name for the vault doesn't pass).
+ */
+function _fileIdOf(p: string): string | null {
+  try {
+    const st = fs.statSync(p, { bigint: true });
+    return st.ino === BigInt(0) ? null : `${st.dev}:${st.ino}`;
+  } catch (_) {
+    return null;
+  }
+}
+function _insideVault(p: string, vaultRoot: string): boolean {
+  const norm = (x: string) => x.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const roots = [path.resolve(vaultRoot)];
+  try { roots.push(fs.realpathSync(vaultRoot)); } catch (_) { /* gone */ }
+  const cands = [p];
+  try { cands.push(fs.realpathSync(p)); } catch (_) { /* missing */ }
+  for (const c of cands) {
+    for (const r of roots) {
+      const a = norm(c), b = norm(r);
+      if (a === b || a.startsWith(b + "/")) return true;
+    }
+  }
+  const ids = new Set(roots.map(_fileIdOf).filter(Boolean));
+  if (!ids.size) return false;
+  for (const c of cands) {
+    let cur = c;
+    for (let i = 0; i < 128; i++) {
+      const id = _fileIdOf(cur);
+      if (id && ids.has(id)) return true;
+      const parent = path.dirname(cur);
+      if (parent === cur) break;
+      cur = parent;
+    }
+  }
+  return false;
+}
+
 function resolveCliBinary(
   kind: string,
   configuredPath?: string,
   minVersionOverride?: string,
+  opts: { vaultRoot?: string | null } = {},
 ): ResolveResult {
   // minVersionOverride lets a caller (or a test) impose a stricter floor than
   // the permissive per-kind default; the default keeps the too-old gate dormant.
@@ -713,7 +760,13 @@ function resolveCliBinary(
   const signature = _versionSignatureFor(label);
   const probe = (p: string) => probeVersion(p, _runVersion, signature);
 
-  // R7: an explicit, valid, version-OK configured path wins outright.
+  // R7: an explicit, valid, version-OK configured path wins outright —
+  // never one inside the vault (R44 security F2: same rule as a detected
+  // binary, for any caller that passes a raw configured path).
+  if (typeof configuredPath === "string" && configuredPath && opts.vaultRoot && _insideVault(configuredPath, opts.vaultRoot)) {
+    console.warn(`[gryphon] refused a configured ${label} binary inside the vault: ${configuredPath}`);
+    configuredPath = undefined;
+  }
   if (typeof configuredPath === "string" && configuredPath) {
     let executable = false;
     try { fs.accessSync(configuredPath, fs.constants.X_OK); executable = true; } catch {}
@@ -730,7 +783,11 @@ function resolveCliBinary(
 
   // find*Binary ranks by the DEFAULT (permissive) floor, so re-validate the
   // detected binary against the (possibly overridden) floor here.
-  const detected = _detectFor(kind);
+  let detected = _detectFor(kind);
+  if (detected && opts.vaultRoot && _insideVault(detected, opts.vaultRoot)) {
+    console.warn(`[gryphon] refused a detected ${label} binary inside the vault: ${detected}`);
+    detected = null;
+  }
   if (detected) {
     const v = probe(detected) || [0, 0, 0];
     if (compareVersions(v, floor) >= 0) {

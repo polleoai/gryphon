@@ -311,3 +311,24 @@ test("#30 (security review): an agy store-guard install never displaces another 
   assert.deepEqual(json[HOOK_KEY], fullBefore, "cleanup leaves window A's key alone");
   assert.equal(json[STORE_GUARD_HOOK_KEY], undefined);
 });
+
+test("R43-9: a verified script's mtime is refreshed, so another copy's sweep keeps it", () => {
+  const fs = require("fs");
+  const os = require("os");
+  const path = require("path");
+  const { ensureStoreGuardScript, sweepStoreGuardScripts } = require("../src/store-guard");
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), "r43-9-"));
+  try {
+    const a = ensureStoreGuardScript({ dir });
+    assert.equal(a.ok, true);
+    const old = new Date(Date.now() - 40 * 24 * 3600 * 1000);
+    fs.utimesSync(a.path, old, old);
+    // This copy uses it again (verified, not rewritten)…
+    assert.equal(ensureStoreGuardScript({ dir }).ok, true);
+    // …then another version's sweep runs: the script must survive.
+    sweepStoreGuardScripts(path.join(dir, "store-guard-ffffffffffffffff.js"), dir);
+    assert.equal(fs.existsSync(a.path), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

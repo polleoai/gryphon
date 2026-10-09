@@ -95,6 +95,9 @@ async function main() {
     // so a relative path still resolves somewhere.
     cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(),
     extraDirs: guardedDir ? [guardedDir] : [],
+    // E7-1: decide well inside the CLI's hook timeout — a killed hook is
+    // "allow" in several CLIs. Past this the check refuses (fail closed).
+    deadlineAt: Date.now() + 15000,
   });
   emit(verdict ? "deny" : "allow", verdict ? REFUSAL : undefined);
 }

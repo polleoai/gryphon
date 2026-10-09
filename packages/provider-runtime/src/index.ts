@@ -37,7 +37,7 @@ module.exports = {
 
   // Failover kernel (issue #15) — the reusable, host-agnostic decision layer.
   // classifyProviderFailure + resolveFallback + createProviderForKind let any
-  // consumer (the chat-view orchestrator, or Athena's synthesis path) build a
+  // consumer (the chat-view orchestrator, or an embedding plugin's own path) build a
   // one-hop availability failover without reaching into the chat view.
   classifyProviderFailure: failover.classifyProviderFailure,
   resolveFallback: factory.resolveFallback,

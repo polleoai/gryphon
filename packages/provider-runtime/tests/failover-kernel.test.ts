@@ -6,7 +6,7 @@
  *   - resolveFallback(plugin) → { kind, model } | null
  *   - createProviderForKind(plugin, kind, cwd, options, modelOverride?) → LLMProvider|null
  *
- * These three are the consumer-facing contract (Athena drives the provider
+ * These three are the consumer-facing contract (the host drives the provider
  * layer from BOTH its embedded chat view AND its synthesis/page-production
  * path). The kernel must be pure over (plugin, err) with zero chat-view
  * dependency, and all three must be reachable from the package index.
@@ -68,7 +68,7 @@ function freshEnv(fn) {
 const runtime = require("../src/index");
 const { classifyProviderFailure, resolveFallback, createProviderForKind } = runtime;
 
-// ── kernel reachable from the package index (Athena contract) ─────────
+// ── kernel reachable from the package index (the host contract) ─────────
 
 test("issue #15: all three kernel fns exported from index", () => {
   assert.equal(typeof classifyProviderFailure, "function");

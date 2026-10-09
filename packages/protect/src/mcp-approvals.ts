@@ -39,7 +39,8 @@ const fs = require("fs") as typeof import("fs");
 const os = require("os") as typeof import("os");
 const path = require("path") as typeof import("path");
 const crypto = require("crypto") as typeof import("crypto");
-const { TOOL_ALIASES } = require("./tool-aliases");
+const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
+const { fileIdCached, isWithinIds } = require("./path-identity");
 
 const STORE_VERSION = 1;
 const FILE_NAME = "mcp-approvals.json";
@@ -259,7 +260,75 @@ function _realish(p: string): string {
  * XDG_CONFIG_HOME / APPDATA in the agent's environment can't move the
  * target away from it. Only ever widens what's guarded.
  */
-type GuardOpts = LocateOpts & { extraDirs?: string[] };
+type GuardOpts = LocateOpts & {
+  extraDirs?: string[];
+  /** Absolute ms time past which a check gives up and refuses (the hook's deadline). */
+  deadlineAt?: number;
+};
+
+/**
+ * Per-check state (E7-1 / P8-1): the guarded dirs and their identities are
+ * computed ONCE per verdict, ancestor stats are cached, and the number of
+ * path resolutions is budgeted — past the budget or the deadline the call is
+ * refused as uninspectable rather than allowed (a killed hook is "allow" in
+ * several CLIs).
+ */
+type GuardCtx = {
+  opts: GuardOpts;
+  norms: string[];
+  ids: Set<string>;
+  storeFileIds: Set<string>;
+  cache: Map<string, string | null>;
+  budget: number;
+};
+const MAX_RESOLUTIONS = 4000;
+
+class TooLargeToInspect extends Error {}
+
+function _guardCtx(opts: GuardOpts): GuardCtx {
+  const cache = new Map<string, string | null>();
+  const guarded = _guardedDirs(opts);
+  const norms = new Set<string>();
+  const ids = new Set<string>();
+  const storeFileIds = new Set<string>();
+  for (const dir of guarded) {
+    norms.add(_norm(dir)); norms.add(_norm(_realish(dir)));
+    const id = fileIdCached(dir, cache); if (id) ids.add(id);
+    for (const f of ["mcp-approvals.json", "security-settings.json"]) {
+      const fid = fileIdCached(path.join(dir, f), cache); if (fid) storeFileIds.add(fid);
+    }
+  }
+  return { opts, norms: [...norms], ids, storeFileIds, cache, budget: MAX_RESOLUTIONS };
+}
+
+function _spend(ctx: GuardCtx): void {
+  if (--ctx.budget < 0) throw new TooLargeToInspect("too many paths to inspect");
+  if (typeof ctx.opts.deadlineAt === "number" && Date.now() > ctx.opts.deadlineAt) {
+    throw new TooLargeToInspect("took too long to inspect");
+  }
+}
+
+/** The store check against a precomputed context (see isApprovalsStorePath). */
+function _isStorePath(absPath: string, ctx: GuardCtx): boolean {
+  if (typeof absPath !== "string" || !absPath) return false;
+  _spend(ctx);
+  // R2-1: three spellings — as given, `..` collapsed lexically (what the
+  // writing tool does), and resolved on disk (what the kernel does when a
+  // symlink precedes the `..`).
+  const real = _realish(absPath);
+  const spellings = [...new Set([absPath, path.resolve(absPath), real])];
+  for (const c of spellings.map(_norm)) {
+    for (const d of ctx.norms) if (c === d || c.startsWith(d + "/")) return true;
+  }
+  // R43-6: the same dir or file under another name (macOS firmlinks,
+  // Windows \\?\ / \\localhost\C$ / 8.3 names, hard links).
+  for (const c of spellings) {
+    if (isWithinIds(c, ctx.ids, ctx.cache)) return true;
+    const id = fileIdCached(c, ctx.cache);
+    if (id && ctx.storeFileIds.has(id)) return true;
+  }
+  return false;
+}
 
 function _guardedDirs(opts: GuardOpts): string[] {
   const extra = Array.isArray(opts.extraDirs) ? opts.extraDirs.filter((d) => typeof d === "string" && path.isAbsolute(d)) : [];
@@ -273,16 +342,10 @@ function _guardedDirs(opts: GuardOpts): string[] {
  * don't slip past.
  */
 function isApprovalsStorePath(absPath: string, opts: GuardOpts = {}): boolean {
-  if (typeof absPath !== "string" || !absPath) return false;
-  const dirs = new Set<string>();
-  for (const dir of _guardedDirs(opts)) { dirs.add(_norm(dir)); dirs.add(_norm(_realish(dir))); }
-  const cands = [_norm(absPath), _norm(_realish(absPath))];
-  for (const c of cands) {
-    for (const d of dirs) {
-      if (c === d || c.startsWith(d + "/")) return true;
-    }
+  try { return _isStorePath(absPath, _guardCtx(opts)); } catch (e) {
+    if (e instanceof TooLargeToInspect) return true; // can't tell → treat as the store
+    throw e;
   }
-  return false;
 }
 
 /**
@@ -399,10 +462,16 @@ function _fileToolVerdict(input: Record<string, unknown>, cwd: string | null, op
   }
   if (baseSet.size > MAX_BASES) return `Arguments:       too many directories to inspect`;
   const bases = [...baseSet];
+  const ctx = _guardCtx(opts);
   for (const [key, value] of walked.pairs) {
     if (PATH_ARG_RE.test(key)) {
       for (const v of Array.isArray(value) ? value : [value]) {
-        if (_resolveArgPaths(v, bases).some((abs) => isApprovalsStorePath(abs, opts))) return `Target path:     ${v}`;
+        try {
+          if (_resolveArgPaths(v, bases).some((abs) => _isStorePath(abs, ctx))) return `Target path:     ${v}`;
+        } catch (e) {
+          if (e instanceof TooLargeToInspect) return `Arguments:       ${e.message}`;
+          throw e;
+        }
       }
     }
     if (_isCommandKey(key)) {
@@ -437,12 +506,36 @@ function approvalsStoreVerdict(
   const canonical = TOOL_ALIASES[tool] || tool;
   if (READ_ONLY_TOOLS.has(canonical)) return null;
   if (canonical === "Bash" || canonical === "PowerShell") {
-    const raw = typeof input.command === "string" ? input.command : "";
-    return raw && mentionsApprovalsStore(normalizeForMatch(raw), opts)
-      ? { tool: canonical, what: `Command:         ${raw}` }
-      : null;
+    // An argv-style array is checked as one command line, never skipped.
+    const raw = typeof input.command === "string" ? input.command
+      : Array.isArray(input.command) ? input.command.map(String).join(" ") : "";
+    if (raw && mentionsApprovalsStore(normalizeForMatch(raw), opts)) {
+      return { tool: canonical, what: `Command:         ${raw}` };
+    }
+    // R43-3: `apply_patch <<'EOF' … EOF` run as a shell command — Codex
+    // applies it itself, so its file headers are path targets too, resolved
+    // from the call's own dir args and any `cd` in the command as well.
+    const info = raw ? patchTargetsInfo(raw) : { targets: [], truncated: false };
+    if (info.truncated) return { tool: canonical, what: `Patch:           too many files to inspect` };
+    if (!info.targets.length) return null;
+    const viaPatch = _fileToolVerdict(
+      { ...input, command: undefined, patch_target_paths: info.targets, cd_dirs: shellCdDirs(raw) },
+      typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts,
+    );
+    return viaPatch ? { tool: canonical, what: viaPatch } : null;
   }
-  const what = _fileToolVerdict(input, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
+  // R43-3: a Codex apply_patch names its files in the patch text — those
+  // headers are path arguments too, resolved (with symlinks) like any
+  // Write/Edit target. ONLY for apply_patch: a note's content or an MCP
+  // payload that merely contains patch-like lines is not a patch (review of
+  // 2.11.1: a Write documenting the syntax was refused outright).
+  let checked = input;
+  if (tool === "apply_patch") {
+    const info = patchTargetsInfo(input);
+    if (info.truncated) return { tool: canonical, what: `Patch:           too many files to inspect` };
+    if (info.targets.length) checked = { ...input, patch_target_paths: info.targets };
+  }
+  const what = _fileToolVerdict(checked, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
   return what ? { tool: canonical, what } : null;
 }
 

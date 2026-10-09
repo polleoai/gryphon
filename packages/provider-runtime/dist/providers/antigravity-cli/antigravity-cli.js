@@ -251,6 +251,34 @@ function _scrubInternalLeaks(text) {
     }
     return out.trim();
 }
+/** R44 D1: a user-facing cause; the raw reason is logged by the dispatcher. */
+function _plainAgyCause(reason) {
+    const r = String(reason || "");
+    if (/ipc server/i.test(r))
+        return "Gryphon's approval service isn't running";
+    if (/plugin dir|hook scripts missing/i.test(r))
+        return "some of Gryphon's files are missing";
+    if (/store-guard script/i.test(r))
+        return "Gryphon couldn't write to its settings folder";
+    if (/node binary/i.test(r))
+        return "Node.js wasn't found on this computer";
+    if (/hooks\.json|couldn't install|returned null|threw/i.test(r))
+        return "Gryphon couldn't add its check to Antigravity's hook settings";
+    return "Gryphon couldn't set its check up";
+}
+/** QA P2-1/P2-2: the fix that matches the cause. */
+function _agyFix(reason) {
+    const r = String(reason || "");
+    if (/ipc server/i.test(r))
+        return "Restart Obsidian so Gryphon's approval service starts again.";
+    if (/plugin dir|hook scripts missing/i.test(r))
+        return "Reinstall or update Gryphon — a sync tool may have renamed its files.";
+    if (/node binary/i.test(r))
+        return "Install Node.js (or add it to your PATH), then restart Obsidian.";
+    if (/store-guard script/i.test(r))
+        return "Make Gryphon's settings folder writable, then start a new chat.";
+    return "Check that Antigravity's hook settings file (~/.gemini/config/hooks.json) is valid and writable, then start a new chat.";
+}
 class AntigravityCliProvider {
     constructor(antigravityPath, cwd, options = {}) {
         // Test-harness options-bag form: AntigravityCliProvider({ config, hostAdapter,
@@ -357,24 +385,38 @@ class AntigravityCliProvider {
         if (!plugin) {
             return { autoApprove: false, refuse: false, message: "" };
         }
-        if (hookExtras?.ok) {
+        // R43-7: a store-guard FALLBACK (Protected Mode on, full checks down)
+        // only stops writes to Gryphon's own settings — not enough to run agy
+        // with every tool auto-approved under Protected Mode.
+        if (hookExtras?.ok && hookExtras.mode !== "store-guard-fallback") {
             return { autoApprove: true, refuse: false, message: "" };
         }
         // Issue #29: the spawn's security snapshot, never the vault's data.json.
         const { securityInputsOf } = require("@gryphon/protect");
         if (securityInputsOf({ security: this.options?.security, plugin }).protectedMode === false) {
-            return { autoApprove: true, refuse: false, message: "" };
+            // Protected Mode off still keeps the store guard. Run without it only
+            // when Node.js is missing (nothing could restore it); a guard that
+            // failed for any other reason — e.g. a hooks.json corrupted by the
+            // assistant itself — must not leave agy auto-approving unguarded.
+            if (!hookExtras?.degradationReason || hookExtras.degradationReason === "no node binary found") {
+                return { autoApprove: true, refuse: false, message: "" };
+            }
+            return {
+                autoApprove: false,
+                refuse: true,
+                message: "Gryphon won't start Antigravity without the check that protects Gryphon's own security settings " +
+                    `(${_plainAgyCause(hookExtras.degradationReason)}). ${_agyFix(hookExtras.degradationReason)}`,
+            };
         }
+        // QA P2-1: plain words — Antigravity can't ask before each action, so
+        // Gryphon's check is the only thing protecting your files.
         return {
             autoApprove: false,
             refuse: true,
-            message: "Gryphon will not start Antigravity without its guardrail. `agy` has no " +
-                "per-tool approval prompt, so Gryphon must pass " +
-                "--dangerously-skip-permissions for it to work at all, and the PreToolUse " +
-                "hook is the only thing enforcing your protected paths behind that flag. " +
-                `Reason: ${hookExtras?.degradationReason || "unknown"}. ` +
-                "Check that ~/.gemini/config/hooks.json is valid JSON and writable, or " +
-                "turn off Protected mode in Settings to run without the guardrail.",
+            message: "Gryphon won't start Antigravity without its safety check: Antigravity can't ask you before " +
+                "each action, so this check is what protects your files in Protected Mode " +
+                `(${_plainAgyCause(hookExtras?.degradationReason)}). ${_agyFix(hookExtras?.degradationReason)} ` +
+                "Or turn off Protected Mode in Settings to run Antigravity without it.",
         };
     }
     /**
@@ -558,7 +600,7 @@ class AntigravityCliProvider {
         // actionable message rather than spawning an unresolved path and
         // hanging to the connection timeout.
         {
-            const resolved = resolveCliBinary("antigravity-cli", this.antigravityPath);
+            const resolved = resolveCliBinary("antigravity-cli", this.antigravityPath, undefined, { vaultRoot: this.cwd });
             if (!resolved.ok) {
                 const msg = resolved.error === "too-old"
                     ? `Found ${resolved.detail}. Update the Antigravity CLI, or set a newer path in Settings → Gryphon → Antigravity CLI path.`

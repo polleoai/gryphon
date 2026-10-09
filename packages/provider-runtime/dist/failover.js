@@ -3,8 +3,8 @@
  * Failure classification kernel (issue #15).
  *
  * `classifyProviderFailure` is the wire-shape-agnostic classifier that the
- * failover orchestrator (chat-view) AND headless/vendoring consumers (Athena
- * drives the provider layer from its synthesis/page-production path too) use
+ * failover orchestrator (chat-view) AND headless/vendoring consumers (an
+ * embedding plugin may drive the provider layer from its own pipeline) use
  * to decide whether a failure is an *availability* failure worth retrying on
  * a fallback provider — versus a genuine content/runtime error that must NOT
  * trigger failover (re-attempting would discard partial good output and burn

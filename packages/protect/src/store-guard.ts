@@ -28,7 +28,7 @@ type Bundle = { source: string; sha256: string };
 type Ensured = { ok: true; path: string; sha256: string } | { ok: false; reason: string };
 
 const SCRIPT_RE = /^store-guard-[0-9a-f]{16}\.js$/;
-const STALE_MS = 30 * 24 * 60 * 60 * 1000;
+const STALE_MS = 90 * 24 * 60 * 60 * 1000;
 
 function _sha(s: string): string {
   return crypto.createHash("sha256").update(s).digest("hex");
@@ -54,15 +54,27 @@ let _swept = false;
  * Best-effort: remove other versions' scripts not touched for 30 days. Runs
  * once per process from ensureStoreGuardScript, so embedders get it too.
  */
+// R44 DP-1: an older Gryphon copy (e.g. one built into another plugin)
+// never refreshes its script's mtime, so an age-only sweep could delete a
+// script a live session of that copy relies on. Only when more than
+// MAX_KEPT scripts pile up are the oldest removed — and never one touched
+// within STALE_MS. A few versions side by side are therefore never swept.
+const MAX_KEPT = 20;
+
 function sweepStoreGuardScripts(keep: string, dir: string = storeGuardDir(), now: number = Date.now()): void {
   let names: string[];
   try { names = fs.readdirSync(dir); } catch (_) { return; }
+  const others: Array<{ p: string; mtime: number }> = [];
   for (const name of names) {
     if (!SCRIPT_RE.test(name) || name === path.basename(keep)) continue;
     const p = path.join(dir, name);
-    try {
-      if (now - fs.statSync(p).mtimeMs > STALE_MS) fs.unlinkSync(p);
-    } catch (e) {
+    try { others.push({ p, mtime: fs.statSync(p).mtimeMs }); } catch (_) { /* gone */ }
+  }
+  if (others.length + 1 <= MAX_KEPT) return;
+  others.sort((a, b) => a.mtime - b.mtime);
+  for (const { p, mtime } of others.slice(0, others.length + 1 - MAX_KEPT)) {
+    if (now - mtime <= STALE_MS) continue;
+    try { fs.unlinkSync(p); } catch (e) {
       console.warn(`[gryphon/store-guard] couldn't remove old script ${p}: ${(e as Error).message}`);
     }
   }
@@ -103,6 +115,10 @@ function ensureStoreGuardScript(opts: { bundle?: Bundle; dir?: string } = {}): E
       return { ok: false, reason: `${target} didn't verify after writing it` };
     }
   }
+  // R43-9: mtime means "last used", so another Gryphon copy's 30-day sweep
+  // never deletes a script this copy relies on (a missing script makes the
+  // CLI treat the hook as a non-blocking failure: the guard is off).
+  try { const t = new Date(); fs.utimesSync(target, t, t); } catch (_) { /* best effort */ }
   if (!_swept) {
     _swept = true;
     sweepStoreGuardScripts(target, dir);

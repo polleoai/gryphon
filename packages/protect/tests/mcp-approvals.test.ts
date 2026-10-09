@@ -129,7 +129,7 @@ test("#25 review #4: a server named __proto__ can't be approved — a visible er
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "g25-proto-"));
   const file = path.join(dir, "gryphon", "mcp-approvals.json");
   assert.equal(isApprovableName("__proto__"), false);
-  assert.equal(isApprovableName("athena"), true);
+  assert.equal(isApprovableName("kbhost"), true);
   assert.throws(() => approve("/v", "__proto__", "a".repeat(64), { file }), /__proto__/);
 });
 

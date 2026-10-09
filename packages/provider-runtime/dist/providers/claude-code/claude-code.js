@@ -129,7 +129,7 @@ class ClaudeCodeProvider {
         // null stdin). spawn() has no caller-visible return value, so the turn
         // promise is the single clean surface for the error.
         if (!this._spawnOverride) {
-            const resolved = resolveCliBinary("claude-code", this.claudePath);
+            const resolved = resolveCliBinary("claude-code", this.claudePath, undefined, { vaultRoot: this.cwd });
             if (!resolved.ok) {
                 this._lastSpawnError = new Error(resolved.error === "too-old"
                     ? `Found ${resolved.detail}. Update the Claude CLI, or set a newer path in Settings → Gryphon → Claude CLI path.`
