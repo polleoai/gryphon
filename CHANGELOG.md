@@ -4,6 +4,20 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.3] — 2026-10-09
+
+A small security follow-up to 2.11.2.
+
+### Security
+
+- **Revoking MCP server approvals by deleting the approvals file now sticks.** In 2.11.2, deleting `mcp-approvals.json` hid your approvals, but Gryphon's record kept them. A file that later put any of those approvals back was accepted, and those servers could start without asking. A missing approvals file now means nothing is approved, and Gryphon records that. Revoking from Gryphon's settings was not affected.
+- **Two programs running Gryphon for the same vault.** An MCP server approval revoked in one of them can no longer be brought back in the other by restoring an older copy of the approvals file alone. A program that can also restore or lock Gryphon's record next to it can still do this. For security settings this case remains a limit: a setting tightened in one program can be undone in the other by an older copy of the file. Separate Obsidian windows on *different* vaults are not affected.
+- An approval that failed to save is no longer trusted afterwards.
+
+### Fixed
+
+- If you had never saved a security setting, a change you made in another vault's window while an assistant was replying was undone when the reply ended.
+
 ## [2.11.2] — 2026-10-09
 
 A security update from the reviews of 2.11.1. Please update every copy of Gryphon you use, including one built into another plugin.

@@ -486,6 +486,7 @@ function _readTrustedCopy(file: string): string | null {
   return r.raw;
 }
 
+
 function _writeTrusted(file: string, raw: string): void {
   _lastTrusted().set(file, raw);
   const t = _trustedPath(file);
@@ -578,9 +579,9 @@ function _sameContent(a: string, b: string): boolean {
  * window's settings against this process's memory undid them). After a
  * restart (no memory): the copy. Null: no record.
  */
-function _baselineRaw(file: string): string | null {
+function _baselineRaw(file: string, copyIn?: string | null): string | null {
   const mem = _lastTrusted().get(file);
-  const copy = _readTrustedCopy(file);
+  const copy = copyIn !== undefined ? copyIn : _readTrustedCopy(file);
   if (mem === undefined) return copy;
   if (copy === null) {
     // Re-review: the record is missing or not a plain file (deleted,
@@ -636,13 +637,14 @@ function _othersFromCopy(base: string, copy: string): string {
 function _verifyAgainstTrusted(file: string, raw: string): string | null {
   if (_verifying) return raw;
   const l = _ledger();
+  const copy0 = _readTrustedCopy(file);
   // Post-push review F1: no "equals this process's last write" shortcut —
   // those bytes can be stale for another window's vaults and replayed.
   // Gryphon's own write is already the in-memory record (set by _save).
   // Security review: within a session, what this process accepted wins — an
   // agent that can write the store can write the copy beside it too. The
   // copy only stands in after a restart.
-  const trusted = _baselineRaw(file);
+  const trusted = _baselineRaw(file, copy0);
   if (trusted !== null && (trusted === raw || _sameContent(trusted, raw))) { _writeTrusted(file, raw); return raw; }
   if (trusted === null) {
     // No record anywhere: first run with this version, or the record was
@@ -682,7 +684,10 @@ function _verifyAgainstTrusted(file: string, raw: string): string | null {
       console.error("[gryphon/security-settings] couldn't undo a change made outside Gryphon:", e);
       _emitTamper([], e);
     }
-    return trusted;
+    // Review of 86d167a/452fc37: the content the undo computed, else the
+    // checked baseline — never the stored or recorded content as-is.
+    const safe = e && typeof e === "object" ? (e as any).gryphonSafeContent : undefined;
+    return typeof safe === "string" ? safe : trusted;
   } finally {
     _verifying = false;
   }
@@ -1586,12 +1591,20 @@ function _expectedUnknown(startRaw: string | null, own: Array<{ priorRaw: string
  * confirm it took. Returns whether anything was undone; throws when the
  * restore didn't hold (the caller shows "couldn't undo", never "undid").
  */
+/** Attach the content an undo computed to the error its failed save threw. */
+function _attachSafe(e: unknown, obj: unknown): void {
+  try {
+    if (e && typeof e === "object") (e as any).gryphonSafeContent = JSON.stringify(obj, null, 2) + "\n";
+  } catch (_) { /* unserialisable: callers fall back to Gryphon's own record */ }
+}
+
+
 function _applyUnknownRestore(nowSafe: string, expected: Map<string, any>, file: string, priorRaw: string): boolean {
   const current = _rawObject(nowSafe);
   const restored = _restoreUnknown(current, expected);
   // Unchanged only if the file itself needs nothing (pruning counts as a change).
   if (current && nowSafe === priorRaw && mcpApprovals.canonicalJSON(restored) === mcpApprovals.canonicalJSON(current)) return false;
-  _save(restored, file, priorRaw);
+  try { _save(restored, file, priorRaw); } catch (e) { _attachSafe(e, restored); throw e; }
   const writtenBack = new Map([...expected].filter(([, v]) => v !== TOO_LARGE));
   if (_flatCanon(_unknownFlat(_rawObject(_readRaw(file)))) !== _flatCanon(writtenBack)) {
     throw new Error("unrecognised settings changed during the reply couldn't be put back");
@@ -1649,6 +1662,11 @@ function _restoreUnknown(out: unknown, expected: Map<string, any>): unknown {
 
 function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null): { changed: boolean; reverted: Reverted[] } {
   const file = before.file;
+  // Review of 80f136f: no store at the turn's start (a user who never saved a
+  // setting) is the empty store — merge other windows' vaults into that too.
+  if (judged === undefined && before.raw === null && _readTrustedCopy(file) !== null && _readRaw(file) !== null) {
+    before = { ...before, raw: JSON.stringify(_empty(), null, 2) + "\n" };
+  }
   if (judged === undefined && typeof before.raw === "string") {
     // Turn end (review): vaults another window serves are judged against
     // the trusted copy that window keeps current, not this turn's start —
@@ -1778,7 +1796,15 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
     // A reverted entry is rewritten whole (no unknown fields planted during
     // the reply survive); everything else keeps its bytes' meaning.
     const scopes = [...new Map(reverted.map((r) => [`${r.vaultKey}\u0000${r.hostId}`, [r.vaultKey, r.hostId] as [string, string]])).values()];
-    _save(_restoreUnknown(_composeForWrite(nowSafe, after, scopes, false), expectedUnknown), file, now);
+    const safeObj = _restoreUnknown(_composeForWrite(nowSafe, after, scopes, false), expectedUnknown);
+    try {
+      _save(safeObj, file, now);
+    } catch (e) {
+      // Review of 86d167a: a caller that can't save the undo still needs the
+      // undone content (never the stored or recorded content as-is).
+      _attachSafe(e, safeObj);
+      throw e;
+    }
     console.warn(
       "[gryphon/security-settings] undid changes to Gryphon's security settings made outside Gryphon: " +
       reverted.map((r) => `${r.hostId}:${r.key}`).join(", "),

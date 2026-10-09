@@ -669,3 +669,65 @@ test("#32 review: a non-empty folder planted at the record path is moved aside, 
   const aside = fs.readdirSync(path.dirname(file)).find((n: string) => n.startsWith(".security-settings.trusted.json.not-a-record-"));
   assert.ok(aside && fs.existsSync(path.join(path.dirname(file), aside, "keep-me.txt")), "the folder's contents were kept");
 });
+
+// Post-release review of 2.11.2: for the SECURITY SETTINGS, two programs running
+// Gryphon for the same vault is a documented limit (CHANGELOG [2.11.3]) — a
+// tightening made in one can be undone in the other by a replayed older file.
+// (A second check against the record was tried and removed: it kept opening
+// fail-opens.) The approvals equivalent IS covered (issue32-approvals-tamper).
+
+// Re-review of 80f136f.
+
+test("#32 2.11.3 (b): a failed record write doesn't undo the user's own change", () => {
+  const { store, file, scope } = fresh();
+  store.setMachineSecuritySetting(scope, "permissionMode", "default");
+  const t = path.join(path.dirname(file), ".security-settings.trusted.json");
+  const realRename = fs.renameSync;
+  let failed = false;
+  fs.renameSync = (from: string, to: string) => { if (to === t && !failed) { failed = true; throw Object.assign(new Error("EBUSY"), { code: "EBUSY" }); } return realRename(from, to); };
+  const { seen, off } = listen(store);
+  try {
+    store.setMachineSecuritySetting(scope, "protectedMode", false);
+  } finally { fs.renameSync = realRename; }
+  try {
+    assert.equal(store.effectiveSecuritySettings({}, scope).protectedMode, false, "the user's own choice stands");
+    assert.equal(seen.length, 0, "no 'outside Gryphon' notice");
+  } finally { off(); }
+});
+
+test("#32 2.11.3: with no store at a reply's start, another window's change during the reply is kept", () => {
+  const { file, scope } = fresh();
+  const other = { vaultKey: fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g32-vB-"))), hostId: "gryphon" };
+  const as = processes();
+  let before: any;
+  as("A", (s) => { s.readMachineSecuritySettings(scope); before = s.snapshotSecurityStore(); });
+  assert.equal(before.raw, null);
+  as("B", (s) => { s.setMachineSecuritySetting(other, "protectedMode", false); });
+  as("A", (s) => { assert.deepEqual(s.checkSecurityStoreTamper(before).reverted, []); });
+  as("B", (s) => { assert.equal(s.readMachineSecuritySettings(other).protectedMode, false); });
+});
+
+test("#32 2.11.3 (re-review of 86d167a): a looser record plus a locked store can't loosen a served vault", () => {
+  const { store, file, scope } = fresh();
+  store.setMachineSecuritySetting(scope, "blockPackageInstall", false);
+  store.readMachineSecuritySettings(scope);
+  // The agent writes only the record: looser on two keys, stricter on one.
+  const t = path.join(path.dirname(file), ".security-settings.trusted.json");
+  const rec = JSON.parse(fs.readFileSync(t, "utf8"));
+  Object.assign(host(rec, scope).values, { protectedMode: false, permissionMode: "bypassPermissions", blockPackageInstall: true });
+  fs.writeFileSync(t, JSON.stringify(rec, null, 2) + "\n");
+  // …and the store can't be saved.
+  const realRename = fs.renameSync;
+  fs.renameSync = (from: string, to: string) => { if (to === file) throw Object.assign(new Error("EPERM"), { code: "EPERM" }); return realRename(from, to); };
+  try {
+    // A fresh read (an empty cache), same process memory: e.g. another
+    // bundled copy, or after the cache was cleared by any write.
+    for (const k of Object.keys(require.cache)) if (k.includes(`${path.sep}protect${path.sep}src${path.sep}`)) delete require.cache[k];
+    const fresh2 = require(STORE);
+    for (let i = 0; i < 3; i++) {
+      const eff = fresh2.effectiveSecuritySettings({}, scope);
+      assert.equal(eff.protectedMode, true);
+      assert.notEqual(eff.permissionMode, "bypassPermissions");
+    }
+  } finally { fs.renameSync = realRename; }
+});

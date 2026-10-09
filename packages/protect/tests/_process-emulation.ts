@@ -36,6 +36,7 @@ const SETTINGS_KEYS = [
 const APPROVALS_KEYS = [
   Symbol.for("gryphon.mcpApprovalsWrites"),
   Symbol.for("gryphon.mcpApprovalsServedVaults"),
+  Symbol.for("gryphon.mcpApprovalsRecordWriteFailed"),
 ];
 
 module.exports = { processes, SETTINGS_KEYS, APPROVALS_KEYS };

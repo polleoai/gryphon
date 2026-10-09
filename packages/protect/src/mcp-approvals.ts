@@ -147,24 +147,30 @@ function _validVaultKey(vk: string): boolean {
  */
 function load(file: string = approvalsFilePath()): ApprovalStore {
   // Issue #32 review: judge exactly the content that was parsed.
-  // Re-review: a record this window knows but that's gone from disk is put back.
-  const known = _ownWrite().accepted.get(file);
-  if (known !== undefined && _readTrustedCopy(file) === null) _writeTrusted(file, known);
   const read: { raw: string | null; absent?: boolean } = { raw: null };
   const store = _loadUnverified(file, read);
+  const mem = _ownWrite().accepted.get(file);
+  const copy = _readTrustedCopy(file);
   if (read.raw === null) {
     // Re-review: only a file that truly doesn't exist means "nothing
-    // approved"; an unreadable one may hold the user's approvals.
-    if (!read.absent) return store;
-    // Post-push review F2 (sibling): no approvals file and no record (a user
-    // who never approved a server) is a known state — nothing approved. Record
-    // it, so an approvals file that appears later isn't adopted.
-    const mem = _ownWrite().accepted.get(file);
-    const copy = _readTrustedCopy(file);
-    if (mem === undefined && copy === null) _initEmptyRecord(file, JSON.stringify(emptyStore(), null, 2) + "\n");
-    else if (mem !== undefined && copy === null) _writeTrusted(file, mem); // re-review: put a lost record back
+    // approved"; an unreadable one may hold the user's approvals — keep (and
+    // if lost, put back) the record for it.
+    if (!read.absent) {
+      if (mem !== undefined && copy === null) _writeTrusted(file, mem);
+      return store;
+    }
+    // A missing file is "nothing approved", and that is what's recorded —
+    // also when a record of earlier approvals exists (post-release review:
+    // keeping it let a later file restoring those approvals be accepted, so
+    // deleting the file to revoke them didn't stick). Only takes approvals
+    // away; Gryphon's own writes rename, so the file is never briefly absent.
+    const empty = JSON.stringify(emptyStore(), null, 2) + "\n";
+    if (mem === undefined && copy === null) _initEmptyRecord(file, empty);
+    else if (mem !== empty || copy !== empty) _writeTrusted(file, empty);
     return store;
   }
+  // Re-review: a record this window knows but that's gone from disk is put back.
+  if (mem !== undefined && copy === null) _writeTrusted(file, mem);
   return _withoutForeignApprovals(file, store, read.raw);
 }
 
@@ -238,11 +244,17 @@ function _save(store: ApprovalStore, file: string) {
   // here judges Gryphon's own write as foreign; the trusted copy only once
   // the store holds it (a failed rename must not leave the copy ahead).
   _ownWrite().raw = raw;
-  fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
   try {
-    fs.renameSync(tmp, file);
+    fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
+    try {
+      fs.renameSync(tmp, file);
+    } catch (e) {
+      try { fs.unlinkSync(tmp); } catch (_) {}
+      throw e;
+    }
   } catch (e) {
-    try { fs.unlinkSync(tmp); } catch (_) {}
+    // Post-release review: a write that failed is not Gryphon's content.
+    if (_ownWrite().raw === raw) _ownWrite().raw = null;
     throw e;
   }
   _writeTrusted(file, raw);
@@ -314,17 +326,27 @@ function _initEmptyRecord(file: string, empty: string): void {
   }
 }
 
+/** Files whose last record write failed in this process (see the settings store). */
+const RECORD_FAILED_KEY = Symbol.for("gryphon.mcpApprovalsRecordWriteFailed");
+function _recordFailed(): Set<string> {
+  const g = process as any;
+  if (!(g[RECORD_FAILED_KEY] instanceof Set)) Object.defineProperty(g, RECORD_FAILED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
+  return g[RECORD_FAILED_KEY];
+}
+
 function _writeTrusted(file: string, raw: string): void {
   _ownWrite().accepted.set(file, raw);
   const t = _trustedPath(file);
+  _recordFailed().add(file); // cleared once the record holds `raw`
   try {
-    if (_readTrustedCopy(file) === raw) return;
+    if (_readTrustedCopy(file) === raw) { _recordFailed().delete(file); return; }
     // Re-review: a directory (or anything but a file) at the record's path
     // can't be renamed over — clear it first; it isn't a record Gryphon wrote.
     clearNonFile(t);
     const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
     try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+    _recordFailed().delete(file);
   } catch (e) {
     console.warn(`[gryphon/mcp-approvals] couldn't record the trusted copy of the approvals: ${(e as Error).message}`);
   }
@@ -377,7 +399,22 @@ function _approvalsBaseline(mem: string | undefined, copy: string | null, file: 
   const served = _served();
   const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
   for (const vk of new Set([...Object.keys(out.vaults), ...Object.keys(c.vaults)])) {
-    if (served.has(vk)) continue;
+    if (served.has(vk)) {
+      // ...unless this process's last record write failed (the record is then
+      // older than what Gryphon itself accepted): memory alone.
+      if (_recordFailed().has(file)) continue;
+      // Post-release review: a vault served here keeps only approvals the
+      // record ALSO holds — a revoke made by another program on the same
+      // vault (which updates the record) then isn't undone by a replay.
+      const mine = own(out.vaults, vk) ? out.vaults[vk] : null;
+      if (!mine) continue;
+      const theirs = own(c.vaults, vk) ? c.vaults[vk] : null;
+      for (const name of Object.keys(mine)) {
+        if (!theirs || !own(theirs, name) || theirs[name].sha256 !== mine[name].sha256) delete mine[name];
+      }
+      if (!Object.keys(mine).length) delete out.vaults[vk];
+      continue;
+    }
     if (own(c.vaults, vk)) Object.defineProperty(out.vaults, vk, { value: c.vaults[vk], enumerable: true, configurable: true, writable: true });
     else delete out.vaults[vk];
   }
@@ -390,7 +427,10 @@ function _withoutForeignApprovals(file: string, store: ApprovalStore, raw: strin
   const copy = _readTrustedCopy(file);
   // Re-review: a lost or replaced record is put back from what this window knows.
   if (mem !== undefined && copy === null) _writeTrusted(file, mem);
-  if (mem === raw || (mem === undefined && copy === raw)) { _writeTrusted(file, raw); return store; }
+  // Post-release review: content equal to this window's memory alone isn't
+  // enough — another program on the same vault may have revoked since (the
+  // record says so). Gryphon's own writes update both.
+  if (copy === raw && (mem === undefined || mem === raw)) { _writeTrusted(file, raw); return store; }
   if (mem === undefined && copy === null) {
     // No record anywhere: take it as it is, and say so if it approves anything.
     _writeTrusted(file, raw);

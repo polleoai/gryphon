@@ -255,3 +255,65 @@ test("#32 review F1: an approvals file kept as a symlink is honoured", { skip: p
   const m = restart();
   assert.equal(m.reader({ file }).lookup("/v", "srv"), H("a"));
 });
+
+// Post-release review of 2.11.2: deleting the approvals file must revoke them for good.
+test("#32 2.11.3: deleting the approvals file revokes them; restoring the old entries is not accepted", () => {
+  const m = require("../src/mcp-approvals");
+  const { file } = fresh();
+  m.approve("/v", "srv", H("a"), { file });
+  const old = fs.readFileSync(file, "utf8");
+  const t = path.join(path.dirname(file), ".mcp-approvals.trusted.json");
+  fs.rmSync(file); // the user revokes everything by deleting the file
+  assert.equal(m.reader({ file }).lookup("/v", "srv"), null);
+  // S1: a fresh file with only the old entry
+  fs.writeFileSync(file, JSON.stringify({ version: 1, vaults: { "/v": { srv: { sha256: H("a"), approvedAt: "" } } } }));
+  assert.equal(m.reader({ file }).lookup("/v", "srv"), null, "S1");
+  // S2: the old bytes, restored
+  fs.rmSync(file); m.reader({ file }).lookup("/v", "srv");
+  fs.writeFileSync(file, old);
+  assert.equal(m.reader({ file }).lookup("/v", "srv"), null, "S2");
+  // S3: both files deleted with the window open, then a re-plant
+  fs.rmSync(file); fs.rmSync(t, { force: true }); m.reader({ file }).lookup("/v", "srv");
+  fs.writeFileSync(file, old);
+  assert.equal(m.reader({ file }).lookup("/v", "srv"), null, "S3");
+  // S4: deleted, restart, re-plant later
+  fs.rmSync(file);
+  const m2 = restart();
+  m2.reader({ file }).lookup("/v", "srv");
+  fs.writeFileSync(file, old);
+  assert.equal(m2.reader({ file }).lookup("/v", "srv"), null, "S4");
+});
+
+test("#32 2.11.3: two programs on the same vault — a revoke in one isn't undone by a replay in the other", () => {
+  const { file } = fresh();
+  const as = processes(APPROVALS_KEYS, "../src/mcp-approvals");
+  let old = "";
+  as("A", (m: any) => { m.approve("/v", "srv", H("a"), { file }); old = fs.readFileSync(file, "utf8"); });
+  as("B", (m: any) => { m.reader({ file }).lookup("/v", "srv"); m.revoke("/v", "srv", { file }); });
+  fs.writeFileSync(file, old); // replay before A's next load
+  as("A", (m: any) => { assert.equal(m.reader({ file }).lookup("/v", "srv"), null); });
+});
+
+test("#32 2.11.3: an approval that failed to save isn't trusted later", () => {
+  const m = require("../src/mcp-approvals");
+  const { file } = fresh();
+  const realRename = fs.renameSync;
+  let attempted = "";
+  fs.renameSync = (from: string, to: string) => { if (to === file) { attempted = fs.readFileSync(from, "utf8"); throw Object.assign(new Error("EPERM"), { code: "EPERM" }); } return realRename(from, to); };
+  try { assert.throws(() => m.approve("/v", "srv", H("a"), { file })); } finally { fs.renameSync = realRename; }
+  m.reader({ file }).lookup("/v", "srv");
+  fs.writeFileSync(file, attempted); // the exact bytes of the failed write
+  assert.equal(m.reader({ file }).lookup("/v", "srv"), null);
+});
+
+test("#32 2.11.3 (b): a failed record write doesn't remove the user's own approval", () => {
+  const m = require("../src/mcp-approvals");
+  const { file } = fresh();
+  m.approve("/v", "a", H("a"), { file });
+  const t = path.join(path.dirname(file), ".mcp-approvals.trusted.json");
+  const realRename = fs.renameSync;
+  let failed = false;
+  fs.renameSync = (from: string, to: string) => { if (to === t && !failed) { failed = true; throw Object.assign(new Error("EBUSY"), { code: "EBUSY" }); } return realRename(from, to); };
+  try { m.approve("/v", "b", H("b"), { file }); } finally { fs.renameSync = realRename; }
+  assert.equal(m.reader({ file }).lookup("/v", "b"), H("b"));
+});
