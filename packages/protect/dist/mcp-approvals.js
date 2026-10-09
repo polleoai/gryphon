@@ -41,6 +41,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
 const { fileIdCached, isWithinIds } = require("./path-identity");
+const { readRegularFile, clearNonFile } = require("./safe-read");
 const STORE_VERSION = 1;
 const FILE_NAME = "mcp-approvals.json";
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -120,23 +121,62 @@ function vaultKey(cwd) {
     }
 }
 function emptyStore() {
-    return { version: STORE_VERSION, vaults: {} };
+    // Prototype-free maps: a vault key comes from the file (review: a
+    // "__proto__" key polluted Object.prototype for every plugin).
+    return { version: STORE_VERSION, vaults: Object.create(null) };
+}
+/** A vault key as Gryphon writes it: an absolute path, never a reserved name. */
+function _validVaultKey(vk) {
+    return typeof vk === "string" && vk.length > 0 && vk.length <= 4096 &&
+        vk !== "__proto__" && vk !== "constructor" && vk !== "prototype";
 }
 /**
  * Read the store. Missing → empty. Unreadable / corrupt → empty AND a log
  * line: fail closed (nothing approved) rather than guess.
  */
 function load(file = approvalsFilePath()) {
-    let raw;
-    try {
-        raw = fs.readFileSync(file, "utf8");
+    // Issue #32 review: judge exactly the content that was parsed.
+    // Re-review: a record this window knows but that's gone from disk is put back.
+    const known = _ownWrite().accepted.get(file);
+    if (known !== undefined && _readTrustedCopy(file) === null)
+        _writeTrusted(file, known);
+    const read = { raw: null };
+    const store = _loadUnverified(file, read);
+    if (read.raw === null) {
+        // Re-review: only a file that truly doesn't exist means "nothing
+        // approved"; an unreadable one may hold the user's approvals.
+        if (!read.absent)
+            return store;
+        // Post-push review F2 (sibling): no approvals file and no record (a user
+        // who never approved a server) is a known state — nothing approved. Record
+        // it, so an approvals file that appears later isn't adopted.
+        const mem = _ownWrite().accepted.get(file);
+        const copy = _readTrustedCopy(file);
+        if (mem === undefined && copy === null)
+            _initEmptyRecord(file, JSON.stringify(emptyStore(), null, 2) + "\n");
+        else if (mem !== undefined && copy === null)
+            _writeTrusted(file, mem); // re-review: put a lost record back
+        return store;
     }
-    catch (e) {
-        if (e.code !== "ENOENT") {
-            console.error(`[gryphon/mcp-approvals] couldn't read ${file}; treating as empty: ${e.message}`);
+    return _withoutForeignApprovals(file, store, read.raw);
+}
+function _loadUnverified(file, rawOut) {
+    // Re-review of 0fd38d0: a regular file only — anything else at the path
+    // is "absent" — opened without following a symlink or blocking on a FIFO.
+    const r = readRegularFile(file, { follow: true });
+    if (r.raw === null) {
+        if (rawOut)
+            rawOut.absent = r.absent;
+        if (!r.absent && r.error) {
+            console.error(`[gryphon/mcp-approvals] couldn't read ${file}; treating as empty: ${r.error.message}`);
         }
         return emptyStore();
     }
+    if (rawOut)
+        rawOut.raw = r.raw;
+    return _parseApprovals(r.raw, file);
+}
+function _parseApprovals(raw, file) {
     let parsed;
     try {
         parsed = JSON.parse(raw);
@@ -150,8 +190,10 @@ function load(file = approvalsFilePath()) {
         return emptyStore();
     }
     // Keep only well-formed entries; a malformed one is simply not approved.
-    const vaults = {};
+    const vaults = Object.create(null);
     for (const [vk, servers] of Object.entries(parsed.vaults)) {
+        if (!_validVaultKey(vk))
+            continue;
         if (!servers || typeof servers !== "object" || Array.isArray(servers))
             continue;
         for (const [name, entry] of Object.entries(servers)) {
@@ -159,7 +201,7 @@ function load(file = approvalsFilePath()) {
                 continue;
             if (!entry || typeof entry !== "object" || typeof entry.sha256 !== "string" || !HASH_RE.test(entry.sha256))
                 continue;
-            (vaults[vk] = vaults[vk] || {})[name] = {
+            (vaults[vk] = vaults[vk] || Object.create(null))[name] = {
                 sha256: entry.sha256,
                 approvedAt: typeof entry.approvedAt === "string" ? entry.approvedAt : "",
             };
@@ -178,7 +220,7 @@ function isApproved(store, vk, name, specHash) {
     return typeof specHash === "string" && HASH_RE.test(specHash) && _lookup(store, vk, name) === specHash;
 }
 function listForVault(store, vk) {
-    const servers = (store && store.vaults && store.vaults[vk]) || {};
+    const servers = (store && store.vaults && Object.prototype.hasOwnProperty.call(store.vaults, vk) && store.vaults[vk]) || {};
     return Object.keys(servers).sort().map((name) => ({ name, ...servers[name] }));
 }
 /** Atomic write: 0700 dir, 0600 temp file in the same dir, rename over. */
@@ -193,7 +235,12 @@ function _save(store, file) {
         catch (_) { }
     }
     const tmp = path.join(dir, `.${FILE_NAME}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
-    fs.writeFileSync(tmp, JSON.stringify(store, null, 2) + "\n", { mode: 0o600, flag: "wx" });
+    const raw = JSON.stringify(store, null, 2) + "\n";
+    // Issue #32: remembered before the rename in this process, so no reader
+    // here judges Gryphon's own write as foreign; the trusted copy only once
+    // the store holds it (a failed rename must not leave the copy ahead).
+    _ownWrite().raw = raw;
+    fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
     try {
         fs.renameSync(tmp, file);
     }
@@ -204,21 +251,233 @@ function _save(store, file) {
         catch (_) { }
         throw e;
     }
+    _writeTrusted(file, raw);
+    // Security review: the fast path above covers only the moment between
+    // the rename and the record; left set, these exact bytes could be
+    // replayed later, after the user changed the approvals elsewhere.
+    if (_ownWrite().raw === raw)
+        _ownWrite().raw = null;
+}
+// ── outside changes (issue #32) ─────────────────────────────────────────
+/**
+ * Issue #32, applied to this store: an approval lets a vault's MCP server
+ * start with no click, so one added outside Gryphon — mid-reply, or by a
+ * write delayed past it, or while Gryphon wasn't running — must not count.
+ * Every read compares the file to the content Gryphon itself last wrote
+ * (this process's latest write, or the trusted copy kept beside the store,
+ * which survives a restart and is shared across processes). An approval
+ * that isn't in that content (added, or its hash changed) is dropped before
+ * the lookup sees it, the file is put back, and the user is told. Removals
+ * only take protection away from a server, so they stand.
+ */
+const TRUSTED_NAME = ".mcp-approvals.trusted.json";
+const OWN_WRITE_KEY = Symbol.for("gryphon.mcpApprovalsWrites");
+// `raw`: Gryphon's latest write here. `accepted`: the last content accepted
+// as Gryphon's, per file — it backs the on-disk copy (deleting the copy
+// mid-session gains nothing).
+function _ownWrite() {
+    const g = process;
+    if (!g[OWN_WRITE_KEY] || !(g[OWN_WRITE_KEY].accepted instanceof Map)) {
+        Object.defineProperty(g, OWN_WRITE_KEY, { value: { raw: null, accepted: new Map() }, configurable: true, enumerable: false, writable: true });
+    }
+    return g[OWN_WRITE_KEY];
+}
+function _trustedPath(file) {
+    return path.join(path.dirname(file), TRUSTED_NAME);
+}
+/** The on-disk copy, only as a plain single-link file that isn't the store (security review). */
+function _readTrustedCopy(file) {
+    const r = readRegularFile(_trustedPath(file));
+    // Only the store itself (same file) or a non-file is rejected: a hard
+    // link to some other file gives nothing a direct write wouldn't.
+    if (r.raw === null)
+        return null;
+    try {
+        const s2 = fs.statSync(file);
+        if (s2.ino === r.st.ino && s2.dev === r.st.dev)
+            return null;
+    }
+    catch (_) { /* no store: nothing to alias */ }
+    return r.raw;
+}
+/** As in the settings store: record "nothing approved" for a missing file, folder created, exclusive create. */
+function _initEmptyRecord(file, empty) {
+    _ownWrite().accepted.set(file, empty);
+    try {
+        fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(_trustedPath(file), empty, { mode: 0o600, flag: "wx" });
+    }
+    catch (e) {
+        if (e.code !== "EEXIST") {
+            console.warn(`[gryphon/mcp-approvals] couldn't record the approvals' starting point: ${e.message}`);
+            return;
+        }
+        if (_readTrustedCopy(file) !== null)
+            return; // another window's valid record
+        clearNonFile(_trustedPath(file));
+        _writeTrusted(file, empty);
+    }
+}
+function _writeTrusted(file, raw) {
+    _ownWrite().accepted.set(file, raw);
+    const t = _trustedPath(file);
+    try {
+        if (_readTrustedCopy(file) === raw)
+            return;
+        // Re-review: a directory (or anything but a file) at the record's path
+        // can't be renamed over — clear it first; it isn't a record Gryphon wrote.
+        clearNonFile(t);
+        const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+        fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
+        try {
+            fs.renameSync(tmp, t);
+        }
+        catch (e) {
+            try {
+                fs.unlinkSync(tmp);
+            }
+            catch (_) { }
+            throw e;
+        }
+    }
+    catch (e) {
+        console.warn(`[gryphon/mcp-approvals] couldn't record the trusted copy of the approvals: ${e.message}`);
+    }
+}
+const _approvalsTamperSinks = new Set();
+const _reportedRemovals = new Set();
+/** Approvals added outside Gryphon and removed (or that couldn't be). */
+function onApprovalsTamper(fn) {
+    _approvalsTamperSinks.add(fn);
+    return () => { _approvalsTamperSinks.delete(fn); };
+}
+/**
+ * Vaults this process serves (looked up, approved or revoked here), shared
+ * by every bundled copy in the process. Each Obsidian vault window is its
+ * own process, so another window's vaults are not in this set.
+ */
+const SERVED_KEY = Symbol.for("gryphon.mcpApprovalsServedVaults");
+function _served() {
+    const g = process;
+    if (!(g[SERVED_KEY] instanceof Set))
+        Object.defineProperty(g, SERVED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
+    return g[SERVED_KEY];
+}
+/** Mark a vault as served here before reading its approvals. */
+function serveVault(vk) {
+    if (typeof vk === "string" && vk)
+        _served().add(vk);
+}
+/**
+ * What the approvals should be, per vault. A vault this process serves:
+ * what this process last accepted (an agent that writes the store can write
+ * the copy beside it too). Any other vault: the trusted copy, which another
+ * Gryphon window updates with its own writes (review: judging another
+ * window's approvals against this process's memory removed them). After a
+ * restart (no memory): the copy.
+ */
+function _approvalsBaseline(mem, copy, file) {
+    const t = _trustedPath(file);
+    if (mem === undefined)
+        return _parseApprovals(copy, t);
+    const out = _parseApprovals(mem, t);
+    if (copy === null)
+        return out;
+    const c = _parseApprovals(copy, t);
+    const served = _served();
+    const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+    for (const vk of new Set([...Object.keys(out.vaults), ...Object.keys(c.vaults)])) {
+        if (served.has(vk))
+            continue;
+        if (own(c.vaults, vk))
+            Object.defineProperty(out.vaults, vk, { value: c.vaults[vk], enumerable: true, configurable: true, writable: true });
+        else
+            delete out.vaults[vk];
+    }
+    return out;
+}
+function _withoutForeignApprovals(file, store, raw) {
+    if (raw === _ownWrite().raw)
+        return store;
+    const mem = _ownWrite().accepted.get(file);
+    const copy = _readTrustedCopy(file);
+    // Re-review: a lost or replaced record is put back from what this window knows.
+    if (mem !== undefined && copy === null)
+        _writeTrusted(file, mem);
+    if (mem === raw || (mem === undefined && copy === raw)) {
+        _writeTrusted(file, raw);
+        return store;
+    }
+    if (mem === undefined && copy === null) {
+        // No record anywhere: take it as it is, and say so if it approves anything.
+        _writeTrusted(file, raw);
+        if (Object.keys(store.vaults).length) {
+            const approved = Object.entries(store.vaults).flatMap(([vk, servers]) => Object.keys(servers).map((name) => ({ vaultKey: vk, name })));
+            for (const fn of _approvalsTamperSinks) {
+                try {
+                    fn(approved, null, "record-started");
+                }
+                catch (_) { /* a sink must not break reads */ }
+            }
+        }
+        return store;
+    }
+    const trusted = _approvalsBaseline(mem, copy, file);
+    const removed = [];
+    for (const [vk, servers] of Object.entries(store.vaults)) {
+        for (const name of Object.keys(servers)) {
+            if (_lookup(trusted, vk, name) === servers[name].sha256)
+                continue;
+            removed.push({ vaultKey: vk, name });
+            delete servers[name];
+        }
+        if (!Object.keys(servers).length)
+            delete store.vaults[vk];
+    }
+    if (!removed.length) {
+        // Only removals: what's there is now the baseline.
+        _writeTrusted(file, raw);
+        return store;
+    }
+    let error = null;
+    try {
+        _save(store, file);
+    }
+    catch (e) {
+        error = e;
+    }
+    const tag = `${raw.length}:${crypto.createHash("sha256").update(raw).digest("hex")}`;
+    if (!_reportedRemovals.has(tag)) {
+        _reportedRemovals.add(tag);
+        console.warn("[gryphon/mcp-approvals] removed MCP server approvals added outside Gryphon: " +
+            removed.map((r) => displaySafe(r.name)).join(", ") + (error ? ` (couldn't save the fix: ${error.message})` : ""));
+        for (const fn of _approvalsTamperSinks) {
+            try {
+                fn(removed, error);
+            }
+            catch (_) { /* a sink must not break reads */ }
+        }
+    }
+    return store;
 }
 function approve(vk, name, specHash, opts = {}) {
+    serveVault(vk);
     if (!HASH_RE.test(String(specHash)))
         throw new Error("mcp-approvals: specHash must be a sha256 hex digest");
     if (!isApprovableName(name))
         throw new Error(`mcp-approvals: a server named ${JSON.stringify(name)} can't be approved — rename it in .mcp.json`);
     const file = opts.file || approvalsFilePath();
     const store = load(file);
-    (store.vaults[vk] = store.vaults[vk] || {})[name] = {
+    if (!_validVaultKey(vk))
+        throw new Error("mcp-approvals: invalid vault key");
+    (store.vaults[vk] = store.vaults[vk] || Object.create(null))[name] = {
         sha256: specHash,
         approvedAt: (opts.now || new Date()).toISOString(),
     };
     _save(store, file);
 }
 function revoke(vk, name, opts = {}) {
+    serveVault(vk);
     const file = opts.file || approvalsFilePath();
     const store = load(file);
     if (!store.vaults[vk] || !store.vaults[vk][name])
@@ -235,7 +494,7 @@ function revoke(vk, name, opts = {}) {
  */
 function reader(opts = {}) {
     const file = opts.file || approvalsFilePath();
-    return { lookup: (vk, name) => _lookup(load(file), vk, name) };
+    return { lookup: (vk, name) => { serveVault(vk); return _lookup(load(file), vk, name); } };
 }
 // ── guardrail helpers (used by the attack detector) ───────────────────
 function _norm(p) {
@@ -273,7 +532,7 @@ function _guardCtx(opts) {
         const id = fileIdCached(dir, cache);
         if (id)
             ids.add(id);
-        for (const f of ["mcp-approvals.json", "security-settings.json"]) {
+        for (const f of ["mcp-approvals.json", ".mcp-approvals.trusted.json", "security-settings.json", ".security-settings.trusted.json"]) {
             const fid = fileIdCached(path.join(dir, f), cache);
             if (fid)
                 storeFileIds.add(fid);
@@ -341,7 +600,7 @@ function isApprovalsStorePath(absPath, opts = {}) {
  * store directory spelled any of the usual ways on each OS. It is NOT a
  * barrier against a model that already has a shell (see the header).
  */
-const STORE_COMMAND_RE = /mcp-approvals|security-settings\.json|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
+const STORE_COMMAND_RE = /mcp-approvals|security-settings(?:\.trusted)?\.json|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
 function mentionsApprovalsStore(command, opts = {}) {
     if (typeof command !== "string" || !command)
         return false;
@@ -388,21 +647,30 @@ function _argStrings(input, maxDepth, maxStrings) {
     const pairs = [];
     let budget = maxStrings;
     let truncated = false;
+    // #34 / 2.11.1 QA: only strings under keys that can name a path, a base
+    // dir or a command are collected and counted — page text, block content
+    // and other data never matter here, and counting them made a big MCP
+    // payload hit the limit and be refused outright.
+    const relevant = (key) => PATH_ARG_RE.test(key) || BASE_ARG_RE.test(key) || _isCommandKey(key);
     const walk = (key, v, depth) => {
-        if (budget <= 0 || depth > maxDepth) {
+        if (depth > maxDepth) {
             truncated = true;
             return;
         }
         if (typeof v === "string") {
-            if (v) {
-                budget--;
-                pairs.push([key, v]);
+            if (!v || !relevant(key))
+                return;
+            if (budget <= 0) {
+                truncated = true;
+                return;
             }
+            budget--;
+            pairs.push([key, v]);
             return;
         }
         if (Array.isArray(v)) {
-            const all = v.filter((x) => typeof x === "string" && !!x);
-            const strs = all.slice(0, budget);
+            const all = relevant(key) ? v.filter((x) => typeof x === "string" && !!x) : [];
+            const strs = all.slice(0, Math.max(0, budget));
             if (strs.length < all.length)
                 truncated = true;
             if (strs.length > 0) {
@@ -553,6 +821,8 @@ function approvalsStoreVerdict(tool, input, opts = {}) {
     return what ? { tool: canonical, what } : null;
 }
 module.exports = {
+    onApprovalsTamper,
+    serveVault,
     approvalsDir,
     approvalsFilePath,
     canonicalJSON,
@@ -570,5 +840,11 @@ module.exports = {
     mentionsApprovalsStore,
     approvalsStoreVerdict,
     normalizeForMatch,
+    // #34: the same argument walker / path-key test for classify's
+    // name-independent default.
+    _argStrings,
+    _resolveArgPaths,
+    PATH_ARG_RE,
+    BASE_ARG_RE,
     STORE_COMMAND_RE,
 };

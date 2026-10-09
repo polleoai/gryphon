@@ -499,3 +499,38 @@ test("QA P2-1: Antigravity refusals use plain words and the fix that matches the
     assert.doesNotMatch(d.message, /`agy`|dangerously|PreToolUse|ipc server|hook scripts missing/i, reason);
   }
 });
+
+test("#35 QA P2-B: a non-ASCII refusal names the real cause and fix", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} }, security: { protectedMode: false } });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: 'adapter "antigravity-cli" couldn\'t install the store-guard hook (refused: non-ascii path without a short name)' });
+  assert.equal(d.refuse, true);
+  assert.match(d.message, /plain English letters/);
+  assert.doesNotMatch(d.message, /hooks\.json/);
+});
+
+test("review C: a launcher refusal doesn't suggest turning Protected Mode off", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} }, security: { protectedMode: true } });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: 'adapter "antigravity-cli" returned null (refused: no space-free location for the launcher)' });
+  assert.equal(d.refuse, true);
+  assert.match(d.message, /setshortname/);
+  assert.doesNotMatch(d.message, /turn off Protected Mode/);
+  const other = p._autoApproveDecision({ ok: false, degradationReason: "ipc server not listening" });
+  assert.match(other.message, /turn off Protected Mode/, "other causes still offer it");
+});
+
+test("re-check: a vault-path launcher refusal keeps the Protected Mode off option", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} }, security: { protectedMode: true } });
+  const d = p._autoApproveDecision({ ok: false, degradationReason: 'adapter "antigravity-cli" returned null (refused: non-ascii path without a short name: vault)' });
+  assert.match(d.message, /the vault's folder path/);
+  assert.match(d.message, /turn off Protected Mode/);
+});
+
+test("re-check: full-mode reason with trailing text still keeps the option for a vault-only problem; not for vault + user folder", () => {
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { plugin: { settings: {} }, security: { protectedMode: true } });
+  const tail = " (pre-flight should have caught the missing input — check pluginDir, ipcSocketPath, nodePath)";
+  const vaultOnly = p._autoApproveDecision({ ok: false, degradationReason: 'adapter "antigravity-cli" returned null (refused: non-ascii path without a short name: vault)' + tail });
+  assert.match(vaultOnly.message, /turn off Protected Mode/);
+  const both = p._autoApproveDecision({ ok: false, degradationReason: 'adapter "antigravity-cli" returned null (refused: non-ascii path without a short name: vault and user folder)' + tail });
+  assert.match(both.message, /your Windows user folder/);
+  assert.doesNotMatch(both.message, /turn off Protected Mode/);
+});

@@ -117,3 +117,51 @@ test("QA P2-2: missing hook files say reinstall, not restart", () => {
     }
   });
 });
+
+test("#35 (QA P3-2): after full protection comes back, a new degradation is reported again", () => {
+  sandbox(() => {
+    delete require.cache[require.resolve("../src/hook-dispatcher")];
+    const hd = require("../src/hook-dispatcher");
+    const path2 = require("path");
+    const notices: string[] = [];
+    const opts = { security: { protectedMode: true }, hostAdapter: { notify: (m: string) => notices.push(m) } };
+    const down = { ipcServer: { isListening: () => false } };
+    const repoRoot = path2.resolve(__dirname, "..", "..", "..");
+    const up = { ipcServer: { isListening: () => true, socketPath: () => "/tmp/x.sock" }, absolutePluginDir: () => repoRoot };
+    hd.prepareSpawn({ kind: "codex-cli", plugin: down, options: opts }).cleanup();
+    hd.prepareSpawn({ kind: "codex-cli", plugin: down, options: opts }).cleanup();
+    assert.equal(notices.length, 1, "deduplicated while still degraded");
+    const ok = hd.prepareSpawn({ kind: "codex-cli", plugin: up, options: opts });
+    assert.equal(ok.ok, true, ok.degradationReason);
+    ok.cleanup();
+    hd.prepareSpawn({ kind: "codex-cli", plugin: down, options: opts }).cleanup();
+    assert.equal(notices.length, 2, "reported again after recovering");
+  });
+});
+
+test("#35 sibling (review): after the store guard comes back, losing it again is reported again", () => {
+  sandbox(() => {
+    delete require.cache[require.resolve("../src/hook-dispatcher")];
+    const hd = require("../src/hook-dispatcher");
+    const adapter = require("../src/hook-adapters/codex-cli");
+    const notices: string[] = [];
+    const opts = { security: { protectedMode: false }, hostAdapter: { notify: (m: string) => notices.push(m) } };
+    const plugin = { ipcServer: { isListening: () => false } };
+    const real = adapter.buildSpawnExtras;
+    const broken = () => { throw new Error("hooks file unwritable"); };
+    try {
+      adapter.buildSpawnExtras = broken;
+      hd.prepareSpawn({ kind: "codex-cli", plugin, options: opts }).cleanup();
+      hd.prepareSpawn({ kind: "codex-cli", plugin, options: opts }).cleanup();
+      assert.equal(notices.length, 1, "deduplicated while still degraded");
+      adapter.buildSpawnExtras = real;
+      const ok = hd.prepareSpawn({ kind: "codex-cli", plugin, options: opts });
+      assert.equal(ok.ok, true, ok.degradationReason);
+      assert.equal(ok.mode, "store-guard-only");
+      ok.cleanup();
+      adapter.buildSpawnExtras = broken;
+      hd.prepareSpawn({ kind: "codex-cli", plugin, options: opts }).cleanup();
+      assert.equal(notices.length, 2, "reported again after recovering");
+    } finally { adapter.buildSpawnExtras = real; }
+  });
+});

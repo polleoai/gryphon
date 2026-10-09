@@ -49,6 +49,7 @@
 
 const fs = require("fs") as typeof import("fs");
 const { isWithinByIdentity } = require("./path-identity");
+const { readRegularFile, clearNonFile } = require("./safe-read");
 const path = require("path") as typeof import("path");
 const os = require("os") as typeof import("os");
 const crypto = require("crypto") as typeof import("crypto");
@@ -134,7 +135,9 @@ function validateSecurityValue(key: unknown, value: unknown): { ok: true; value:
   if (key === "permissionMode") {
     return typeof value === "string" && PERMISSION_MODES.has(value)
       ? { ok: true, value }
-      : { ok: false, reason: `unknown permissionMode ${JSON.stringify(value)}` };
+      // Review R7-1: never serialise an untrusted value here — a deeply nested
+      // one overflowed the stack inside the tamper check.
+      : { ok: false, reason: `unknown permissionMode ${typeof value === "string" ? JSON.stringify(value.slice(0, 64)) : typeof value}` };
   }
   if (key === "obsidianRestApiPolicy") {
     return value === "blocked" || value === "allowed"
@@ -269,6 +272,8 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
     report(file, stamp, `${file} is not valid JSON; every security setting uses its protected default`);
     return _empty();
   }
+  // Review R7-1: nothing below may recurse into an arbitrarily deep value.
+  if (parsed && typeof parsed === "object") _pruneDeep(parsed);
   if (!parsed || typeof parsed !== "object" || !parsed.vaults || typeof parsed.vaults !== "object" || Array.isArray(parsed.vaults)) {
     report(file, stamp, `${file} has an unexpected shape; every security setting uses its protected default`);
     return _empty();
@@ -305,35 +310,56 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
   return store;
 }
 
-let _cache: { file: string; stamp: string; store: Store } | null = null;
+let _cache: { file: string; stamp: string; raw: string; store: Store; seq: number; mem: string | undefined } | null = null;
 
 function _stampOf(st: import("fs").Stats): string {
   return `${st.ino}:${st.size}:${st.mtimeMs}`;
 }
 
 /** Read the store. Cached on (inode, size, mtime): one `stat` per lookup. */
+/**
+ * Re-review: on every lookup, a record this window knows but that is gone
+ * from disk (deleted, replaced by a folder or a link) is put back — so
+ * breaking it while Gryphon runs doesn't leave a restart with no record.
+ */
+function _ensureRecord(file: string): void {
+  const mem = _lastTrusted().get(file);
+  if (mem !== undefined && _readTrustedCopy(file) === null) _writeTrusted(file, mem);
+}
+
 function _load(file: string, fresh = false): Store {
-  let st: import("fs").Stats;
-  try {
-    st = fs.statSync(file);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-      _report(file, "stat", `couldn't read ${file}; every security setting uses its protected default: ${(e as Error).message}`);
-    }
+  _ensureRecord(file);
+  // Re-review of 0fd38d0: one safe read — a regular file only (anything
+  // else at the path is "absent"), opened without following a symlink and
+  // without blocking on a FIFO.
+  const r = readRegularFile(file, { follow: true });
+  if (r.raw === null) {
     _cache = null;
+    const kept = _missingStore(file, r.absent);
+    if (kept !== null) return _parse(kept, file, "trusted");
+    if (!r.absent && r.error) {
+      _report(file, "read", `couldn't read ${file}; every security setting uses its protected default: ${r.error.message}`);
+    }
     return _empty();
   }
-  const stamp = _stampOf(st);
-  if (!fresh && _cache && _cache.file === file && _cache.stamp === stamp) return _cache.store;
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    _report(file, stamp, `couldn't read ${file}; every security setting uses its protected default: ${(e as Error).message}`);
-    return _empty();
+  const raw = r.raw;
+  const stamp = _stampOf(r.st);
+  // Security review: cached by CONTENT, not by (inode, size, mtime) — an
+  // in-place write can keep all three, and the turn-start snapshot (which
+  // reads the bytes) would then see content no read had judged.
+  // Post-push review F4: the cache is per bundled copy, but the record is
+  // per process — a hit also needs the shared record unchanged since.
+  if (!fresh && _cache && _cache.file === file && _cache.raw === raw &&
+      _cache.seq === _ledger().seq && _cache.mem === _lastTrusted().get(file)) return _cache.store;
+  const used = _verifyAgainstTrusted(file, raw);
+  if (used !== raw) {
+    // The file was judged and rewritten (or must not be trusted): don't
+    // cache under the old stamp; the next lookup re-reads what's there now.
+    _cache = null;
+    return used === null ? _empty() : _parse(used, file, "trusted");
   }
   const store = _parse(raw, file, stamp);
-  _cache = { file, stamp, store };
+  _cache = { file, stamp, raw, store, seq: _ledger().seq, mem: _lastTrusted().get(file) };
   return store;
 }
 
@@ -394,7 +420,343 @@ function _save(store: unknown, file: string, priorRaw: string | null = null) {
     try { fs.unlinkSync(tmp); } catch (_) {}
     throw e;
   }
+  // Issue #32: the trusted copy only once the store holds it (review: a
+  // failed rename left the copy ahead, and the next read "undid" the store
+  // to a save that never happened). This process's ledger covers the gap.
+  _writeTrusted(file, raw);
   _cache = null;
+}
+
+// ── the trusted copy (issue #32) ───────────────────────────────────────
+
+/**
+ * Issue #32: the turn-end check only compared a reply's start and end, and
+ * the next reply took whatever was on disk as its baseline — so a write
+ * delayed past the turn (`nohup sh -c 'sleep 120; …' &`) became trusted,
+ * and a planted CLI path then ran at the next spawn, even with Protected
+ * Mode back on. Now every read that finds the file changed compares it to
+ * the content Gryphon itself last wrote: this process's latest write, or
+ * the trusted copy every Gryphon writer keeps beside the store (it
+ * survives a restart and is shared across processes). Any other change
+ * that weakens a setting is undone before the value is used; if it can't
+ * be undone, the trusted content is used instead.
+ *
+ * Within a session the content this process accepted wins; the copy (a
+ * plain single-link file, never an alias of the store) stands in only after
+ * a restart. An agent that rewrites both files consistently while Gryphon
+ * isn't running defeats it — the same-user limit as the store itself
+ * (an OS-keychain MAC would raise it). A missing record is reported, never
+ * silently adopted.
+ */
+const TRUSTED_NAME = ".security-settings.trusted.json";
+
+function _trustedPath(file: string): string {
+  return path.join(path.dirname(file), TRUSTED_NAME);
+}
+
+/**
+ * The last content accepted as Gryphon's, per store file, in this process
+ * (shared by every bundled copy). It backs the on-disk copy: deleting the
+ * copy mid-session gains nothing.
+ */
+const LAST_TRUSTED_KEY = Symbol.for("gryphon.securityStoreTrusted");
+function _lastTrusted(): Map<string, string> {
+  const g = process as any;
+  if (!(g[LAST_TRUSTED_KEY] instanceof Map)) {
+    Object.defineProperty(g, LAST_TRUSTED_KEY, { value: new Map(), configurable: true, enumerable: false, writable: true });
+  }
+  return g[LAST_TRUSTED_KEY];
+}
+
+/**
+ * The on-disk copy, only if it can be trusted as a separate record: a
+ * regular file with one link that isn't the store itself (security review:
+ * a hard link or symlink to the store would make every later store write
+ * read back as "trusted"). Anything else reads as no copy.
+ */
+function _readTrustedCopy(file: string): string | null {
+  const r = readRegularFile(_trustedPath(file));
+  // Only the store itself (same file) or a non-file is rejected: a hard
+  // link to some other file gives nothing a direct write wouldn't.
+  if (r.raw === null) return null;
+  try {
+    const s2 = fs.statSync(file);
+    if (s2.ino === r.st.ino && s2.dev === r.st.dev) return null;
+  } catch (_) { /* no store: nothing to alias */ }
+  return r.raw;
+}
+
+function _writeTrusted(file: string, raw: string): void {
+  _lastTrusted().set(file, raw);
+  const t = _trustedPath(file);
+  try {
+    // A fresh file renamed over the old entry: replaces a link, never writes through it.
+    if (_readTrustedCopy(file) === raw) return;
+    // Re-review: a directory (or anything but a file) at the record's path
+    // can't be renamed over — clear it first; it isn't a record Gryphon wrote.
+    clearNonFile(t);
+    const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+    fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
+    try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+  } catch (e) {
+    console.warn(`[gryphon/security-settings] couldn't record the trusted copy of the security settings: ${(e as Error).message}`);
+  }
+}
+
+// `info` "record-started": there was no record of Gryphon's own content
+// (first run with this version, or the record was deleted while Gryphon
+// wasn't running), so the file was taken as it is — the user should look.
+type TamperSink = (reverted: Reverted[], error: unknown, info?: "record-started") => void;
+const _tamperSinks = new Set<TamperSink>();
+
+/** Changes undone (or that couldn't be) outside a reply's own check. */
+function onSecurityStoreTamper(fn: TamperSink): () => void {
+  _tamperSinks.add(fn);
+  return () => { _tamperSinks.delete(fn); };
+}
+
+function _emitTamper(reverted: Reverted[], error: unknown, info?: "record-started") {
+  for (const fn of _tamperSinks) {
+    try { fn(reverted, error, info); } catch (_) { /* a sink must not break reads */ }
+  }
+}
+
+let _verifying = false;
+
+/**
+ * QA P2-A: what an adopted file loosens compared with the defaults (values
+ * looser than the protected default, and any confirmed program location),
+ * so the "record started" notice can name what to check.
+ */
+function _loosenedIn(raw: string, file: string): Reverted[] {
+  try {
+    return _weakenings(_parse(raw, file, "adopt", _quiet), _empty())
+      .filter((w) => w.field !== "dismissed")
+      .map((w) => ({ vaultKey: w.vaultKey, hostId: w.hostId, key: w.field === "values" ? w.key : `${w.field}.${w.key}` }));
+  } catch (_) {
+    return [];
+  }
+}
+
+/** True when `raw` holds any per-vault entry (an empty store needs no look). */
+function _hasEntries(raw: string): boolean {
+  try {
+    const o = JSON.parse(raw);
+    return !!(o && typeof o === "object" && o.vaults && typeof o.vaults === "object" && Object.keys(o.vaults).length);
+  } catch (_) { return false; }
+}
+
+/**
+ * The content to read: `raw` itself if it is Gryphon's, else `raw` judged
+ * (that exact content — never a second read) with its weakening parts
+ * undone, or the content Gryphon last accepted if the undo fails.
+ */
+/**
+ * Vaults this process serves (read or written here), shared by every
+ * bundled copy in the process. Each Obsidian vault window is its own
+ * process, so another window's vaults are not in this set.
+ */
+const SERVED_KEY = Symbol.for("gryphon.securityServedVaults");
+function _served(): Set<string> {
+  const g = process as any;
+  if (!(g[SERVED_KEY] instanceof Set)) Object.defineProperty(g, SERVED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
+  return g[SERVED_KEY];
+}
+function _serve(scope: SecurityScope | null | undefined): void {
+  if (scope && typeof scope.vaultKey === "string" && scope.vaultKey) _served().add(scope.vaultKey);
+}
+
+function _sameContent(a: string, b: string): boolean {
+  try { return mcpApprovals.canonicalJSON(JSON.parse(a)) === mcpApprovals.canonicalJSON(JSON.parse(b)); } catch (_) { return false; }
+}
+
+/**
+ * What the store should hold, per vault. A vault this process serves: what
+ * this process last accepted (an agent that writes the store can write the
+ * copy beside it too). Any other vault: the trusted copy, which another
+ * Gryphon window updates with its own writes (review: judging another
+ * window's settings against this process's memory undid them). After a
+ * restart (no memory): the copy. Null: no record.
+ */
+function _baselineRaw(file: string): string | null {
+  const mem = _lastTrusted().get(file);
+  const copy = _readTrustedCopy(file);
+  if (mem === undefined) return copy;
+  if (copy === null) {
+    // Re-review: the record is missing or not a plain file (deleted,
+    // replaced, linked) while this window knows what it should be — put it
+    // back, so a restart doesn't find "no record".
+    _writeTrusted(file, mem);
+    return mem;
+  }
+  return _othersFromCopy(mem, copy);
+}
+
+/**
+ * `base` with every vault this process doesn't serve — and every top-level
+ * field this version doesn't know (review: a newer window's fields were
+ * stripped with a false alert) — taken from the trusted copy, which the
+ * windows serving them keep current. Vaults served here keep `base`.
+ */
+function _othersFromCopy(base: string, copy: string): string {
+  // Total (review N-1): a value nested thousands of levels deep in the copy
+  // overflowed the stack when re-serialised, so the turn-end check threw
+  // before undoing anything and every read failed until a restart. Deep
+  // values from the copy are pruned first; any failure keeps `base`.
+  try {
+    // Both sides pruned (review R6-1: a deep value accepted into this
+    // window's record overflowed here too, so the merge was skipped and
+    // another window's change was undone).
+    const out = _pruneDeep(_rawObject(base));
+    const c = _pruneDeep(_rawObject(copy));
+    if (!out || !_isPlainObject(out.vaults) || !c) return base;
+    const own = (o: object, k: string) => Object.prototype.hasOwnProperty.call(o, k);
+    // Top-level fields this version doesn't know come from the copy (a newer
+    // window may have written them). They are inert here — so a FUTURE
+    // security-relevant field must live inside a per-vault host entry,
+    // never at the top level, or a plant written to both files would stick.
+    for (const k of new Set([...Object.keys(out), ...Object.keys(c)])) {
+      if (KNOWN_TOP.has(k)) continue;
+      if (own(c, k)) _setOwnKey(out, k, c[k]); else delete out[k];
+    }
+    const cv: Record<string, any> = _isPlainObject(c.vaults) ? c.vaults : {};
+    const served = _served();
+    for (const vk of new Set([...Object.keys(out.vaults), ...Object.keys(cv)])) {
+      if (served.has(vk)) continue;
+      if (own(cv, vk)) _setOwnKey(out.vaults, vk, cv[vk]);
+      else delete out.vaults[vk];
+    }
+    return JSON.stringify(out, null, 2) + "\n";
+  } catch (e) {
+    console.warn("[gryphon/security-settings] couldn't merge the trusted copy; judging against this window's record:", (e as Error).message);
+    return base;
+  }
+}
+
+function _verifyAgainstTrusted(file: string, raw: string): string | null {
+  if (_verifying) return raw;
+  const l = _ledger();
+  // Post-push review F1: no "equals this process's last write" shortcut —
+  // those bytes can be stale for another window's vaults and replayed.
+  // Gryphon's own write is already the in-memory record (set by _save).
+  // Security review: within a session, what this process accepted wins — an
+  // agent that can write the store can write the copy beside it too. The
+  // copy only stands in after a restart.
+  const trusted = _baselineRaw(file);
+  if (trusted !== null && (trusted === raw || _sameContent(trusted, raw))) { _writeTrusted(file, raw); return raw; }
+  if (trusted === null) {
+    // No record anywhere: first run with this version, or the record was
+    // deleted while Gryphon wasn't running. Take the file as it is, and say
+    // so when it holds settings worth checking.
+    _writeTrusted(file, raw);
+    if (_hasEntries(raw)) _emitTamper(_loosenedIn(raw, file), null, "record-started");
+    return raw;
+  }
+  if (!_parses(raw)) {
+    // Security review: an unreadable file is never the new baseline (it
+    // would read as the defaults, dropping a stricter "plan"). Keep using
+    // what Gryphon last accepted and say so once.
+    _reportBad(file, raw);
+    return trusted;
+  }
+  _verifying = true;
+  const seq = l.seq;
+  try {
+    const r = checkSecurityStoreTamper({ file, raw: trusted, seq }, raw);
+    if (r.reverted.length) {
+      _emitTamper(r.reverted, null);
+      // Use what Gryphon just wrote — never a re-read, which could be a
+      // newer foreign write nobody judged.
+      const wrote = _ledger().seq > seq ? _ledger().entries[_ledger().entries.length - 1].raw : null;
+      return wrote !== null ? wrote : trusted;
+    }
+    // Nothing weaker (a strengthening): this content is now the baseline.
+    _writeTrusted(file, raw);
+    return raw;
+  } catch (e) {
+    // Couldn't undo it: never use the foreign content. Reported once per
+    // content (review: a stuck undo re-ran on every read, each one a notice).
+    const tag = `${file}\u0000undo\u0000${_sha256(raw)}`;
+    if (!_reportedBad.has(tag)) {
+      _reportedBad.add(tag);
+      console.error("[gryphon/security-settings] couldn't undo a change made outside Gryphon:", e);
+      _emitTamper([], e);
+    }
+    return trusted;
+  } finally {
+    _verifying = false;
+  }
+}
+
+function _parses(raw: string): boolean {
+  try { JSON.parse(raw); return true; } catch (_) { return false; }
+}
+
+const _reportedBad = new Set<string>();
+function _reportBad(file: string, raw: string | null) {
+  const tag = `${file}\u0000${raw === null ? "missing" : _sha256(raw)}`;
+  if (_reportedBad.has(tag)) return;
+  _reportedBad.add(tag);
+  const what = raw === null ? "was deleted or replaced by something that isn't a file" : "isn't readable";
+  console.error(`[gryphon/security-settings] ${file} ${what} outside Gryphon; using the settings Gryphon last saved`);
+  _emitTamper([], new Error(`the security settings file ${what}`));
+}
+
+/** The store is missing: Gryphon's last accepted content, if any (security review). */
+/**
+ * Record "the defaults" for a store that doesn't exist: in memory, and on
+ * disk (the settings folder is created if needed, so the record survives a
+ * restart). Exclusive create, so a valid record another window just wrote
+ * isn't overwritten; anything else already at the path (a directory, a
+ * link — not a record Gryphon wrote) is replaced.
+ */
+function _initEmptyRecord(file: string, empty: string): void {
+  _lastTrusted().set(file, empty);
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(_trustedPath(file), empty, { mode: 0o600, flag: "wx" });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") {
+      console.warn(`[gryphon/security-settings] couldn't record the security settings' starting point: ${(e as Error).message}`);
+      return;
+    }
+    if (_readTrustedCopy(file) !== null) return; // another window's valid record
+    clearNonFile(_trustedPath(file));
+    _writeTrusted(file, empty);
+  }
+}
+
+function _missingStore(file: string, absent = false): string | null {
+  // Per vault (review): another window's changes come from the copy.
+  const trusted = _baselineRaw(file);
+  if (trusted === null) {
+    // Re-review: only a file that truly doesn't exist is "the defaults". A
+    // file that can't be READ (permissions, a Windows lock) may hold the
+    // user's own settings; recording "empty" for it would strip them once
+    // it becomes readable. It gets the no-record path when it can be read.
+    if (!absent) return null;
+    // Post-push review F2: no settings file and no record (a user who has
+    // never changed a security setting) is a KNOWN state — the defaults —
+    // not "no record". Record it, so a file that appears later (a delayed
+    // write) is judged against the defaults instead of adopted.
+    _initEmptyRecord(file, JSON.stringify(_empty(), null, 2) + "\n");
+    return null;
+  }
+  if (!_hasEntries(trusted)) return null;
+  _reportBad(file, null);
+  return trusted;
+}
+
+/**
+ * The content a write should start from: the store as judged, or — when it
+ * is missing — Gryphon's last accepted content. Security review: starting
+ * from the raw file let a settings change carry an unjudged plant into
+ * Gryphon's own (trusted) write.
+ */
+function _verifiedRaw(file: string): string | null {
+  const r = readRegularFile(file, { follow: true });
+  if (r.raw === null) return _missingStore(file, r.absent);
+  return _verifyAgainstTrusted(file, r.raw);
 }
 
 function _entry(store: Store, scope: SecurityScope): HostEntry | null {
@@ -456,7 +818,10 @@ function _setOwnKey(o: Record<string, any>, k: string, v: unknown): void {
 }
 
 function _composeForWrite(priorRaw: string | null, store: Store, touched: Array<[string, string]>, keepUnknown: boolean): unknown {
-  const base = _rawObject(priorRaw);
+  // Review R5-1: pruned, or a deeply nested planted value made every
+  // settings write overflow the stack — locking the user out of their own
+  // settings. A value deeper than PRUNE_DEPTH is dropped on the next write.
+  const base = _pruneDeep(_rawObject(priorRaw));
   if (!base || !_isPlainObject(base.vaults)) return store;
   const out: Record<string, any> = JSON.parse(JSON.stringify(base));
   if (typeof out.version !== "number") out.version = STORE_VERSION;
@@ -484,7 +849,8 @@ function _composeForWrite(priorRaw: string | null, store: Store, touched: Array<
 
 /** Re-read right before writing; change only this scope's entry. */
 function _update(scope: SecurityScope, file: string, fn: (entry: HostEntry) => void) {
-  const priorRaw = _readRaw(file);
+  _serve(scope);
+  const priorRaw = _verifiedRaw(file);
   // No "newer version, refuse to write" guard (commit review of 0d516c2):
   // an assistant that planted a bigger `version` would lock the user out of
   // their own security settings. Unknown fields are preserved instead, and
@@ -502,6 +868,7 @@ function _update(scope: SecurityScope, file: string, fn: (entry: HostEntry) => v
 
 /** This scope's confirmed values (validated). */
 function readMachineSecuritySettings(scope: SecurityScope, opts: { file?: string } = {}): SecurityValues {
+  _serve(scope);
   const entry = _entry(_load(opts.file || securitySettingsFilePath()), _requireScope(scope));
   return entry ? { ...entry.values } : {};
 }
@@ -598,6 +965,7 @@ function effectiveSecuritySettings(
   let dismissed: Record<string, string> = {};
   let machinePaths: Partial<Record<ExecutableKey, string>> = {};
   if (scope) {
+    _serve(scope);
     const entry = _entry(_load(opts.file || securitySettingsFilePath()), scope);
     if (entry) { machine = entry.values; dismissed = entry.dismissed; machinePaths = entry.paths || {}; }
   }
@@ -916,6 +1284,7 @@ function resolveCliPath(
   if (!key) return { path: null, source: null, version: null, unavailable: "not-found" };
   const described = describeSecurityScope({ app: ctx.app, hostPlugin: ctx.hostPlugin, hostId: ctx.hostId });
   const scope = described.scope;
+  _serve(scope);
   const vaultRoot = scope ? scope.vaultKey : _basePathOf(ctx.app || (ctx.hostPlugin && ctx.hostPlugin.app));
   let rejected: ResolvedCliPath["rejected"];
   let tooOldSeen = false;
@@ -980,13 +1349,17 @@ function _basePathOf(app: any): string | null {
 type StoreSnapshot = { file: string; raw: string | null; seq: number };
 
 function _readRaw(file: string): string | null {
-  try { return fs.readFileSync(file, "utf8"); } catch (_) { return null; }
+  return readRegularFile(file, { follow: true }).raw;
 }
 
 /** Turn start: remember the store's content and the ledger position. */
 function snapshotSecurityStore(opts: { file?: string } = {}): StoreSnapshot {
   const file = opts.file || securitySettingsFilePath();
-  return { file, raw: _readRaw(file), seq: _ledger().seq };
+  // Security review: the turn's reference is the CHECKED content (or, if
+  // the file is missing or unreadable, what Gryphon last accepted) — never
+  // raw bytes, or a plant that reached them would be restored by the
+  // turn-end undo and recorded as Gryphon's own.
+  return { file, raw: _verifiedRaw(file), seq: _ledger().seq };
 }
 
 const _quiet = () => { /* the tamper check reports through its own result */ };
@@ -1274,9 +1647,18 @@ function _restoreUnknown(out: unknown, expected: Map<string, any>): unknown {
   return res;
 }
 
-function checkSecurityStoreTamper(before: StoreSnapshot): { changed: boolean; reverted: Reverted[] } {
+function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null): { changed: boolean; reverted: Reverted[] } {
   const file = before.file;
-  const now = _readRaw(file);
+  if (judged === undefined && typeof before.raw === "string") {
+    // Turn end (review): vaults another window serves are judged against
+    // the trusted copy that window keeps current, not this turn's start —
+    // or a change the user made there during this reply is undone here.
+    const copy = _readTrustedCopy(file);
+    if (copy !== null) before = { ...before, raw: _othersFromCopy(before.raw, copy) };
+  }
+  // Issue #32 review: a caller that will USE some content passes exactly
+  // that content, so what is judged is what is used (no second read).
+  const now = judged !== undefined ? judged : _readRaw(file);
   if (now === before.raw) return { changed: false, reverted: [] };
   const parse = (raw: string | null) => (raw === null ? _empty() : _parse(raw, file, "tamper", _quiet));
   const parseable = (raw: string | null) => { if (raw === null) return true; try { JSON.parse(raw); return true; } catch (_) { return false; } };
@@ -1398,7 +1780,7 @@ function checkSecurityStoreTamper(before: StoreSnapshot): { changed: boolean; re
     const scopes = [...new Map(reverted.map((r) => [`${r.vaultKey}\u0000${r.hostId}`, [r.vaultKey, r.hostId] as [string, string]])).values()];
     _save(_restoreUnknown(_composeForWrite(nowSafe, after, scopes, false), expectedUnknown), file, now);
     console.warn(
-      "[gryphon/security-settings] undid changes to Gryphon's security settings made outside Gryphon during a reply: " +
+      "[gryphon/security-settings] undid changes to Gryphon's security settings made outside Gryphon: " +
       reverted.map((r) => `${r.hostId}:${r.key}`).join(", "),
     );
   } else if (unknownDrift) {
@@ -1419,6 +1801,7 @@ module.exports = {
   resolveCliPath,
   snapshotSecurityStore,
   checkSecurityStoreTamper,
+  onSecurityStoreTamper,
   SECURITY_DEFAULTS: DEFAULTS,
   isWeakeningKey,
   isWeakening,

@@ -145,6 +145,7 @@ module.exports = {
     ensureStoreGuardScript: storeGuard.ensureStoreGuardScript,
     snapshotSecurityStore: securitySettings.snapshotSecurityStore,
     checkSecurityStoreTamper: securitySettings.checkSecurityStoreTamper,
+    onSecurityStoreTamper: securitySettings.onSecurityStoreTamper,
     // Promoted from constants — protected-pattern catalog data
     DEFAULT_PROTECTED_PATHS: constants.DEFAULT_PROTECTED_PATHS,
     DEFAULT_PROTECTED_COMMANDS: constants.DEFAULT_PROTECTED_COMMANDS,

@@ -243,6 +243,7 @@ function renderApprovedServersSetting(plugin, panelEl, descToTooltip) {
     if (!basePath)
         return;
     const vk = mcpApprovals.vaultKey(basePath);
+    mcpApprovals.serveVault(vk);
     const entries = mcpApprovals.listForVault(mcpApprovals.load(), vk);
     if (entries.length === 0) {
         new Setting(panelEl).setDesc("No servers approved for this vault.");

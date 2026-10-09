@@ -19,7 +19,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const { Modal, Setting, Notice } = require("obsidian");
 const { securitySettings, mcpApprovals } = require("@gryphon/protect");
-const { WEAKENING_KEYS, SecurityScopeUnavailableError, describeSecurityScope, scopeKey, isWeakeningKey, isExecutableKey, validateSecurityValue, validateCliPath, setMachineSecuritySetting, setMachineCliPath, dismissVaultSecuritySuggestion, effectiveSecuritySettings, onSecurityStoreError, CLI_PATH_KEY_BY_KIND, } = securitySettings;
+const { WEAKENING_KEYS, SecurityScopeUnavailableError, describeSecurityScope, scopeKey, isWeakeningKey, isExecutableKey, validateSecurityValue, validateCliPath, setMachineSecuritySetting, setMachineCliPath, dismissVaultSecuritySuggestion, effectiveSecuritySettings, onSecurityStoreError, onSecurityStoreTamper, CLI_PATH_KEY_BY_KIND, } = securitySettings;
 /** Issue #30: human names for the CLI path keys. */
 const CLI_PATH_LABELS = {
     claudePath: "Claude Code",
@@ -191,13 +191,55 @@ function reportCliPathRejected(rejected) {
  * Gryphon's security settings that something other than Gryphon made
  * during a reply. Always visible.
  */
-function reportSecurityTamperReverted(reverted, providerLabel) {
-    const names = reverted.map((r) => {
-        const k = r.key.replace(/^(paths|dismissed)\./, "");
-        return isExecutableKey(k) ? `${cliPathLabel(k)} location` : securityKeyLabel(k);
+/** QA (2.11.2): at most `max` names, then "and N more" — a planted file can hold thousands. */
+function _capList(items, max = 8) {
+    if (items.length <= max)
+        return items.join(", ");
+    return `${items.slice(0, max).join(", ")} and ${items.length - max} more`;
+}
+/** Review: one name can be planted at any length — shorten it. */
+function _short(s, max = 60) {
+    const t = String(s ?? "");
+    return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+/** A vault's folder name for a notice (the store is keyed by full path). */
+function _vaultName(vaultKey, segments = 1) {
+    const parts = String(vaultKey || "").split(/[\\/]+/).filter(Boolean);
+    const name = parts.length ? parts.slice(-segments).join("/") : String(vaultKey || "");
+    return mcpApprovals.displaySafe(_short(name));
+}
+/** Items grouped by vault: `a, b (vault "X"); c (vault "Y")`, capped. */
+function _byVault(items) {
+    const groups = new Map();
+    for (const it of items) {
+        const k = String(it.vaultKey || "");
+        if (!groups.has(k))
+            groups.set(k, new Set());
+        groups.get(k).add(_short(it.label));
+    }
+    // Two vaults with the same folder name are told apart by their parent folder.
+    const counts = new Map();
+    for (const k of groups.keys())
+        counts.set(_vaultName(k), (counts.get(_vaultName(k)) || 0) + 1);
+    const parts = [...groups].map(([k, labels]) => {
+        const v = (counts.get(_vaultName(k)) || 0) > 1 ? _vaultName(k, 2) : _vaultName(k);
+        return `${_capList([...labels])} (vault "${v}")`;
     });
-    const msg = `Gryphon undid a change to its security settings made during ${mcpApprovals.displaySafe(providerLabel)}'s ` +
-        `reply (${[...new Set(names)].join(", ")}). Only Gryphon's settings screen can change these.`;
+    return parts.length > 4 ? `${parts.slice(0, 4).join("; ")}; and ${parts.length - 4} more vaults` : parts.join("; ");
+}
+function _tamperNames(reverted) {
+    return [...new Set(reverted.map((r) => {
+            const k = r.key.replace(/^(paths|dismissed)\./, "");
+            return isExecutableKey(k) ? `${cliPathLabel(k)} location` : securityKeyLabel(k);
+        }))];
+}
+function reportSecurityTamperReverted(reverted, providerLabel) {
+    const names = _tamperNames(reverted);
+    const when = providerLabel === null
+        ? "outside Gryphon"
+        : `during ${mcpApprovals.displaySafe(providerLabel)}'s reply`;
+    const msg = `Gryphon undid a change to its security settings made ${when} ` +
+        `(${[...new Set(names)].join(", ")}). Only Gryphon's settings screen can change these.`;
     console.warn("[gryphon]", msg, reverted);
     try {
         new Notice(msg, 15000);
@@ -209,8 +251,12 @@ function reportSecurityTamperReverted(reverted, providerLabel) {
  * couldn't put it back. Nothing was undone, so the user must look.
  */
 function reportSecurityTamperUndoFailed(providerLabel, e) {
-    const msg = `Gryphon found a change to its security settings during ${mcpApprovals.displaySafe(providerLabel)}'s reply ` +
-        `but couldn't undo it${e && e.code ? ` (${mcpApprovals.displaySafe(String(e.code))})` : ""}. ` +
+    const when = providerLabel === null
+        ? "made outside Gryphon"
+        : `during ${mcpApprovals.displaySafe(providerLabel)}'s reply`;
+    const using = providerLabel === null ? " Until it's fixed, Gryphon uses the settings it last saved." : "";
+    const msg = `Gryphon found a change to its security settings ${when} ` +
+        `but couldn't undo it${e && e.code ? ` (${mcpApprovals.displaySafe(String(e.code))})` : ""}.${using} ` +
         "Open Gryphon's Security settings to check them, and make sure the settings file can be written.";
     console.error("[gryphon]", msg, e);
     try {
@@ -239,6 +285,54 @@ function installSecurityStoreErrorNotice() {
     onSecurityStoreError((message) => {
         try {
             new Notice(`Gryphon: ${mcpApprovals.displaySafe(message)}`, 15000);
+        }
+        catch { /* headless */ }
+    });
+    // Issue #32: a change found when the settings are next read — after a
+    // reply ended, or across a restart — not by a reply's own check.
+    onSecurityStoreTamper((reverted, error, info) => {
+        if (info === "record-started") {
+            // QA P2-A: name what the adopted settings loosen, so the user knows what to check.
+            // The store is machine-wide: say which vault each setting belongs to.
+            const items = reverted.map((r) => ({ vaultKey: r.vaultKey, label: _tamperNames([r])[0] }));
+            const msg = "Gryphon now keeps a record of its security settings so it can undo changes made outside Gryphon. " +
+                (items.length
+                    ? `It started from the settings as they are now, which loosen protection: ${_byVault(items)}. ` +
+                        "If you didn't choose these, open that vault and change them in Gryphon's Security settings."
+                    : "It started from the settings as they are now; open Gryphon's Security settings if anything looks wrong.");
+            console.warn("[gryphon]", msg);
+            try {
+                new Notice(msg, 15000);
+            }
+            catch { /* headless */ }
+        }
+        else if (error)
+            reportSecurityTamperUndoFailed(null, error);
+        else
+            reportSecurityTamperReverted(reverted, null);
+    });
+    // Issue #32: the same for MCP server approvals (they let a vault's server
+    // start without asking). The removal holds even if it couldn't be saved.
+    mcpApprovals.onApprovalsTamper((removed, error, info) => {
+        if (info === "record-started") {
+            const items = removed.map((r) => ({ vaultKey: r.vaultKey, label: mcpApprovals.displaySafe(_short(r.name)) }));
+            const msg = "Gryphon now keeps a record of the MCP servers you approved so it can ignore approvals added outside Gryphon. " +
+                `It started from the approvals as they are now${items.length ? ` (${_byVault(items)})` : ""}; ` +
+                "in each vault, check Approved vault MCP servers in Gryphon's settings for any server you didn't approve.";
+            console.warn("[gryphon]", msg);
+            try {
+                new Notice(msg, 15000);
+            }
+            catch { /* headless */ }
+            return;
+        }
+        const names = _capList([...new Set(removed.map((r) => mcpApprovals.displaySafe(_short(r.name))))]);
+        const msg = `Gryphon ignored MCP server approvals added outside Gryphon (${names}). ` +
+            "Those servers will ask before they start." +
+            (error ? " Gryphon couldn't remove them from the approvals file; make sure it can be written." : "");
+        console.warn("[gryphon]", msg, error || "");
+        try {
+            new Notice(msg, error ? 0 : 15000);
         }
         catch { /* headless */ }
     });

@@ -4,6 +4,38 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.2] — 2026-10-09
+
+A security update from the reviews of 2.11.1. Please update every copy of Gryphon you use, including one built into another plugin.
+
+### Security
+
+- **A change to Gryphon's security settings made after a reply ends is now caught.** 2.11.1 checked the settings when a reply started and ended, so an assistant with Protected Mode off could schedule a change to land later, for example a program location for Codex. That change then counted, even after Protected Mode was back on and across a restart. Gryphon now keeps a record of the settings it last saved. Whenever the settings file has changed, any change that loosens protection is undone before the setting is used, and you're told. If it can't be undone, Gryphon keeps using the settings it last saved.
+- **MCP server approvals added outside Gryphon don't count.** An approval lets a vault's MCP server start without asking. One added or changed outside Gryphon, at any time, is now ignored and removed, and you're told; that server asks again. Removing an approval stays removed.
+- **Antigravity on Windows is protected when a folder name has letters like "é".** If the vault's or your user folder's name had a character outside plain English letters, Antigravity's safety checks failed to start, and Antigravity treats a failed check as "allowed", so nothing was checked. Gryphon now uses Windows' short folder names. If a drive has short names turned off, Gryphon won't start Antigravity unprotected and tells you why.
+- **Tools Gryphon doesn't recognise are checked by the files they touch.** Antigravity has many built-in tools, and plugins and MCP servers add their own. Protected-file checks only covered tools Gryphon knew by name, even with Protected Mode on. Any tool that isn't read-only is now checked against the files and folders it names.
+
+### Fixed
+
+- Large plugin or MCP tool requests (for example thousands of Notion blocks) were refused in every mode by Gryphon's settings guard. They now go through; a reference to Gryphon's settings buried inside one is still caught.
+- If protection stops working, recovers and stops again in the same session, you're now told the second time too.
+
+### Things to know
+
+- **First start after updating:** Gryphon starts its record from your settings and approvals as they are now, and shows a notice naming any settings that loosen protection and any approved MCP servers, so you can check them once in Gryphon's Security settings and under "Approved vault MCP servers".
+- **Update every copy.** Copies of Gryphon from 2.11.1 or earlier, including one built into another plugin, don't keep the record. A setting or approval changed through such a copy is undone as "changed outside Gryphon" until that copy is updated.
+- **Limits:** a change written to both the settings and Gryphon's record — or a change made together with deleting the record — can't be told apart from your own if Gryphon doesn't read the settings before it next starts (for example while Obsidian is closed, or for a vault with no window open). When Gryphon finds no record, it says so and names any settings that loosen protection, so you can check them. One consequence differs from 2.11.1: a change written to both files during a reply, for a vault with no window open, is no longer undone when that reply ends. Several vault windows open at once work as before: each window checks the settings and approvals of the vaults it has open, and keeps changes another window makes to its own vaults. If two separate programs run Gryphon for the *same* vault at the same time, a setting or approval changed in one is undone and reported in the other. Codex's checks were confirmed to be registered and trusted for this release, but full Codex chat tests couldn't run (Codex usage limit).
+
+### Corrections to the 2.11.1 notes
+
+- 2.11.1 said the after-reply check "can't catch a change timed to land after the reply ends" and doesn't cover the list of approved MCP servers. Both are now covered (above).
+
+### For plugins that build on Gryphon
+
+- `onSecurityStoreTamper(fn)` (security settings) and `mcpApprovals.onApprovalsTamper(fn)` report changes found outside a reply: `fn(changes, error, info)`, where `info` is `"record-started"` when there was no record yet; in that case `changes` lists what the adopted file loosens (security settings) or the servers it approves (MCP approvals), each with its `vaultKey`. Gryphon's own chat view already shows notices for both.
+- Gryphon keeps `.security-settings.trusted.json` and `.mcp-approvals.trusted.json` next to the stores. Don't edit or copy them; writes through the library keep them current.
+- `checkSecurityStoreTamper(before, judged?)` takes an optional second argument: the exact content to judge instead of re-reading the file.
+
 ## [2.11.1] — 2026-10-08
 
 A security update from a full review of 2.11.0. Please update, especially if you use Codex.

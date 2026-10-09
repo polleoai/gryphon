@@ -149,9 +149,14 @@ test("#30 (security review): a Gryphon write made on top of tampered content doe
   store.setMachineSecuritySetting(scope, "protectedMode", true);
   const before = store.snapshotSecurityStore();
   agentWrite(file, (j) => { j.vaults[scope.vaultKey].hosts.gryphon.values.permissionMode = "bypassPermissions"; });
+  // #32: a settings write now judges the file first, so the plant is undone
+  // (and reported) right there; the turn-end check then finds nothing left.
+  const early: string[] = [];
+  const off = store.onSecurityStoreTamper((rv: any[]) => rv.forEach((x) => early.push(x.key)));
   store.setMachineSecuritySetting(scope, "blockPackageInstall", true);  // the user, mid-turn: re-reads the tampered file
+  off();
   const r = store.checkSecurityStoreTamper(before);
-  assert.deepEqual(r.reverted.map((x: any) => x.key), ["permissionMode"]);
+  assert.deepEqual([...early, ...r.reverted.map((x: any) => x.key)], ["permissionMode"], "undone and reported exactly once");
   const vals = read(file).vaults[scope.vaultKey].hosts.gryphon.values;
   assert.equal("permissionMode" in vals, false);
   assert.equal(vals.blockPackageInstall, true, "the user's own change stays");

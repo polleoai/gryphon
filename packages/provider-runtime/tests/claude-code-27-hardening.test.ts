@@ -16,8 +16,15 @@ const path = require("path");
 
 const { buildMemoryAppendix } = require("../src/providers/claude-code/memory-appendix");
 
+// #35: every temp root is removed when the file's tests finish (they used
+// to accumulate in $TMPDIR — hundreds of gryphon-27h-* dirs).
+const _tmpRoots: string[] = [];
+test.after(() => { for (const d of _tmpRoots) { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
+
 function tmpRoot(): string {
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gryphon-27h-")));
+  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gryphon-27h-")));
+  _tmpRoots.push(d);
+  return d;
 }
 
 /** Record every path handed to realpathSync/statSync while fn runs. */

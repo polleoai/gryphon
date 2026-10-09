@@ -253,8 +253,12 @@ function _scrubInternalLeaks(text: any) {
 }
 
 /** R44 D1: a user-facing cause; the raw reason is logged by the dispatcher. */
+const { launcherRefusalText } = require("../../launcher-refusal-text");
+
 function _plainAgyCause(reason: unknown): string {
   const r = String(reason || "");
+  const refusal = launcherRefusalText(r);
+  if (refusal) return refusal.cause;
   if (/ipc server/i.test(r)) return "Gryphon's approval service isn't running";
   if (/plugin dir|hook scripts missing/i.test(r)) return "some of Gryphon's files are missing";
   if (/store-guard script/i.test(r)) return "Gryphon couldn't write to its settings folder";
@@ -266,6 +270,8 @@ function _plainAgyCause(reason: unknown): string {
 /** QA P2-1/P2-2: the fix that matches the cause. */
 function _agyFix(reason: unknown): string {
   const r = String(reason || "");
+  const refusal = launcherRefusalText(r);
+  if (refusal) return refusal.fix;
   if (/ipc server/i.test(r)) return "Restart Obsidian so Gryphon's approval service starts again.";
   if (/plugin dir|hook scripts missing/i.test(r)) return "Reinstall or update Gryphon — a sync tool may have renamed its files.";
   if (/node binary/i.test(r)) return "Install Node.js (or add it to your PATH), then restart Obsidian.";
@@ -415,8 +421,14 @@ class AntigravityCliProvider {
       message:
         "Gryphon won't start Antigravity without its safety check: Antigravity can't ask you before " +
         "each action, so this check is what protects your files in Protected Mode " +
-        `(${_plainAgyCause(hookExtras?.degradationReason)}). ${_agyFix(hookExtras?.degradationReason)} ` +
-        "Or turn off Protected Mode in Settings to run Antigravity without it.",
+        `(${_plainAgyCause(hookExtras?.degradationReason)}). ${_agyFix(hookExtras?.degradationReason)}` +
+        // Review: a launcher problem in the user folder or Node.js path also
+        // stops the check that runs with Protected Mode off — don't send the
+        // user from one refusal to another. A vault-path problem doesn't
+        // (that check doesn't live in the vault), so it keeps the option.
+        (launcherRefusalText(hookExtras?.degradationReason) && !/short name: vault\)/.test(String(hookExtras?.degradationReason))
+          ? ""
+          : " Or turn off Protected Mode in Settings to run Antigravity without it."),
     };
   }
 

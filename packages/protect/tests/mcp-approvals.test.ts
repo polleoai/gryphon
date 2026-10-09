@@ -98,7 +98,7 @@ test("approve → isApproved (exact hash only); revoke removes it; file is 0600 
 
 test("missing or corrupt store → nothing approved (fail closed)", () => {
   const dir = tempDir();
-  assert.deepEqual(approvals.load(path.join(dir, "absent.json")).vaults, {});
+  assert.deepEqual(Object.keys(approvals.load(path.join(dir, "absent.json")).vaults), []);
   for (const bad of ["{ not json", "[]", "null", '{"version":1,"vaults":[]}', '{"version":1,"vaults":{"/v":{"s":"nothash"}}}']) {
     const f = path.join(dir, "bad.json");
     fs.writeFileSync(f, bad);

@@ -171,11 +171,70 @@ function classify(tool, input, ctx) {
         }
         return _mostSevere(verdicts);
     }
-    // Read / Glob / Grep / WebFetch / WebSearch are not currently gated —
-    // their outputs carry the threat, not their inputs. Returning null
-    // here keeps the detector a no-op for them (permission-gate still
-    // handles its existing policy for tools that call it).
-    return null;
+    // Read / Glob / Grep / WebFetch / WebSearch are not gated — their
+    // outputs carry the threat, not their inputs.
+    if (UNGATED_TOOLS.has(canonical))
+        return null;
+    // #34: any OTHER tool (a CLI tool Gryphon has no alias for yet — agy ships
+    // 100+ — or an MCP tool) is gated by what it touches, not its name: every
+    // path-like argument is classified as a write of that path. Only a
+    // protected match yields a verdict, so ordinary tools stay unaffected.
+    if (security.protectedPathsEnabled === false)
+        return null;
+    return _mostSevere(_pathArgVerdicts(tool, input, ctx, security));
+}
+const UNGATED_TOOLS = new Set(["Read", "Glob", "Grep", "WebFetch", "WebSearch"]);
+const MAX_UNKNOWN_TOOL_PATHS = 2048;
+function _pathArgVerdicts(tool, input, ctx, security) {
+    const { _argStrings, _resolveArgPaths, PATH_ARG_RE, BASE_ARG_RE } = require("./mcp-approvals");
+    const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
+    if (!vaultRoot)
+        return [];
+    // Same walker and resolver as the store guard (dc9cc5d review): paths are
+    // resolved from the vault AND from the call's own folder arguments, with
+    // `~` and file: URLs expanded — never a narrower reading than the tool's.
+    const walked = _argStrings(input, 64, MAX_UNKNOWN_TOOL_PATHS);
+    const bases = new Set([vaultRoot]);
+    for (const [key, value] of walked.pairs) {
+        if (!BASE_ARG_RE.test(key))
+            continue;
+        for (const v of Array.isArray(value) ? value : [value])
+            for (const b of _resolveArgPaths(v, [vaultRoot]))
+                bases.add(b);
+    }
+    const tooLarge = () => [{
+            tool,
+            matchedPattern: "arguments too large to inspect",
+            category: "runs-arbitrary-code",
+            title: _categoryTitle("runs-arbitrary-code"),
+            userRisk: "This tool call names more files than Gryphon can check one by one, so it can't confirm none of them is protected.",
+            technicalDetail: `Tool:            ${tool}\nArguments:       too many paths to inspect`,
+        }];
+    // Only path / folder / command strings are counted, so ordinary data never
+    // reaches this — a call that does is refused for approval, not waved through.
+    if (walked.truncated)
+        return tooLarge();
+    const out = [];
+    let checked = 0;
+    for (const [key, value] of walked.pairs) {
+        if (!PATH_ARG_RE.test(key))
+            continue;
+        for (const v of Array.isArray(value) ? value : [value]) {
+            // Nothing is skipped: a value that LOOKS like a URL can still be a
+            // relative path to the tool ('http://x/../../.obsidian/…' normalizes
+            // into the vault), and a real URL never resolves to a protected file.
+            if (typeof v !== "string" || !v)
+                continue;
+            for (const abs of _resolveArgPaths(v, [...bases])) {
+                if (++checked > MAX_UNKNOWN_TOOL_PATHS * 4)
+                    return tooLarge();
+                const verdict = _classifyFilePath(tool, { file_path: abs }, ctx, security);
+                if (verdict)
+                    out.push({ ...verdict, technicalDetail: `${verdict.technicalDetail}\nArgument:        ${key}` });
+            }
+        }
+    }
+    return out;
 }
 /**
  * Issue #25 (Design rev 2): Gryphon runs a vault-defined MCP server only

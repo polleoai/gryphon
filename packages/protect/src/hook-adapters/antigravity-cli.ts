@@ -54,6 +54,7 @@ const {
 } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
 
 const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
+const { sameFileAs } = require("../path-identity");
 
 const KIND = "antigravity-cli";
 
@@ -127,6 +128,25 @@ function _shQuote(s: string): string {
 const WIN_SHIM_UNSAFE = /["%\r\n]/;
 
 /**
+ * Issue #35: cmd.exe decodes a .cmd file in the console's OEM code page (437
+ * on a US install), not UTF-8. A shim naming `C:\Users\José\…` reached node
+ * as `Jos├⌐`, node exited 1, and agy treats a failed hook as ALLOW — a
+ * non-ASCII vault or user name silently turned the guard off (reproduced on
+ * the Windows VM, 2026-10-08). So every path in a shim body, and the shim
+ * path itself, must be printable ASCII. A non-ASCII path is replaced by its
+ * 8.3 short name (always ASCII) when it is provably the same file, else the
+ * caller refuses to install.
+ */
+const PLAIN_ASCII = /^[\x20-\x7e]*$/;
+
+function _asciiForShim(p: string, shortOf: (p: string) => string | null = _shortPathOf): string | null {
+  if (PLAIN_ASCII.test(p)) return p;
+  const short = shortOf(p);
+  if (!short || !PLAIN_ASCII.test(short)) return null;
+  return sameFileAs(short, [p]) ? short : null;
+}
+
+/**
  * Why Windows gets a shim file instead of an inline command.
  *
  * Antigravity executes a hook command through Go's `os/exec`, which quotes
@@ -176,19 +196,21 @@ function _winShimPath(ipcSocketPath: string, baseDir?: string): string | null {
   // write-protection covers its launcher; the full-mode shim keeps
   // %LOCALAPPDATA%.
   const base = baseDir ? null : process.env.LOCALAPPDATA;
-  if (!baseDir && !base) return null;
+  if (!baseDir && !base) { _lastRefusal = "couldn't write the launcher"; return null; }
 
   const dir = baseDir ? path.join(baseDir, "agy-hooks") : path.join(base as string, "gryphon", "agy-hooks");
   const direct = path.join(dir, `pretool-${tag}.cmd`);
-  if (!direct.includes(" ") && !direct.includes('"')) return direct;
+  if (!direct.includes(" ") && !direct.includes('"') && PLAIN_ASCII.test(direct)) return direct;
 
   // Spaced profile: 8.3 requires the directory to exist before it has a
   // short name, so create it first.
-  try { fs.mkdirSync(dir, { recursive: true }); } catch { return null; }
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { _lastRefusal = "couldn't write the launcher"; return null; }
   const short = _shortPathOf(dir);
-  if (short && !short.includes(" ") && !short.includes('"')) {
+  if (short && !short.includes(" ") && !short.includes('"') && PLAIN_ASCII.test(short)) {
     return path.join(short, `pretool-${tag}.cmd`);
   }
+  // Review: say which problem it is — letters like é and a space read differently.
+  _lastRefusal = PLAIN_ASCII.test(dir) ? "no space-free location for the launcher" : "non-ascii path without a short name: user folder";
   return null;
 }
 
@@ -218,6 +240,39 @@ function _shortPathOf(dir: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * QA P2-B: why the last build refused, for the user-facing notice (the
+ * console warning alone left the notice suggesting the wrong fix).
+ */
+let _lastRefusal: string | null = null;
+function lastRefusal(): string | null { return _lastRefusal; }
+
+/** `dir` is unset, plain ASCII, or reachable by an 8.3 short name. */
+function _reachable(dir: string | undefined): boolean {
+  return !dir || PLAIN_ASCII.test(dir) || _asciiForShim(dir) !== null;
+}
+
+/** `_asciiForShim` over a shim's paths; null (with a warning) if any can't be made ASCII. */
+function _asciiShimArgs(values: string[], where: string[] = []): string[] | null {
+  const out: string[] = [];
+  for (const [i, v] of values.entries()) {
+    const a = _asciiForShim(v);
+    if (a === null) {
+      // Re-check: say WHICH folder, or the user moves the wrong one.
+      _lastRefusal = `non-ascii path without a short name: ${where[i] || "path"}`;
+      console.warn(
+        `[gryphon/antigravity-hooks] refusing to build a hook command: "${v}" has ` +
+        `a non-ASCII character and no 8.3 short name, and Windows would misread it ` +
+        `inside the hook launcher. Antigravity will not start until the vault (or ` +
+        `the user folder) is reachable by a plain-ASCII path.`,
+      );
+      return null;
+    }
+    out.push(a);
+  }
+  return out;
 }
 
 function _writeWinShim(
@@ -251,8 +306,31 @@ function _makeCommand(nodePath: string, scriptPath: string, ipcSocketPath: strin
     ["GRYPHON_PERMISSION_SOCKET", ipcSocketPath],
   ];
   if (process.platform === "win32") {
+    // Re-check: the user folder first. A vault inside a non-ASCII user
+    // folder (Documents is Obsidian's default) would otherwise be blamed on
+    // the vault — but the user folder is what must change, for this
+    // launcher (LOCALAPPDATA) and for the one Protected Mode off needs.
+    // Only LOCALAPPDATA matters to this launcher (review: checking APPDATA
+    // here refused full protection on machines whose roaming folder is a
+    // redirected share).
+    if (!_reachable(process.env.LOCALAPPDATA)) {
+      _lastRefusal = "non-ascii path without a short name: user folder";
+      console.warn(`[gryphon/antigravity-hooks] refusing to build a hook command: "${process.env.LOCALAPPDATA}" has a non-ASCII character and no 8.3 short name.`);
+      return null;
+    }
+    const ascii = _asciiShimArgs([nodePath, scriptPath, ipcSocketPath], ["node", "vault", "path"]);
+    if (!ascii) {
+      // A vault problem only leaves "turn off Protected Mode" as an option
+      // when the settings guard's folder (APPDATA) works; say when it doesn't.
+      if (/: vault$/.test(String(_lastRefusal)) && !_reachable(process.env.APPDATA)) {
+        _lastRefusal = "non-ascii path without a short name: vault and user folder";
+      }
+      return null;
+    }
+    [nodePath, scriptPath, ipcSocketPath] = ascii;
     for (const v of [nodePath, scriptPath, ipcSocketPath]) {
       if (WIN_SHIM_UNSAFE.test(v)) {
+        _lastRefusal = "path has a percent or quote character";
         console.warn(
           `[gryphon/antigravity-hooks] refusing to build a hook command: ` +
           `"${v}" contains a character that cannot be embedded in a cmd shim. ` +
@@ -263,15 +341,16 @@ function _makeCommand(nodePath: string, scriptPath: string, ipcSocketPath: strin
     }
     const shimPath = _winShimPath(ipcSocketPath);
     if (!shimPath) {
+      _lastRefusal = _lastRefusal || "no space-free location for the launcher";
       console.warn(
         `[gryphon/antigravity-hooks] refusing to build a hook command: no ` +
-        `space-free location for the hook shim (tried LOCALAPPDATA and ` +
-        `ProgramData). Antigravity's hook command cannot contain a quote, and ` +
-        `a space would require one.`,
+        `usable location for the hook launcher under LOCALAPPDATA (${_lastRefusal}). ` +
+        `Antigravity's hook command cannot contain a quote, a space, or a ` +
+        `character outside plain ASCII.`,
       );
       return null;
     }
-    if (!_writeWinShim(shimPath, nodePath, scriptPath, ipcSocketPath)) return null;
+    if (!_writeWinShim(shimPath, nodePath, scriptPath, ipcSocketPath)) { _lastRefusal = "couldn't write the launcher"; return null; }
     return shimPath;
   }
   const assigns = env.map(([k, v]) => `${k}=${_shQuote(v)}`).join(" ");
@@ -286,8 +365,12 @@ function _makeCommand(nodePath: string, scriptPath: string, ipcSocketPath: strin
  */
 function _makeStoreGuardCommand(nodePath: string, sg: StoreGuardOnly, owner: string): string | null {
   if (process.platform === "win32") {
-    for (const v of [nodePath, sg.scriptPath, sg.approvalsDir]) {
+    const ascii = _asciiShimArgs([nodePath, sg.scriptPath, sg.approvalsDir], ["node", "user folder", "user folder"]);
+    if (!ascii) return null;
+    const [aNode, aScript, aDir] = ascii;
+    for (const v of ascii) {
       if (WIN_SHIM_UNSAFE.test(v)) {
+        _lastRefusal = "path has a percent or quote character";
         console.warn(
           `[gryphon/antigravity-hooks] refusing to build the store-guard command: ` +
           `"${v}" contains a character that cannot be embedded in a cmd shim.`,
@@ -296,11 +379,11 @@ function _makeStoreGuardCommand(nodePath: string, sg: StoreGuardOnly, owner: str
       }
     }
     const shimPath = _winShimPath(`owner:${owner}`, sg.approvalsDir);
-    if (!shimPath) return null;
+    if (!shimPath) { _lastRefusal = _lastRefusal || "no space-free location for the launcher"; return null; }
     const body = [
       "@echo off",
       `rem gryphon-owner=${owner}`,
-      `"${nodePath}" "${sg.scriptPath}" antigravity "${sg.approvalsDir}"`,
+      `"${aNode}" "${aScript}" antigravity "${aDir}"`,
       "",
     ].join("\r\n");
     try {
@@ -308,6 +391,7 @@ function _makeStoreGuardCommand(nodePath: string, sg: StoreGuardOnly, owner: str
       fs.writeFileSync(shimPath, body, { mode: 0o600 });
     } catch (e) {
       console.warn(`[gryphon/antigravity-hooks] could not write the hook shim ${shimPath}: ${(e as Error).message}`);
+      _lastRefusal = "couldn't write the launcher";
       return null;
     }
     return shimPath;
@@ -551,6 +635,7 @@ function buildSpawnExtras(
   { pluginDir, ipcSocketPath, nodePath, storeGuardOnly, _hooksFile }:
   { pluginDir?: string; ipcSocketPath?: string; nodePath: string; storeGuardOnly?: StoreGuardOnly; _hooksFile?: string },
 ) {
+  _lastRefusal = null;
   if (storeGuardOnly) {
     if (!nodePath || !storeGuardOnly.scriptPath || !storeGuardOnly.approvalsDir) return null;
     const file = _hooksFile || hooksFilePath();
@@ -623,4 +708,6 @@ module.exports = {
   _installInto,
   _uninstallFrom,
   _stripStaleFrom,
+  _asciiForShim,
+  lastRefusal,
 };

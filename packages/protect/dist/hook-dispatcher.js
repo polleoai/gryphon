@@ -128,15 +128,24 @@ function _notify(options, key, msg) {
     catch (_) { /* a notice must not break a spawn */ }
 }
 function _noticeStoreGuardDegraded(kind, reason, options) {
+    // Review: Antigravity refuses to start without this check (except when
+    // Node.js is missing) and says why itself; a notice saying it runs
+    // unguarded would contradict that refusal.
+    if (kind === "antigravity-cli" && reason !== "no node binary found") {
+        console.warn(`[gryphon/hooks] store guard unavailable for ${kind}: ${reason}`);
+        return;
+    }
     const label = _cliLabel(kind);
-    const why = reason === "no node binary found"
+    // QA (2.11.2): a launcher refusal names its own cause and fix here too.
+    const refusal = launcherRefusalText(reason);
+    const why = refusal ? `Gryphon couldn't set up its check for ${label} (${refusal.cause})` : reason === "no node binary found"
         ? "Gryphon couldn't find Node.js on this computer"
         : reason === "store-guard script unavailable"
             ? `Gryphon couldn't write to its settings folder (${approvalsDir()})`
             : `Gryphon couldn't install its check for ${label}`;
     const msg = `${why}, so it can't stop ${label} from changing Gryphon's own security settings. ` +
         "Gryphon still undoes such changes when each reply ends. " +
-        (reason === "no node binary found"
+        (refusal ? refusal.fix : reason === "no node binary found"
             ? "Install Node.js (or add it to your PATH) and restart Obsidian to restore the check."
             : reason === "store-guard script unavailable"
                 ? "Make that folder writable and restart Obsidian to restore the check."
@@ -148,7 +157,21 @@ function _noticeStoreGuardDegraded(kind, reason, options) {
  * Plain-language cause for a user notice (R44 D1): internal reasons such as
  * "ipc server not listening" or adapter errors stay in the console.
  */
+/** QA P2-B: an adapter's own reason for refusing, when it gives one. */
+function _refusalOf(adapter) {
+    try {
+        const r = adapter && typeof adapter.lastRefusal === "function" ? adapter.lastRefusal() : null;
+        return r ? ` (refused: ${r})` : "";
+    }
+    catch (_) {
+        return "";
+    }
+}
+const { launcherRefusalText } = require("../../provider-runtime/dist/launcher-refusal-text");
 function _plainCause(reason) {
+    const refusal = launcherRefusalText(reason);
+    if (refusal)
+        return refusal.cause;
     if (/ipc server/i.test(reason))
         return "Gryphon's approval service isn't running";
     if (/plugin dir|hook scripts missing/i.test(reason))
@@ -159,6 +182,9 @@ function _plainCause(reason) {
 }
 /** QA P2-2: the fix that matches the cause (a restart doesn't fix them all). */
 function _restoreHint(reason) {
+    const refusal = launcherRefusalText(reason);
+    if (refusal)
+        return refusal.fix;
     if (/plugin dir|hook scripts missing/i.test(reason))
         return "Reinstall or update Gryphon to restore them — a sync tool may have renamed its files.";
     if (/node binary/i.test(reason))
@@ -194,7 +220,7 @@ function _storeGuardExtras(kind, adapter, nodePath, options) {
         return { ok: false, reason: `adapter.buildSpawnExtras threw: ${e.message}` };
     }
     if (!extras)
-        return { ok: false, reason: `adapter "${kind}" couldn't install the store-guard hook` };
+        return { ok: false, reason: `adapter "${kind}" couldn't install the store-guard hook${_refusalOf(adapter)}` };
     return { ok: true, extras, scriptPath: sg.path };
 }
 /**
@@ -295,6 +321,11 @@ function prepareSpawn({ kind, plugin, options = {} }) {
             _noticeStoreGuardDegraded(kind, built.reason, options);
             return { ...empty, degradationReason: built.reason, details: pf.details, mode: pf.mode };
         }
+        // #35 sibling (review): the store guard is back — a later loss of it
+        // in this session must be reported again too.
+        for (const k of [..._degradedNoticed])
+            if (k.startsWith(`sg:${kind}:`))
+                _degradedNoticed.delete(k);
         const extras = built.extras;
         return {
             ok: true,
@@ -332,9 +363,14 @@ function prepareSpawn({ kind, plugin, options = {} }) {
         // these cases — if we reach here, it indicates pre-flight is
         // out of sync with adapter expectations. Surface a useful
         // diagnostic rather than the legacy "Stage 2/3 pending" copy.
-        return fullFallback(`adapter "${kind}" returned null (pre-flight should have caught the missing input — ` +
+        return fullFallback(`adapter "${kind}" returned null${_refusalOf(adapter)} (pre-flight should have caught the missing input — ` +
             `check pluginDir, ipcSocketPath, nodePath)`, pf.details);
     }
+    // #35 (QA P3-2): full protection is back for this CLI — a later
+    // degradation in the same session must be reported again.
+    for (const k of [..._degradedNoticed])
+        if (k.startsWith(`full:${kind}:`))
+            _degradedNoticed.delete(k);
     return {
         ok: true,
         mode: pf.mode,
