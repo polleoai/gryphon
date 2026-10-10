@@ -556,3 +556,83 @@ test("#36 2.11.4: every brace alternative is checked", () => {
     assert.ok(Date.now() - t < 2000);
   });
 });
+
+test("#36 post-push review of 2.11.4: every cd folder is a base; compound read-named tools that write are checked", () => {
+  withVault((_v, ctx) => {
+    const dummies = Array.from({ length: 12 }, (_, i) => `cd d${i}`).join("; ");
+    assert.ok(classify("Bash", { command: `${dummies}; cd .obsidian/plugins && cat /tmp/evil.js > gryphon/main.js` }, ctx));
+    assert.ok(classify("Bash", { command: `${dummies}; cd .git && echo x > hooks/pre-commit` }, { ...ctx, cwd: "notes" }));
+    const many = Array.from({ length: 300 }, (_, i) => `cd d${i}`).join("; ");
+    assert.ok(classify("Bash", { command: `${many}; echo x > a.md` }, ctx), "too many folders is a verdict");
+    assert.ok(classify("mcp__lint__check_and_fix", { path: ".obsidian/plugins/gryphon/main.js" }, ctx));
+    assert.ok(classify("mcp__fmt__find_and_format", { file: ".git/hooks/pre-commit" }, ctx));
+    assert.ok(classify("mcp__x__get_or_build", { path: ".claude/settings.json" }, ctx));
+    assert.equal(classify("mcp__x__find_and_read", { path: ".obsidian/plugins/gryphon/data.json" }, ctx), null);
+    assert.equal(classify("mcp__fs__read_text_file", { path: ".obsidian/plugins/gryphon/data.json" }, ctx), null);
+    assert.equal(classify("mcp__github__get_file_contents", { path: ".git/config" }, ctx), null);
+  });
+});
+
+test("#36 2.11.5 security review: any spelling of cd before a redirect, and cd folders from the CLI's folder", () => {
+  withVault((vault, ctx) => {
+    for (const cmd of [
+      "cd -- .git/hooks; echo x > pre-commit",
+      "cd -- .claude; echo '{}' > settings.json",
+      "command cd .claude && printf '{}' >| settings.local.json",
+      "builtin cd .git/hooks; echo x > pre-commit",
+      "{ cd .git/hooks; echo x > pre-commit; }",
+      "if cd .git/hooks; then echo x > pre-commit; fi",
+      "x=1 cd .git/hooks; echo x > pre-commit",
+      "cd -P -- .git/hooks; echo x > pre-commit",
+      "cd>/dev/null .git/hooks; echo x > pre-commit",
+      "cd '.git'/hooks; echo x > pre-commit",
+      "cd .gi\\t/hooks; echo x > pre-commit",
+    ]) assert.ok(classify("Bash", { command: cmd }, ctx), cmd);
+    assert.ok(classify("PowerShell", { command: "Push-Location -Path .git/hooks; 'x' > pre-commit" }, ctx));
+    assert.ok(classify("PowerShell", { command: "[IO.Directory]::SetCurrentDirectory('.git/hooks'); 'x' > pre-commit" }, ctx));
+    const notes = { ...ctx, cwd: path.join(vault, "notes") };
+    assert.ok(classify("Bash", { command: "cd ../.claude && echo '{}' > settings.json" }, notes));
+    assert.ok(classify("Bash", { command: "cd ../.obsidian/plugins/gryphon && echo x > main.js" }, notes));
+    assert.ok(classify("Bash", { command: "cd hooks && echo x > pre-commit" }, { ...ctx, cwd: path.join(vault, ".git") }));
+    assert.ok(classify("run_command", { CommandLine: "cd ../.git/hooks && echo x > pre-commit", command: "cd ../.git/hooks && echo x > pre-commit", Cwd: "notes" }, ctx));
+    // Ordinary work stays quiet.
+    assert.equal(classify("Bash", { command: "cd notes && ls > list.md" }, ctx), null);
+    assert.equal(classify("Bash", { command: "cd notes && cat > a.md <<'EOF'\nplain text\nEOF" }, ctx), null);
+    for (const t of ["check_autofix", "find_purge", "query_upgrade", "check_amend"]) assert.ok(classify(`mcp__x__${t}`, { path: ".obsidian/plugins/gryphon/main.js" }, ctx), t);
+  });
+});
+
+test("#36 2.11.5 review/QA: cd after then/--/builtin before a redirect; long cd scripts stay allowed; slow checks are bounded", () => {
+  withVault((vault, ctx) => {
+    assert.ok(classify("Bash", { command: "if true; then cd .git; fi; echo x > hooks/pre-commit" }, ctx));
+    assert.ok(classify("Bash", { command: "\\cd .git; echo x > hooks/pre-commit" }, ctx));
+    for (let i = 0; i < 60; i++) fs.mkdirSync(path.join(vault, "notes", `p${i}`));
+    const script = Array.from({ length: 60 }, (_, i) => `cd notes/p${i} && git add -A && git commit -m "update ${i}" && mv a${i}.md b${i}.md && cd -`).join("\n");
+    assert.equal(classify("Bash", { command: script }, ctx), null, "60 cd lines of ordinary work");
+    const deep = "a/".repeat(200);
+    const slow = Array.from({ length: 255 }, (_, i) => `cd /tmp/d${i}`).join("; ") + "; " + Array.from({ length: 62 }, (_, i) => `echo x > ${deep}${i}`).join("; ");
+    const t = Date.now();
+    const v = classify("Bash", { command: slow }, ctx);
+    assert.ok(Date.now() - t < 4000, `took ${Date.now() - t}ms`);
+    assert.ok(v, "a check that runs out of time asks");
+  });
+});
+
+test("#36 2.11.5 final check: cd inside a quoted inner command; one time budget per tool call, checked per resolution", () => {
+  withVault((_v, ctx) => {
+    assert.ok(classify("PowerShell", { command: 'cmd /c "cd .git\\hooks && echo x > pre-commit"' }, ctx));
+    assert.ok(classify("Bash", { command: "flock /tmp/l -c 'cd .git/hooks && echo x > pre-commit'" }, ctx));
+    assert.ok(classify("Bash", { command: "bash <<< 'cd .git/hooks && echo x > pre-commit'" }, ctx));
+    assert.ok(classify("PowerShell", { command: "cd/d .git\\hooks & echo x > pre-commit" }, ctx));
+    const deep = "/tmp/" + "s/".repeat(250);
+    const t1 = Date.now();
+    const v1 = classify("Bash", { command: "echo 'x" + Array.from({ length: 256 }, (_, i) => `;cd ${deep}${i}`).join("") + "' > f0" }, ctx);
+    assert.ok(Date.now() - t1 < 3500 && (v1 || Date.now() - t1 < 1500), `1: ${Date.now() - t1}ms allowed=${!v1}`);
+    const rel = "r/".repeat(120);
+    const input: any = { command: "echo '" + Array.from({ length: 60 }, (_, i) => `;cd ${rel}${i}`).join("") + "' > f0" };
+    for (let i = 0; i < 60; i++) input[`cwd${i}`] = "/tmp/" + "c/".repeat(120) + i;
+    const t2 = Date.now();
+    const v2 = classify("mcp__x__run", input, ctx);
+    assert.ok(Date.now() - t2 < 3500 && (v2 || Date.now() - t2 < 1500), `2: ${Date.now() - t2}ms allowed=${!v2}`);
+  });
+});

@@ -4,6 +4,20 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.5] — 2026-10-10
+
+A small security follow-up to 2.11.4.
+
+### Security
+
+- **A command that changes folders many times is still checked by where it writes.** 2.11.4 followed only the first eight folders a command moved into, so a write after several harmless `cd`s into Gryphon's plugin folder wasn't caught. Every folder now counts, and a command that changes folders too many times to check asks first.
+- **Any way of changing folder counts.** A file written with `>` after a change of folder spelled in a less common way (`cd -- .git/hooks`, `command cd`, `{ cd …; }`, `Push-Location`, or inside a quoted command such as `cmd /c "cd … && …"`), or after a `cd ../.claude` from the folder the assistant is working in, wasn't caught in 2.11.4. Now it is.
+- **Tools named like readers that also change files are checked.** 2.11.4 stopped asking about read-only tools, but a tool whose name starts with a read word and then names a second action (for example "check and fix" or "find and format") could change a protected file without asking. Those tools are checked again.
+
+### Things to know
+
+- Checking every folder takes longer for very long scripts. A script that changes folders many times (roughly 90 or more `cd` lines with file changes) now asks first as "taking too long to check", rather than freezing Obsidian while it's checked.
+
 ## [2.11.4] — 2026-10-09
 
 A security update: Gryphon's protected-file checks now cover more of the ways an assistant can reach your plugin folder, git hooks and assistant settings.

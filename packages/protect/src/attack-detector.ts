@@ -117,7 +117,21 @@ function _categoryTitle(category: string): string {
 const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
 const { rebaseOntoRoot } = require("./path-identity");
 
+/**
+ * One time budget for the whole tool call (security check of 98980f6: a
+ * budget per command argument, checked only between paths, let a crafted
+ * call run for 25 s and then be allowed). Running out is a verdict.
+ */
+let _checkDeadline = 0;
+let _classifyDepth = 0;
+function _outOfTime(): boolean { return Date.now() > _checkDeadline; }
+
 function classify(tool: string, input: Record<string, unknown> | null, ctx?: Record<string, unknown> | null): ClassifyVerdict {
+  if (_classifyDepth++ === 0) _checkDeadline = Date.now() + SHELL_CHECK_BUDGET_MS;
+  try { return _classify(tool, input, ctx); } finally { _classifyDepth--; }
+}
+
+function _classify(tool: string, input: Record<string, unknown> | null, ctx?: Record<string, unknown> | null): ClassifyVerdict {
   if (!tool || !input) return null;
   // Issue #29: the frozen security snapshot (ctx.security) wins. Without
   // one, the caller's own settings (ctx.settings, then ctx.plugin.settings)
@@ -233,6 +247,9 @@ const WRITE_WORDS = new Set([
   "replace", "patch", "exec", "execute", "run", "apply", "upload", "download", "insert", "modify", "save", "copy", "cp",
   "mkdir", "make", "new", "add", "push", "commit", "merge", "install", "drop", "truncate", "overwrite", "chmod", "link",
   "unlink", "clear", "reset", "restore", "import", "export", "sync", "fork", "transfer", "send", "start", "stop", "kill",
+  "fix", "format", "lint", "upsert", "store", "persist", "generate", "render", "dump", "emit", "rewrite", "touch", "build",
+  "compile", "convert", "transform", "write", "edit", "prettify", "beautify", "minify", "sort", "dedupe", "refactor", "migrate",
+  "autofix", "fixed", "fixes", "amend", "purge", "wipe", "upgrade", "cleanup", "clean", "correct", "destroy", "init", "erase",
 ]);
 /** The tool's own (last) name starts with a read verb and has no write word. */
 function _readOnlyToolName(tool: string): boolean {
@@ -245,6 +262,11 @@ function _readOnlyToolName(tool: string): boolean {
   const server = new Set(parts.length > 1 ? _words(parts[parts.length - 1]) : []);
   while (words.length > 1 && server.has(words[0])) words = words.slice(1);
   if (!words.length || words.some((w) => WRITE_WORDS.has(w))) return false;
+  // A compound name names a second action (`check_and_fix`, `find_or_make`):
+  // read-only only if that action is a read too (post-push review of 2.11.4).
+  for (let k = 0; k + 1 < words.length; k++) {
+    if ((words[k] === "and" || words[k] === "or" || words[k] === "then") && !READ_VERBS.has(words[k + 1])) return false;
+  }
   // `directory_tree` / `tree` list a folder (not `checkout_tree`).
   return READ_VERBS.has(words[0]) || ["tree", "directory tree", "dir tree", "file tree", "folder tree"].includes(words.join(" "));
 }
@@ -586,6 +608,13 @@ function _shellPathVerdicts(tool: string, command: unknown, ctx: Record<string, 
   if (redirects === null) return _tooLargeVerdict(tool, "a command with too many or too long redirections to inspect");
   if (redirects.some((t) => t.length > MAX_SHELL_TOKEN)) return _tooLargeVerdict(tool, "a command naming a path too long to inspect");
   if (!writes && !redirects.length) return [];
+  // A redirect after a change of folder (`cd -- .git/hooks; echo x > pre-commit`,
+  // any spelling of cd) gets every word checked, like a write verb: the
+  // folder itself then names the protected path (security review of 85d6eb4).
+  // Read from the raw text (security check of 98980f6: a `cd` inside a quoted
+  // inner command, or cmd's `cd/d`, isn't a word of its own). Matching too
+  // much only means more words are checked.
+  const checkAll = writes || (redirects.length > 0 && CD_TEXT_RE.test(command));
   const targets: string[] = [];
   const distinct = new Set<string>();
   for (const t of redirects) {
@@ -594,7 +623,7 @@ function _shellPathVerdicts(tool: string, command: unknown, ctx: Record<string, 
   }
   for (const t of targets) distinct.add(t);
   if (distinct.size > MAX_SHELL_TARGETS) return _tooLargeVerdict(tool, "a command naming too many paths to inspect");
-  for (const t of writes ? toks : []) {
+  for (const t of checkAll ? toks : []) {
     if (t.length > MAX_SHELL_TOKEN && !/\s/.test(t)) return _tooLargeVerdict(tool, "a command naming a path too long to inspect");
     const before = targets.length;
     _pathCandidates(t, targets);
@@ -607,17 +636,27 @@ function _shellPathVerdicts(tool: string, command: unknown, ctx: Record<string, 
   const { shellCdDirs } = require("./tool-aliases");
   // Review of 83183e6: the call's own working folder (agy `Cwd`, gemini
   // `dir_path`/`directory`, an MCP `cwd`) is a base too, like a `cd`.
-  const dirs = Object.entries(baseArgs || {}).filter(([k, v]) => typeof v === "string" && v && BASE_ARG_RE.test(k)).map(([, v]) => v as string);
-  dirs.push(...shellCdDirs(command));
+  const argDirs = Object.entries(baseArgs || {}).filter(([k, v]) => typeof v === "string" && v && BASE_ARG_RE.test(k)).map(([, v]) => v as string);
+  const cdDirs = shellCdDirs(command);
+  // Every folder (post-push review of 2.11.4: a silent cap of 8 let the 9th
+  // `cd` lead into the plugin folder); the work is bounded just below.
+  if (argDirs.length + cdDirs.length > require("./tool-aliases").MAX_CD_DIRS) return _tooLargeVerdict(tool, "a command changing folders too many times to inspect");
   const hookCwd = _hookCwd(ctx);
-  if (hookCwd) dirs.unshift(hookCwd);
-  const bases = [vaultRoot, ...dirs.slice(0, 8).flatMap((d: string) => _resolveArgPaths(d, [vaultRoot]))];
-  if (targets.length * bases.length > 4 * MAX_SHELL_TARGETS || targets.some((t) => t.split(/[\\/]/).length > 256)) {
+  // The CLI's folder and the tool's own folder come first; a `cd` resolves
+  // from any of them (security review of 85d6eb4: `cd ../.claude` from notes/).
+  const primary = [vaultRoot, ...(hookCwd ? [hookCwd] : []), ...argDirs.flatMap((d: string) => _resolveArgPaths(d, [vaultRoot, ...(hookCwd ? [hookCwd] : [])]))];
+  const bases = [...new Set([...primary, ...cdDirs.flatMap((d: string) => _resolveArgPaths(d, primary))])];
+  // Distinct paths × folders (QA of 85d6eb4: counting repeats made scripts
+  // with ~40 `cd`s "too large"), plus a time budget — resolving deep paths
+  // outside the vault is slow, and classify runs on Obsidian's main thread
+  // (review of 85d6eb4: a 110 s freeze). Past either: asked, never skipped.
+  if (distinct.size * bases.length > 16 * MAX_SHELL_TARGETS || targets.some((t) => t.split(/[\\/]/).length > 256)) {
     return _tooLargeVerdict(tool, "a command naming paths too large or too many to inspect");
   }
   const out: any[] = [];
   for (const t of distinct) {
     for (const abs of _resolveArgPaths(t, bases)) {
+      if (_outOfTime()) return _tooLargeVerdict(tool, "a command taking too long to inspect");
       // An unresolvable token (most aren't paths) is skipped; the command
       // rules still apply to the command as a whole.
       let v;
@@ -628,6 +667,8 @@ function _shellPathVerdicts(tool: string, command: unknown, ctx: Record<string, 
   return out;
 }
 
+const SHELL_CHECK_BUDGET_MS = 1500;
+const CD_TEXT_RE = /(?:^|[^\w.-])(?:cd|pushd|chdir|set-location|push-location|sl)(?=$|[^\w-])|SetCurrentDirectory/i;
 const UNGATED_TOOLS = new Set(["Read", "Glob", "Grep", "WebFetch", "WebSearch"]);
 const MAX_UNKNOWN_TOOL_PATHS = 2048;
 
@@ -752,10 +793,24 @@ function _patchVerdicts(tool: string, input: Record<string, unknown>, ctx: Recor
   for (const [k, v] of Object.entries(baseArgs)) {
     if (typeof v === "string" && require("./mcp-approvals").BASE_ARG_RE.test(k)) extra.push(v);
   }
-  extra.push(...shellCdDirs(input.command));
+  const cds = shellCdDirs(input.command);
+  if (cds.length > require("./tool-aliases").MAX_CD_DIRS) {
+    return [{
+      tool,
+      matchedPattern: "patch too large to inspect",
+      category: "runs-arbitrary-code",
+      title: _categoryTitle("runs-arbitrary-code"),
+      userRisk: "This change touches more files than Gryphon can check one by one, so it can't confirm none of them is protected.",
+      technicalDetail: `Tool:            ${tool}\nPatch:           too many folders to inspect`,
+    }];
+  }
+  extra.push(...cds);
   const hookCwd = _hookCwd(ctx);
   if (hookCwd) extra.push(hookCwd);
-  for (const d of extra) bases.add(path.resolve(vaultRoot, d));
+  for (const d of extra) {
+    bases.add(path.resolve(vaultRoot, d));
+    if (hookCwd) bases.add(path.resolve(hookCwd, d));
+  }
   // E7-1 / P8-1: bounded work — files × folders past the budget is itself
   // a verdict (approvable), never a long freeze or a silent allow.
   if (info.targets.length * bases.size > MAX_PATCH_RESOLUTIONS) {
@@ -771,6 +826,7 @@ function _patchVerdicts(tool: string, input: Record<string, unknown>, ctx: Recor
   const out: any[] = [];
   for (const target of info.targets) {
     for (const base of bases) {
+      if (_outOfTime()) return _tooLargeVerdict(tool, "a change taking too long to inspect");
       const abs = path.resolve(base, target);
       const v = _classifyFilePath(tool, { ...input, file_path: abs }, ctx, security);
       if (v) { out.push({ ...v, technicalDetail: `${v.technicalDetail}\nPatched file:    ${target}` }); break; }

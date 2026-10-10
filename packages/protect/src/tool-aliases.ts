@@ -164,15 +164,19 @@ function patchTargets(input: unknown): string[] {
  * lexically (quotes removed). Used only as EXTRA bases for resolving a
  * patch's relative paths, so a miss here can't loosen anything.
  */
+const MAX_CD_DIRS = 256;
 function shellCdDirs(command: unknown): string[] {
   if (typeof command !== "string" || !/\b(?:cd|pushd|Set-Location|sl)\b/.test(command)) return [];
   const out: string[] = [];
   const re = /(?:^|[;&|\n(]|&&|\|\|)\s*(?:cd|pushd|Set-Location|sl)\s+(?:-[A-Za-z]+\s+)*("([^"]*)"|'([^']*)'|[^\s;&|)]+)/g;
   for (const m of command.matchAll(re)) {
     const d = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[1];
-    if (d && !out.includes(d) && out.length < 32) out.push(d);
+    // Up to MAX_CD_DIRS + 1: a caller seeing more than MAX_CD_DIRS reports
+    // the command as too large rather than dropping folders (post-push
+    // review of 2.11.4: folders past a silent cap were ignored).
+    if (d && !out.includes(d)) { out.push(d); if (out.length > MAX_CD_DIRS) break; }
   }
   return out;
 }
 
-module.exports = { TOOL_ALIASES, patchTargets, patchTargetsInfo, shellCdDirs };
+module.exports = { TOOL_ALIASES, patchTargets, patchTargetsInfo, shellCdDirs, MAX_CD_DIRS };
