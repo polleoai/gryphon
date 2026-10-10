@@ -416,15 +416,16 @@ test("Read is not classified (by design; its output carries the threat, not its 
   } finally { cleanup(vault); }
 });
 
-test("Unknown tool name returns null", () => {
+test("Unknown tool name: harmless arguments return null; a dangerous command argument is gated (#36 item 3)", () => {
   const vault = tempVault();
   try {
+    assert.equal(attackDetector.classify("SomeMadeUpTool", { command: "echo hello" }, makeCtx(vault)), null);
     const result = attackDetector.classify(
       "SomeMadeUpTool",
       { command: "rm -rf /" },
       makeCtx(vault),
     );
-    assert.equal(result, null);
+    assert.ok(result, "an unknown tool's command argument gets the Bash rules");
   } finally { cleanup(vault); }
 });
 

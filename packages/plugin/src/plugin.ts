@@ -1473,11 +1473,18 @@ class GryphonPlugin extends Plugin {
     // (machine store, else protected defaults), never data.json. Computed
     // per request from the store, which only a user gesture writes.
     const security = securityUi.effectiveSecurityFor(this);
+    // The real path: protected paths and the CLI's cwd are compared after
+    // resolving links, so a vault opened through a symlink must be too.
+    let realRoot = vaultRoot;
+    try { realRoot = require("fs").realpathSync(vaultRoot); } catch { /* keep as given */ }
     const ctx = {
-      vaultRoot,
+      vaultRoot: realRoot,
       plugin: this,
       security,
       permissionMode: (req && req.permissionMode) || security.permissionMode || "default",
+      // The CLI's working directory for this call: a `cd` carries over
+      // between Claude Code's Bash calls (classify uses it only inside the vault).
+      cwd: req && typeof req.cwd === "string" ? req.cwd : null,
     };
 
     let classification;

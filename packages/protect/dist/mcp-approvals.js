@@ -665,13 +665,13 @@ const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
 // purpose: a note that MENTIONS the store path must not be refused.
 const PATH_ARG_RE = /path|file|target|dest|dst|dir|uri|url|location|cwd|^(?:source|src|to|from|output|out|folders?)$/i;
 /** Names of a directory that relative path arguments may resolve against. */
-const BASE_ARG_RE = /cwd|dir(?:ectory)?s?$|folders?$|^(?:root|base)$/i;
+const BASE_ARG_RE = /cwd|dir(?:ectory)?s?(?:_?path)?$|folders?$|^(?:root|base)$/i;
 /**
  * Argument names that carry a command line (issue #28), checked lexically
  * like Bash. Matched per word of the key, so `shellCommand`, `run_cmd` and
  * `tool-args` all count.
  */
-const COMMAND_WORDS = new Set(["command", "cmd", "cmdline", "script", "code", "args", "argv", "shell", "exec", "program"]);
+const COMMAND_WORDS = new Set(["command", "cmd", "cmdline", "script", "code", "args", "argv", "shell", "exec", "program", "arguments", "params", "parameters", "executable", "binary", "exe"]);
 function _isCommandKey(key) {
     return key.replace(/([a-z\d])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z\d]+/).some((w) => COMMAND_WORDS.has(w));
 }
@@ -890,6 +890,7 @@ module.exports = {
     // #34: the same argument walker / path-key test for classify's
     // name-independent default.
     _argStrings,
+    _isCommandKey,
     _resolveArgPaths,
     PATH_ARG_RE,
     BASE_ARG_RE,

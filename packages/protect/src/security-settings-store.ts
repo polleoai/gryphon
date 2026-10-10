@@ -279,6 +279,10 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
     return _empty();
   }
   const store = _empty();
+  // #36: one message per parse, not one per dropped key (a planted store
+  // with thousands of junk keys produced thousands of notices).
+  const droppedValues: string[] = [];
+  const droppedPaths: string[] = [];
   for (const [vk, vault] of Object.entries(parsed.vaults as Record<string, any>)) {
     if (!_validName(vk) || !vault || typeof vault !== "object" || !vault.hosts || typeof vault.hosts !== "object") continue;
     for (const [hostId, entry] of Object.entries(vault.hosts as Record<string, any>)) {
@@ -288,7 +292,7 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
       for (const [k, v] of Object.entries(rawValues)) {
         const ok = validateSecurityValue(k, v);
         if (ok.ok) values[k as WeakeningKey] = ok.value;
-        else report(file, stamp, `${file}: dropped ${JSON.stringify(k)} (${ok.reason}); it uses its protected default`);
+        else droppedValues.push(k);
       }
       const dismissed: Record<string, string> = {};
       const rawDismissed = entry.dismissed && typeof entry.dismissed === "object" ? entry.dismissed : {};
@@ -301,12 +305,18 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
       const rawPaths = entry.paths && typeof entry.paths === "object" && !Array.isArray(entry.paths) ? entry.paths : {};
       for (const [k, v] of Object.entries(rawPaths)) {
         if (isExecutableKey(k) && typeof v === "string" && v && _isAbsoluteAnywhere(v)) paths[k] = v;
-        else report(file, stamp, `${file}: dropped CLI path ${JSON.stringify(k)}; it uses the detected binary`);
+        else droppedPaths.push(k);
       }
       if (!store.vaults[vk]) store.vaults[vk] = { hosts: Object.create(null) };
       store.vaults[vk].hosts[hostId] = { values, setAt: typeof entry.setAt === "string" ? entry.setAt : "", dismissed, paths };
     }
   }
+  const names = (ks: string[]) => {
+    const shown = [...new Set(ks)].slice(0, 5).map((k) => JSON.stringify(k.length > 40 ? `${k.slice(0, 39)}…` : k));
+    return `${shown.join(", ")}${new Set(ks).size > 5 ? ` and ${new Set(ks).size - 5} more` : ""}`;
+  };
+  if (droppedValues.length) report(file, stamp, `${file}: ignored ${droppedValues.length} setting(s) Gryphon couldn't read (${names(droppedValues)}); they use their protected defaults`);
+  if (droppedPaths.length) report(file, stamp, `${file}: ignored ${droppedPaths.length} program location(s) Gryphon couldn't read (${names(droppedPaths)}); the detected programs are used`);
   return store;
 }
 
@@ -579,16 +589,38 @@ function _sameContent(a: string, b: string): boolean {
  * window's settings against this process's memory undid them). After a
  * restart (no memory): the copy. Null: no record.
  */
+/**
+ * #36: a baseline taken as-is from an unpruned record (first read after a
+ * restart, or the copy missing mid-session) could hold a value deeper than
+ * the prune depth, and judging the pruned store against it raised a false
+ * "undid unrecognised settings" notice. Pruned only when it needs it, so
+ * the bytes stay the same in every normal case.
+ */
+function _prunedBaseline(raw: string | null): string | null {
+  if (raw === null) return raw;
+  const obj = _rawObject(raw);
+  if (!obj) return raw;
+  const stack: Array<[unknown, number]> = [[obj, 0]];
+  let deep = false;
+  while (stack.length && !deep) {
+    const [x, d] = stack.pop() as [unknown, number];
+    if (!x || typeof x !== "object") continue;
+    if (d + 1 >= PRUNE_DEPTH) { deep = Object.values(x as object).some((c) => c && typeof c === "object"); continue; }
+    for (const c of Object.values(x as object)) stack.push([c, d + 1]);
+  }
+  return deep ? JSON.stringify(_pruneDeep(obj), null, 2) + "\n" : raw;
+}
+
 function _baselineRaw(file: string, copyIn?: string | null): string | null {
   const mem = _lastTrusted().get(file);
-  const copy = copyIn !== undefined ? copyIn : _readTrustedCopy(file);
+  const copy = _prunedBaseline(copyIn !== undefined ? copyIn : _readTrustedCopy(file));
   if (mem === undefined) return copy;
   if (copy === null) {
     // Re-review: the record is missing or not a plain file (deleted,
     // replaced, linked) while this window knows what it should be — put it
     // back, so a restart doesn't find "no record".
     _writeTrusted(file, mem);
-    return mem;
+    return _prunedBaseline(mem);
   }
   return _othersFromCopy(mem, copy);
 }
@@ -1497,7 +1529,34 @@ function _cleanKnown(bag: string, k: string, v: unknown): boolean {
  * the restore removes them (fails toward protection).
  */
 const MAX_UNKNOWN_DEPTH = 64;
-const TOO_LARGE = Object.freeze({ "\u0000gryphon-too-large": true });
+const TOO_LARGE_KEY = "\u0000gryphon-too-large";
+/**
+ * #36: an oversized value's marker carries a digest of the value, so two
+ * DIFFERENT oversized values don't compare equal. Iterative (no stack
+ * overflow on a deep value) and bounded.
+ */
+function _tooLarge(v: unknown): Record<string, string> {
+  const h = crypto.createHash("sha256");
+  const stack: unknown[] = [v];
+  let n = 0;
+  while (stack.length && n++ < 2_000_000) {
+    const x = stack.pop();
+    if (x && typeof x === "object") {
+      const isArr = Array.isArray(x);
+      h.update(isArr ? "[" : "{");
+      const keys = Object.keys(x as object);
+      h.update(String(keys.length));
+      for (let i = keys.length - 1; i >= 0; i--) { stack.push((x as any)[keys[i]]); if (!isArr) stack.push(`\u0001${keys[i]}`); }
+    } else {
+      h.update(`${typeof x}:${String(x)}\u0000`);
+    }
+  }
+  if (stack.length) h.update("\u0002truncated");
+  return Object.freeze({ [TOO_LARGE_KEY]: h.digest("hex") });
+}
+function _isTooLarge(v: unknown): boolean {
+  return !!v && typeof v === "object" && Object.prototype.hasOwnProperty.call(v, TOO_LARGE_KEY);
+}
 function _shallowEnough(v: unknown): boolean {
   const stack: Array<[unknown, number]> = [[v, 0]];
   let seen = 0;
@@ -1535,7 +1594,7 @@ function _unknownFlat(obj: Record<string, any> | null): Map<string, any> {
   // Commit review of 9cbc11e: an oversized value must still COUNT (else a
   // plant hides from the drift check) — it's recorded as a marker, never
   // compared deeply and never written back (the restore drops it).
-  const m = { set: (k: string, v: unknown) => { flat.set(k, _shallowEnough(v) ? v : TOO_LARGE); } };
+  const m = { set: (k: string, v: unknown) => { flat.set(k, _shallowEnough(v) ? v : _tooLarge(v)); } };
   if (!obj) return flat;
   for (const [k, v] of Object.entries(obj)) if (!KNOWN_TOP.has(k)) m.set(JSON.stringify(["t", k]), v);
   if (!_isPlainObject(obj.vaults)) return flat;
@@ -1605,7 +1664,7 @@ function _applyUnknownRestore(nowSafe: string, expected: Map<string, any>, file:
   // Unchanged only if the file itself needs nothing (pruning counts as a change).
   if (current && nowSafe === priorRaw && mcpApprovals.canonicalJSON(restored) === mcpApprovals.canonicalJSON(current)) return false;
   try { _save(restored, file, priorRaw); } catch (e) { _attachSafe(e, restored); throw e; }
-  const writtenBack = new Map([...expected].filter(([, v]) => v !== TOO_LARGE));
+  const writtenBack = new Map([...expected].filter(([, v]) => !_isTooLarge(v)));
   if (_flatCanon(_unknownFlat(_rawObject(_readRaw(file)))) !== _flatCanon(writtenBack)) {
     throw new Error("unrecognised settings changed during the reply couldn't be put back");
   }
@@ -1648,7 +1707,7 @@ function _restoreUnknown(out: unknown, expected: Map<string, any>): unknown {
     return ownObj(hosts, hid);
   };
   for (const [key, v] of expected) {
-    if (v === TOO_LARGE) continue; // never written back
+    if (_isTooLarge(v)) continue; // never written back
     const parts = JSON.parse(key) as string[];
     if (parts[0] === "t") _setOwn(res, parts[1], v);
     else if (parts[0] === "e") _setOwn(entryOf(parts[1], parts[2]), parts[3], v);

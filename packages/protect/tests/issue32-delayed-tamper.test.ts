@@ -731,3 +731,43 @@ test("#32 2.11.3 (re-review of 86d167a): a looser record plus a locked store can
     }
   } finally { fs.renameSync = realRename; }
 });
+
+// Issue #36 (store notes).
+test("#36: thousands of unreadable keys give one message, not one per key", () => {
+  const { store, file, scope } = fresh();
+  store.setMachineSecuritySetting(scope, "permissionMode", "default");
+  const j = JSON.parse(fs.readFileSync(file, "utf8"));
+  for (let i = 0; i < 3000; i++) host(j, scope).values[`junk${i}`] = "x";
+  const raw = JSON.stringify(j, null, 2) + "\n";
+  fs.writeFileSync(file, raw);
+  fs.writeFileSync(path.join(path.dirname(file), ".security-settings.trusted.json"), raw);
+  const msgs: string[] = [];
+  const offErr = store.onSecurityStoreError((m: string) => msgs.push(m));
+  try {
+    delete (process as any)[Symbol.for("gryphon.securityStoreTrusted")]; // a real fresh start
+    const s2 = restart();
+    const off2 = s2.onSecurityStoreError((m: string) => msgs.push(m));
+    try { s2.readMachineSecuritySettings(scope); } finally { off2(); }
+  } finally { offErr(); }
+  const ignored = msgs.filter((m) => /ignored/.test(m));
+  assert.equal(ignored.length, 1, JSON.stringify(msgs.slice(0, 3)));
+  assert.match(ignored[0], /and \d+ more/);
+});
+
+test("#36: two different oversized unknown values don't compare equal", () => {
+  const big = (tag: string) => Array.from({ length: 120000 }, (_: unknown, i: number) => (i === 0 ? tag : i));
+  const { file, scope } = fresh();
+  // A store that already holds an oversized unknown value A is adopted as
+  // the baseline (first run, no record).
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, extra: big("A"), vaults: { [scope.vaultKey]: { hosts: { gryphon: { values: { permissionMode: "default" }, setAt: "", dismissed: {}, paths: {} } } } } }));
+  delete (process as any)[Symbol.for("gryphon.securityStoreTrusted")];
+  const store = restart();
+  store.readMachineSecuritySettings(scope);
+  const before = store.snapshotSecurityStore();
+  // During a reply it's swapped for a DIFFERENT oversized value B.
+  agentWrite(file, (j) => { j.extra = big("B"); });
+  store.checkSecurityStoreTamper(before);
+  const extra = JSON.parse(fs.readFileSync(file, "utf8")).extra;
+  assert.ok(!Array.isArray(extra) || extra[0] !== "B", "the swapped-in value isn't kept");
+});

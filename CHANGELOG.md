@@ -4,6 +4,29 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.11.4] — 2026-10-09
+
+A security update: Gryphon's protected-file checks now cover more of the ways an assistant can reach your plugin folder, git hooks and assistant settings.
+
+### Security
+
+- **Moving or replacing a whole folder that holds protected files is checked.** Renaming `.obsidian/plugins`, moving `.git` away, or copying a folder over Gryphon's plugin folder replaced protected files without naming them. A folder that contains a protected path is now protected too.
+- **Shell commands are checked by every file they name.** A command that copies, moves, links, extracts or edits files in place (`cp`, `mv`, `ln`, `rsync`, `tar -x`, `unzip -d`, `sed -i`, `git checkout`, Python `shutil.copy` and more) is checked against every path it names, including after a `cd`, from the working folder Antigravity, Gemini or a tool is told to use, and from the folder an earlier command moved into. Output sent into a file (`> file`, `>> file`, `tee file`) is checked by where it goes.
+- **Command arguments of other tools are checked.** Plugin and MCP tools that take a command (`cmd`, `command`, `script`, `args`) now get the same checks as the terminal, including when the program and its arguments are given separately. Source code passed to a tool gets the checks for deleting files, changing Gryphon and running downloaded code, and the files it copies, moves or deletes (`shutil.copy`, `os.unlink`, `shutil.rmtree`) are checked too — without mistaking Python's `del` for a Windows delete.
+- **Built-in editing tools are checked by every file they name**, not only their main one.
+- **Read-only tools stay unchecked**, but a "get" or "list" tool that saves something to a file (for example a downloaded response) is still checked by where it saves.
+
+### Fixed
+
+- Ordinary read-only MCP tools that Gryphon used to ask about, such as reading a file or listing a folder with the filesystem or Obsidian MCP servers, no longer ask.
+- When many settings in the settings file are invalid, Gryphon now shows one notice that lists them, instead of one notice for each.
+
+### Things to know
+
+- **More questions in some cases.** A shell command that copies, moves, links or edits files and also *mentions* `.obsidian`, `.git` or `.claude` anywhere in it now asks first. That includes a note written with `cat <<EOF` that talks about those folders, or a commit message that mentions them. This is on purpose: checking every word is what keeps short tricks from getting through. Very long commands of this kind ask as "too large to check".
+- **Limits:** the checks read the command as written. What a shell or program works out only when it runs (a `$VARIABLE`'s value or default, which files a `*` matches, text assembled by `eval`, backtick or `$'…'` quoting, a renamed import such as `import os as o`), files a script opens for writing with `open(…, 'w')`, and programs Gryphon doesn't know write files aren't covered.
+- Codex's checks were confirmed registered and trusted; full Codex chat tests couldn't run (Codex usage limit).
+
 ## [2.11.3] — 2026-10-09
 
 A small security follow-up to 2.11.2.
