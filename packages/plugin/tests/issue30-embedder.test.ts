@@ -25,25 +25,25 @@ const { _el, _allSettings, Modal, Notice } = require("./_stubs/obsidian.ts");
 const { GryphonChatView } = require("../src/chat-view");
 const securityUi = require("../src/security-settings");
 const { renderSetupPanel } = require("../src/settings-view");
-const { securitySettings: store } = require("@gryphon/protect");
+const { securitySettings: store } = require("@polleoai/gryphon-protect");
 // The same module instance protect's resolveCliPath detects through.
 const utils = require(path.join(__dirname, "..", "..", "provider-runtime", "dist", "utils"));
 
 const POSIX = process.platform !== "win32";
 const FINDERS = ["findClaudeBinary", "findCodexBinary", "findGeminiBinary", "findAntigravityBinary"];
 const orig: Record<string, any> = {};
-for (const f of FINDERS) orig[f] = utils[f];
+for (const f of FINDERS) orig[f] = utils.binaryFinders[f];
 
 function fresh() {
   process.env.XDG_CONFIG_HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g30p-cfg-")));
   securityUi._resetPromptedScopes();
   const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g30p-vault-")));
   const detected = fakeCli(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g30p-det-"))), "claude");
-  for (const f of FINDERS) utils[f] = () => (f === "findClaudeBinary" ? detected : null);
+  for (const f of FINDERS) utils.binaryFinders[f] = () => (f === "findClaudeBinary" ? detected : null);
   const app = { vault: { adapter: { getBasePath: () => vault, basePath: vault } }, workspace: { on() { return {}; }, trigger() {} } };
   return { vault, detected, app };
 }
-function restore() { for (const f of FINDERS) utils[f] = orig[f]; }
+function restore() { for (const f of FINDERS) utils.binaryFinders[f] = orig[f]; }
 function fakeCli(dir: string, name: string): string {
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, name);

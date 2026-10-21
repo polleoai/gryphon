@@ -1,5 +1,5 @@
 /**
- * Shared domain types for @gryphon/protect.
+ * Shared domain types for @polleoai/gryphon-protect.
  *
  * G1 — The `ProtectCategory` union is the discriminant for `ClassifyVerdict`.
  *       Adding a new category must fail to compile until every switch
@@ -12,10 +12,11 @@
  * runtime behavior is introduced or changed.
  */
 export type ProtectCategory = "modifies-gryphon" | "modifies-editor" | "runs-arbitrary-code" | "escalates-privileges" | "accesses-system" | "persistent-execution" | "destructive-operation" | "network-exec" | "network-fetch" | "user-custom";
+export type ProtectCategoryOrCustom = ProtectCategory | (string & Record<never, never>);
 export type ClassifyVerdict = {
     tool: string;
     matchedPattern: string;
-    category: ProtectCategory | string;
+    category: ProtectCategoryOrCustom;
     title: string;
     userRisk: string;
     technicalDetail: string;
@@ -23,14 +24,14 @@ export type ClassifyVerdict = {
 export declare function assertNever(x: never): never;
 export interface ProtectedCommand {
     pattern: string;
-    category: ProtectCategory | string;
+    category: ProtectCategoryOrCustom;
     userRisk: string;
     explanation: string;
     platforms?: string[];
 }
 export interface ProtectedPath {
     pattern: string;
-    category: ProtectCategory | string;
+    category: ProtectCategoryOrCustom;
     userRisk: string;
     explanation: string;
 }

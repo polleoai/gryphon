@@ -8,11 +8,14 @@
  * options.extraToolStatus hook.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_COLD_START_BUDGET_MS = exports.MIN_COLD_START_BUDGET_MS = exports.DEFAULT_COLD_START_BUDGET_MS = exports.COLD_START_BUDGET_MS = exports.AUTO_COMPACT_SDK_THRESHOLD_PCT = exports.CONTEXT_WARN_RESET_PCT = exports.CONTEXT_WARN_PCT = exports.FALLBACK_PROVIDER_PREFS = exports.PROVIDER_PREFS = exports.RESERVED_SKILL_NAMES = exports.CC_BLOCKED_IN_STREAM_JSON = exports.SLASH_COMMANDS = exports.MODEL_CONTEXT = exports.PERMS = exports.EFFORTS = exports.MODEL_RETIREMENT_MIGRATION = exports.MODEL_ALIAS_MIGRATION = exports.MODELS = exports.PROTECTED_CATEGORIES = exports.DEFAULT_PROTECTED_COMMANDS = exports.DEFAULT_PROTECTED_PATHS = exports.DEFAULT_PROVIDER_PREFERENCE = exports.DEFAULT_SETTINGS = exports.TOOL_STATUS_CORE = void 0;
+exports.visibleProviderPrefs = visibleProviderPrefs;
+exports.resolveConnectionTimeoutMs = resolveConnectionTimeoutMs;
 // v2.2: registry must be required at the top so it is available when
 // DEFAULT_SETTINGS is constructed. The duplicate declaration near the
 // bottom of this file was moved here — underscore-prefixed to mark it
 // module-private (avoids visual collision with the many public exports).
-const _registry = require("@gryphon/provider-config").registry;
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
 // Tool names → user-friendly status messages
 const TOOL_STATUS_CORE = {
     "Bash": "Working...",
@@ -28,6 +31,7 @@ const TOOL_STATUS_CORE = {
     "TodoWrite": "Thinking...",
     "AskUser": "Thinking...",
 };
+exports.TOOL_STATUS_CORE = TOOL_STATUS_CORE;
 // Default protected-path prefixes. Matched against the vault-relative
 // path of every Write/Edit target — if the target path starts with one
 // of these (or matches the exact string for non-trailing-slash entries),
@@ -120,6 +124,7 @@ const DEFAULT_PROTECTED_PATHS = [
         explanation: "VS Code debug launch configurations. A modified `preLaunchTask` or `postDebugTask` runs on every debug session.",
     },
 ];
+exports.DEFAULT_PROTECTED_PATHS = DEFAULT_PROTECTED_PATHS;
 // Default dangerous command patterns. Each line is a JS regex pattern
 // (no surrounding slashes/flags — compiled case-insensitive). A Bash
 // command matching any pattern gets the same warning modal as a
@@ -696,6 +701,7 @@ const DEFAULT_PROTECTED_COMMANDS = [
         explanation: "Python package install. Runs arbitrary `setup.py` code from downloaded packages — functionally a network-fetch-to-execute primitive.",
     },
 ];
+exports.DEFAULT_PROTECTED_COMMANDS = DEFAULT_PROTECTED_COMMANDS;
 const DEFAULT_SETTINGS = {
     claudePath: "",
     // New default: "default" prompts on every edit and shell command.
@@ -707,7 +713,7 @@ const DEFAULT_SETTINGS = {
     // to stay in sync with the canonical source of truth. The migration table
     // (MODEL_ALIAS_MIGRATION below) handles upgrades for existing users with
     // persisted settings.
-    model: _registry.defaultModelFor("anthropic"),
+    model: gryphon_provider_config_1.registry.defaultModelFor("anthropic"),
     effort: "high",
     openInMainTab: false,
     lastSessionId: null,
@@ -911,8 +917,9 @@ const DEFAULT_SETTINGS = {
     // Set via Settings → Gryphon → Connection timeout.
     connectionTimeoutMs: null,
 };
+exports.DEFAULT_SETTINGS = DEFAULT_SETTINGS;
 // v2.2: derive Anthropic-family tables from the canonical registry in
-// @gryphon/provider-config. Adding a new Anthropic model is now a one-
+// @polleoai/gryphon-provider-config. Adding a new Anthropic model is now a one-
 // place edit in registry.js — these tables regenerate at module load.
 //
 // Migration map (MODEL_ALIAS_MIGRATION) handles users whose persisted
@@ -920,36 +927,42 @@ const DEFAULT_SETTINGS = {
 // opus[1m]); applied once at plugin load via _migrateSettings.
 // (_registry is declared at the top of this file so it is available when
 // DEFAULT_SETTINGS is constructed.)
-const MODELS = _registry.modelsByVendor("anthropic")
+const MODELS = gryphon_provider_config_1.registry.modelsByVendor("anthropic")
     .filter((m) => m.dropdown)
     .map((m) => ({
     value: m.id,
     label: m.dropdown.label,
     desc: m.dropdown.desc,
 }));
-const MODEL_ALIAS_MIGRATION = _registry.legacyAliasMigrationFor("anthropic");
+exports.MODELS = MODELS;
+const MODEL_ALIAS_MIGRATION = gryphon_provider_config_1.registry.legacyAliasMigrationFor("anthropic");
+exports.MODEL_ALIAS_MIGRATION = MODEL_ALIAS_MIGRATION;
 // Retired model id → successor, all vendors. Applied at plugin load to
 // every persisted model field (see plugin.ts _migrateRetiredModels).
-const MODEL_RETIREMENT_MIGRATION = _registry.RETIRED_MODEL_MIGRATION;
+const MODEL_RETIREMENT_MIGRATION = gryphon_provider_config_1.registry.RETIRED_MODEL_MIGRATION;
+exports.MODEL_RETIREMENT_MIGRATION = MODEL_RETIREMENT_MIGRATION;
 const EFFORTS = [
     { value: "low", label: "Low", desc: "Quick answers" },
     { value: "medium", label: "Medium", desc: "Standard" },
     { value: "high", label: "High", desc: "Thorough" },
 ];
+exports.EFFORTS = EFFORTS;
 const PERMS = [
     { value: "default", label: "Prompt", desc: "Ask before every edit and command" },
     { value: "acceptEdits", label: "Safe", desc: "Auto-accept edits, still prompt on bash" },
     { value: "bypassPermissions", label: "YOLO", desc: "Auto-accept all, still ask on risky actions" },
     { value: "plan", label: "Plan", desc: "Propose only" },
 ];
+exports.PERMS = PERMS;
 const MODEL_CONTEXT = (() => {
     const out = {};
-    for (const m of _registry.modelsByVendor("anthropic")) {
+    for (const m of gryphon_provider_config_1.registry.modelsByVendor("anthropic")) {
         if (m.contextTokens)
             out[m.id] = m.contextTokens;
     }
     return out;
 })();
+exports.MODEL_CONTEXT = MODEL_CONTEXT;
 // Issue #38: cold-start latency varies materially by model. Haiku spawns
 // fast; Opus 1M is slow because of KV-cache allocation for its larger
 // context window. A single hardcoded 60s budget aborted long-cold-start
@@ -963,20 +976,24 @@ const MODEL_CONTEXT = (() => {
 // fall through to DEFAULT_COLD_START_BUDGET_MS.
 const COLD_START_BUDGET_MS = (() => {
     const out = {};
-    for (const m of _registry.modelsByVendor("anthropic")) {
+    for (const m of gryphon_provider_config_1.registry.modelsByVendor("anthropic")) {
         if (m.coldStartMs)
             out[m.id] = m.coldStartMs;
     }
     return out;
 })();
+exports.COLD_START_BUDGET_MS = COLD_START_BUDGET_MS;
 // Used when settings.model isn't in COLD_START_BUDGET_MS (non-Anthropic
 // providers, future model identifiers we haven't tabulated yet).
 const DEFAULT_COLD_START_BUDGET_MS = 60_000;
+exports.DEFAULT_COLD_START_BUDGET_MS = DEFAULT_COLD_START_BUDGET_MS;
 // Bounds for a user-set override. Below 5s, the timeout would fire
 // before any reasonable network roundtrip completes; above 10 minutes,
 // the user is masking a real problem they should investigate.
 const MIN_COLD_START_BUDGET_MS = 5_000;
+exports.MIN_COLD_START_BUDGET_MS = MIN_COLD_START_BUDGET_MS;
 const MAX_COLD_START_BUDGET_MS = 600_000;
+exports.MAX_COLD_START_BUDGET_MS = MAX_COLD_START_BUDGET_MS;
 /**
  * Resolve the connection-timeout budget for the current send.
  *
@@ -1003,8 +1020,11 @@ function resolveConnectionTimeoutMs({ override, model }) {
 // gate stay aligned. Hysteresis at 75% prevents the warning from
 // re-firing repeatedly as a long turn fluctuates around 80%.
 const CONTEXT_WARN_PCT = 80;
+exports.CONTEXT_WARN_PCT = CONTEXT_WARN_PCT;
 const CONTEXT_WARN_RESET_PCT = 75;
+exports.CONTEXT_WARN_RESET_PCT = CONTEXT_WARN_RESET_PCT;
 const AUTO_COMPACT_SDK_THRESHOLD_PCT = 95;
+exports.AUTO_COMPACT_SDK_THRESHOLD_PCT = AUTO_COMPACT_SDK_THRESHOLD_PCT;
 // Plugin-handled slash commands. Shared between the autocomplete dropdown
 // and the help output so they stay in sync. Order is alphabetical so the
 // dropdown is scannable regardless of typed prefix.
@@ -1035,6 +1055,7 @@ const SLASH_COMMANDS = [
     { cmd: "/usage", desc: "Show session usage (cost, tokens, messages, duration)" },
     { cmd: "/version", desc: "Show plugin version, provider, model, OS, Obsidian version" },
 ];
+exports.SLASH_COMMANDS = SLASH_COMMANDS;
 // Known CLI built-in slash commands that are blocked in stream-json
 // mode (empirically verified). Forwarding these wastes a turn; we
 // intercept them locally with a pointer to the CLI's own terminal.
@@ -1051,6 +1072,7 @@ const CC_BLOCKED_IN_STREAM_JSON = new Set([
     "/rename", "/session", "/skills", "/web-setup",
     "/btw", "/dream", "/fast", "/permissions", "/rate-limit-options",
 ]);
+exports.CC_BLOCKED_IN_STREAM_JSON = CC_BLOCKED_IN_STREAM_JSON;
 // Note: /model, /compact, /context, /cost, /usage are Gryphon commands
 // (handled by the dispatch table), so they're intercepted before this
 // blocklist applies. Listing them here would be redundant but harmless.
@@ -1058,11 +1080,13 @@ const CC_BLOCKED_IN_STREAM_JSON = new Set([
 // SLASH_COMMANDS (source of truth) with the leading "/" stripped —
 // guarantees drift-free: adding a built-in automatically reserves its name.
 const RESERVED_SKILL_NAMES = new Set(SLASH_COMMANDS.map((c) => c.cmd.replace(/^\//, "")));
+exports.RESERVED_SKILL_NAMES = RESERVED_SKILL_NAMES;
 // Single source of truth for the fallback when settings.providerPreference
 // is missing/undefined. Used by createProvider AND explainUnavailable so
 // the two functions never operate under conflicting assumptions about
 // what "no preference set" means. (Round 15 fix: F20.)
 const DEFAULT_PROVIDER_PREFERENCE = "auto";
+exports.DEFAULT_PROVIDER_PREFERENCE = DEFAULT_PROVIDER_PREFERENCE;
 // Provider dropdown labels intentionally name only the provider, NOT the
 // model — model selection lives in its own dropdown (panel toolbar +
 // Settings → Default model). Mixing model names here would create two
@@ -1083,6 +1107,7 @@ const PROVIDER_PREFS = [
     { value: "antigravity-cli", label: "Antigravity CLI (advanced)", desc: "Spawns the Google Antigravity CLI (`agy`) — uses its own auth (run `agy` once); subject to that product's terms" },
     { value: "auto", label: "Auto", desc: "Prefer Claude Code if installed, else first available API key (Anthropic → OpenAI → Google)" },
 ];
+exports.PROVIDER_PREFS = PROVIDER_PREFS;
 // Fallback-provider dropdown (issue #15). Reuses the PROVIDER_PREFS shape
 // plus an explicit "No fallback" sentinel at the top — the default. Selecting
 // a real provider here arms one-hop availability failover (see chat-view's
@@ -1091,6 +1116,7 @@ const FALLBACK_PROVIDER_PREFS = [
     { value: "none", label: "No fallback", desc: "Disabled — an unavailable provider surfaces a clear error (default)" },
     ...PROVIDER_PREFS,
 ];
+exports.FALLBACK_PROVIDER_PREFS = FALLBACK_PROVIDER_PREFS;
 /**
  * The provider options to actually render, given what the user is on now.
  *
@@ -1125,15 +1151,4 @@ const PROTECTED_CATEGORIES = {
     "network-fetch": "⚠ Downloads something from the internet",
     "user-custom": "⚠ Matches a pattern you added",
 };
-module.exports = {
-    TOOL_STATUS_CORE, DEFAULT_SETTINGS, DEFAULT_PROVIDER_PREFERENCE,
-    DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
-    PROTECTED_CATEGORIES,
-    MODELS, MODEL_ALIAS_MIGRATION, MODEL_RETIREMENT_MIGRATION, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS,
-    CC_BLOCKED_IN_STREAM_JSON, RESERVED_SKILL_NAMES, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS,
-    visibleProviderPrefs,
-    CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT,
-    COLD_START_BUDGET_MS, DEFAULT_COLD_START_BUDGET_MS,
-    MIN_COLD_START_BUDGET_MS, MAX_COLD_START_BUDGET_MS,
-    resolveConnectionTimeoutMs,
-};
+exports.PROTECTED_CATEGORIES = PROTECTED_CATEGORIES;

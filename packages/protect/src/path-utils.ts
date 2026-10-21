@@ -18,8 +18,8 @@
  *      fs.realpathSync where possible).
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
+import * as path from "path";
+import * as fs from "fs";
 
 class PathOutsideVaultError extends Error {
   requested: string;
@@ -187,18 +187,22 @@ function parsePatternList(settingValue: unknown): string[] {
  * at tool-call time.
  */
 function resolveActivePatterns(defaults: unknown, disabled: unknown, custom: unknown): string[] {
-  const defs = Array.isArray(defaults) ? defaults : [];
+  const defs: unknown[] = Array.isArray(defaults) ? defaults : [];
   const normalizedDefs = defs
-    .map((d) => (typeof d === "string" ? d : (d && typeof d.pattern === "string" ? d.pattern : null)))
-    .filter((p) => p && p.length > 0);
-  const off = new Set(Array.isArray(disabled) ? disabled : []);
+    .map((d) => {
+      if (typeof d === "string") return d;
+      const pattern = d && (d as { pattern?: unknown }).pattern;
+      return typeof pattern === "string" ? pattern : null;
+    })
+    .filter((p): p is string => !!p && p.length > 0);
+  const off = new Set<unknown>(Array.isArray(disabled) ? disabled : []);
   const cust = Array.isArray(custom)
-    ? custom.filter((p) => typeof p === "string" && p.length > 0)
+    ? custom.filter((p): p is string => typeof p === "string" && p.length > 0)
     : [];
   return [...normalizedDefs.filter((p) => !off.has(p)), ...cust];
 }
 
-module.exports = {
+export {
   resolveVaultPath,
   PathOutsideVaultError,
   matchProtectedPath,

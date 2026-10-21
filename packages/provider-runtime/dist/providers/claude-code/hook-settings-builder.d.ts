@@ -44,6 +44,13 @@ declare const DEFAULT_HOOK_TIMEOUTS: {
     UserPromptSubmit: number;
     Notification: number;
 };
+type HookEvent = keyof typeof DEFAULT_HOOK_TIMEOUTS;
+interface HookSettingsParams {
+    pluginDir: string;
+    socketPath: string;
+    nodePath?: string;
+    timeouts?: Partial<Record<HookEvent, number>>;
+}
 declare const HOOK_FILES: Record<string, string>;
 declare const POSTTOOL_MATCHER = "WebFetch|WebSearch|Bash|Read|Glob|Grep|Write";
 /**
@@ -57,31 +64,31 @@ declare const POSTTOOL_MATCHER = "WebFetch|WebSearch|Bash|Read|Glob|Grep|Write";
  * @param {string} [params.nodePath] — node binary; defaults to the current process's node
  * @param {object} [params.timeouts] — per-hook timeout overrides (seconds)
  */
-declare function buildHookSettings(params: any): {
+declare function buildHookSettings(params: HookSettingsParams): {
     hooks: {
         PreToolUse: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
         PostToolUse: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
         SessionStart: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
         SessionEnd: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
         UserPromptSubmit: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
         Notification: {
-            matcher: any;
-            hooks: Record<string, any>[];
+            matcher: string;
+            hooks: Record<string, string | number>[];
         }[];
     };
 };
@@ -109,9 +116,9 @@ declare function buildHookSettings(params: any): {
  * the shim). Moving the list into the settings JSON drops argv length
  * to near-zero regardless of rule count.
  */
-declare function buildPermissionsOnlySettings(denyRules: any): {
+declare function buildPermissionsOnlySettings(denyRules: unknown): {
     permissions: {
-        deny: any[];
+        deny: string[];
     };
 };
 /**
@@ -123,5 +130,5 @@ declare function buildPermissionsOnlySettings(denyRules: any): {
  * writer and a partial file just means CC fails to parse and the
  * spawn aborts, which is visible and recoverable.
  */
-declare function writeHookSettingsFile(settings: any): string;
+declare function writeHookSettingsFile(settings: unknown): string;
 export { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile, DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, };

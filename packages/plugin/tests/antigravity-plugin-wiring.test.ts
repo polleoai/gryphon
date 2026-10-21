@@ -102,7 +102,7 @@ test("the collapsed all-credentials group (auto) includes the Antigravity path r
 
 test("antigravity-cli uses the Gemini model dropdown, not Anthropic's", () => {
   const { _resetModelForProvider } = require("../src/settings-view");
-  const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+  const { getModelDropdownOptions } = require("@polleoai/gryphon-provider-runtime").pricing.google;
   const geminiIds = getModelDropdownOptions().map((o) => o.id);
   // A stale cross-vendor id must be corrected to a Gemini id, not left as a
   // Claude one — otherwise the toolbar shows "claude-sonnet-5" while `agy`

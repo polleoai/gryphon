@@ -1,6 +1,62 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.STORE_COMMAND_RE = exports.BASE_ARG_RE = exports.PATH_ARG_RE = void 0;
+exports.onApprovalsTamper = onApprovalsTamper;
+exports.serveVault = serveVault;
+exports.approvalsDir = approvalsDir;
+exports.approvalsFilePath = approvalsFilePath;
+exports.canonicalJSON = canonicalJSON;
+exports.hashSpec = hashSpec;
+exports.vaultKey = vaultKey;
+exports.isApprovableName = isApprovableName;
+exports.displaySafe = displaySafe;
+exports.load = load;
+exports.isApproved = isApproved;
+exports.listForVault = listForVault;
+exports.approve = approve;
+exports.revoke = revoke;
+exports.reader = reader;
+exports.isApprovalsStorePath = isApprovalsStorePath;
+exports.mentionsApprovalsStore = mentionsApprovalsStore;
+exports.approvalsStoreVerdict = approvalsStoreVerdict;
+exports.normalizeForMatch = normalizeForMatch;
+exports._argStrings = _argStrings;
+exports._isCommandKey = _isCommandKey;
+exports._resolveArgPaths = _resolveArgPaths;
 /**
  * Vault MCP server approvals (issue #25, Design rev 2).
  *
@@ -35,13 +91,14 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * Pure apart from file I/O, so the provider (reads on every spawn) and the
  * plugin (approve / revoke from the modal and settings) share it.
  */
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const crypto = require("crypto");
-const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
-const { fileIdCached, isWithinIds } = require("./path-identity");
-const { readRegularFile, clearNonFile } = require("./safe-read");
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const path = __importStar(require("path"));
+const crypto = __importStar(require("crypto"));
+const tool_aliases_1 = require("./tool-aliases");
+const path_identity_1 = require("./path-identity");
+const safe_read_1 = require("./safe-read");
+const url_1 = require("url");
 const STORE_VERSION = 1;
 const FILE_NAME = "mcp-approvals.json";
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -116,7 +173,7 @@ function vaultKey(cwd) {
     try {
         return fs.realpathSync(cwd);
     }
-    catch (_) {
+    catch {
         return path.resolve(cwd);
     }
 }
@@ -169,7 +226,7 @@ function load(file = approvalsFilePath()) {
 function _loadUnverified(file, rawOut) {
     // Re-review of 0fd38d0: a regular file only — anything else at the path
     // is "absent" — opened without following a symlink or blocking on a FIFO.
-    const r = readRegularFile(file, { follow: true });
+    const r = (0, safe_read_1.readRegularFile)(file, { follow: true });
     if (r.raw === null) {
         if (rawOut)
             rawOut.absent = r.absent;
@@ -187,7 +244,7 @@ function _parseApprovals(raw, file) {
     try {
         parsed = JSON.parse(raw);
     }
-    catch (e) {
+    catch {
         console.error(`[gryphon/mcp-approvals] ${file} is not valid JSON; treating as empty`);
         return emptyStore();
     }
@@ -202,9 +259,10 @@ function _parseApprovals(raw, file) {
             continue;
         if (!servers || typeof servers !== "object" || Array.isArray(servers))
             continue;
-        for (const [name, entry] of Object.entries(servers)) {
+        for (const [name, rawEntry] of Object.entries(servers)) {
             if (!isApprovableName(name))
                 continue;
+            const entry = rawEntry;
             if (!entry || typeof entry !== "object" || typeof entry.sha256 !== "string" || !HASH_RE.test(entry.sha256))
                 continue;
             (vaults[vk] = vaults[vk] || Object.create(null))[name] = {
@@ -238,7 +296,7 @@ function _save(store, file) {
         try {
             fs.chmodSync(dir, 0o700);
         }
-        catch (_) { }
+        catch { /* ignore */ }
     }
     const tmp = path.join(dir, `.${FILE_NAME}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
     const raw = JSON.stringify(store, null, 2) + "\n";
@@ -255,7 +313,7 @@ function _save(store, file) {
             try {
                 fs.unlinkSync(tmp);
             }
-            catch (_) { }
+            catch { /* ignore */ }
             throw e;
         }
     }
@@ -286,9 +344,6 @@ function _save(store, file) {
  */
 const TRUSTED_NAME = ".mcp-approvals.trusted.json";
 const OWN_WRITE_KEY = Symbol.for("gryphon.mcpApprovalsWrites");
-// `raw`: Gryphon's latest write here. `accepted`: the last content accepted
-// as Gryphon's, per file — it backs the on-disk copy (deleting the copy
-// mid-session gains nothing).
 function _ownWrite() {
     const g = process;
     if (!g[OWN_WRITE_KEY] || !(g[OWN_WRITE_KEY].accepted instanceof Map)) {
@@ -301,7 +356,7 @@ function _trustedPath(file) {
 }
 /** The on-disk copy, only as a plain single-link file that isn't the store (security review). */
 function _readTrustedCopy(file) {
-    const r = readRegularFile(_trustedPath(file));
+    const r = (0, safe_read_1.readRegularFile)(_trustedPath(file));
     // Only the store itself (same file) or a non-file is rejected: a hard
     // link to some other file gives nothing a direct write wouldn't.
     if (r.raw === null)
@@ -311,7 +366,7 @@ function _readTrustedCopy(file) {
         if (s2.ino === r.st.ino && s2.dev === r.st.dev)
             return null;
     }
-    catch (_) { /* no store: nothing to alias */ }
+    catch { /* no store: nothing to alias */ }
     return r.raw;
 }
 /** As in the settings store: record "nothing approved" for a missing file, folder created, exclusive create. */
@@ -328,7 +383,7 @@ function _initEmptyRecord(file, empty) {
         }
         if (_readTrustedCopy(file) !== null)
             return; // another window's valid record
-        clearNonFile(_trustedPath(file));
+        (0, safe_read_1.clearNonFile)(_trustedPath(file));
         _writeTrusted(file, empty);
     }
 }
@@ -351,7 +406,7 @@ function _writeTrusted(file, raw) {
         }
         // Re-review: a directory (or anything but a file) at the record's path
         // can't be renamed over — clear it first; it isn't a record Gryphon wrote.
-        clearNonFile(t);
+        (0, safe_read_1.clearNonFile)(t);
         const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
         fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
         try {
@@ -361,7 +416,7 @@ function _writeTrusted(file, raw) {
             try {
                 fs.unlinkSync(tmp);
             }
-            catch (_) { }
+            catch { /* ignore */ }
             throw e;
         }
         _recordFailed().delete(file);
@@ -464,7 +519,7 @@ function _withoutForeignApprovals(file, store, raw) {
                 try {
                     fn(approved, null, "record-started");
                 }
-                catch (_) { /* a sink must not break reads */ }
+                catch { /* a sink must not break reads */ }
             }
         }
         return store;
@@ -502,7 +557,7 @@ function _withoutForeignApprovals(file, store, raw) {
             try {
                 fn(removed, error);
             }
-            catch (_) { /* a sink must not break reads */ }
+            catch { /* a sink must not break reads */ }
         }
     }
     return store;
@@ -555,7 +610,7 @@ function _realish(p) {
         try {
             return path.join(fs.realpathSync(cur), ...tail.reverse());
         }
-        catch (_) { }
+        catch { /* not there yet: try the parent */ }
         const parent = path.dirname(cur);
         if (parent === cur)
             break;
@@ -576,11 +631,11 @@ function _guardCtx(opts) {
     for (const dir of guarded) {
         norms.add(_norm(dir));
         norms.add(_norm(_realish(dir)));
-        const id = fileIdCached(dir, cache);
+        const id = (0, path_identity_1.fileIdCached)(dir, cache);
         if (id)
             ids.add(id);
         for (const f of ["mcp-approvals.json", ".mcp-approvals.trusted.json", "security-settings.json", ".security-settings.trusted.json"]) {
-            const fid = fileIdCached(path.join(dir, f), cache);
+            const fid = (0, path_identity_1.fileIdCached)(path.join(dir, f), cache);
             if (fid)
                 storeFileIds.add(fid);
         }
@@ -612,9 +667,9 @@ function _isStorePath(absPath, ctx) {
     // R43-6: the same dir or file under another name (macOS firmlinks,
     // Windows \\?\ / \\localhost\C$ / 8.3 names, hard links).
     for (const c of spellings) {
-        if (isWithinIds(c, ctx.ids, ctx.cache))
+        if ((0, path_identity_1.isWithinIds)(c, ctx.ids, ctx.cache))
             return true;
-        const id = fileIdCached(c, ctx.cache);
+        const id = (0, path_identity_1.fileIdCached)(c, ctx.cache);
         if (id && ctx.storeFileIds.has(id))
             return true;
     }
@@ -648,6 +703,7 @@ function isApprovalsStorePath(absPath, opts = {}) {
  * barrier against a model that already has a shell (see the header).
  */
 const STORE_COMMAND_RE = /mcp-approvals|security-settings(?:\.trusted)?\.json|(?:\.config|XDG_CONFIG_HOME\}?|AppData[\\/]+Roaming|%APPDATA%|\$env:APPDATA|\$\{?APPDATA\}?)["']?[\\/]+["']?gryphon\b/i;
+exports.STORE_COMMAND_RE = STORE_COMMAND_RE;
 function mentionsApprovalsStore(command, opts = {}) {
     if (typeof command !== "string" || !command)
         return false;
@@ -664,8 +720,10 @@ const READ_ONLY_TOOLS = new Set(["Read", "Glob", "Grep"]);
 // Content-ish names (`new_source`, `content`, `new_string`) are left out on
 // purpose: a note that MENTIONS the store path must not be refused.
 const PATH_ARG_RE = /path|file|target|dest|dst|dir|uri|url|location|cwd|^(?:source|src|to|from|output|out|folders?)$/i;
+exports.PATH_ARG_RE = PATH_ARG_RE;
 /** Names of a directory that relative path arguments may resolve against. */
 const BASE_ARG_RE = /cwd|dir(?:ectory)?s?(?:_?path)?$|folders?$|^(?:root|base)$/i;
+exports.BASE_ARG_RE = BASE_ARG_RE;
 /**
  * Argument names that carry a command line (issue #28), checked lexically
  * like Bash. Matched per word of the key, so `shellCommand`, `run_cmd` and
@@ -745,10 +803,11 @@ function _argStrings(input, maxDepth, maxStrings) {
  */
 function _resolveArgPaths(value, bases) {
     if (/^file:/i.test(value)) {
+        // Lazy, as before: only `file:` arguments need the url module.
         try {
-            return [require("url").fileURLToPath(value)];
+            return [(0, url_1.fileURLToPath)(value)];
         }
-        catch (_) {
+        catch {
             return [];
         }
     }
@@ -761,11 +820,11 @@ function _resolveArgPaths(value, bases) {
 // Normalize command strings before regex matching. NFKC collapses
 // Unicode compatibility characters (fullwidth `ｒｍ` → ASCII `rm`),
 // and the second pass strips zero-width characters that would otherwise
-// break `\brm\b` style boundaries ("r​m" with a ZWSP in the middle).
+// break `\brm\b` style boundaries ("r<U+200B>m" with a ZWSP in the middle).
 function normalizeForMatch(s) {
     return String(s)
         .normalize("NFKC")
-        .replace(/[​-‍﻿⁠]/g, "");
+        .replace(/[\u200B-\u200D\uFEFF\u2060]/g, "");
 }
 function _fileToolVerdict(input, cwd, opts) {
     // Cheap pass first; past its bounds (padding, deep nesting) walk the whole
@@ -830,7 +889,7 @@ function _fileToolVerdict(input, cwd, opts) {
 function approvalsStoreVerdict(tool, input, opts = {}) {
     if (typeof tool !== "string" || !tool || !input || typeof input !== "object")
         return null;
-    const canonical = TOOL_ALIASES[tool] || tool;
+    const canonical = tool_aliases_1.TOOL_ALIASES[tool] || tool;
     if (READ_ONLY_TOOLS.has(canonical))
         return null;
     if (canonical === "Bash" || canonical === "PowerShell") {
@@ -843,12 +902,12 @@ function approvalsStoreVerdict(tool, input, opts = {}) {
         // R43-3: `apply_patch <<'EOF' … EOF` run as a shell command — Codex
         // applies it itself, so its file headers are path targets too, resolved
         // from the call's own dir args and any `cd` in the command as well.
-        const info = raw ? patchTargetsInfo(raw) : { targets: [], truncated: false };
+        const info = raw ? (0, tool_aliases_1.patchTargetsInfo)(raw) : { targets: [], truncated: false };
         if (info.truncated)
             return { tool: canonical, what: `Patch:           too many files to inspect` };
         if (!info.targets.length)
             return null;
-        const viaPatch = _fileToolVerdict({ ...input, command: undefined, patch_target_paths: info.targets, cd_dirs: shellCdDirs(raw) }, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
+        const viaPatch = _fileToolVerdict({ ...input, command: undefined, patch_target_paths: info.targets, cd_dirs: (0, tool_aliases_1.shellCdDirs)(raw) }, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
         return viaPatch ? { tool: canonical, what: viaPatch } : null;
     }
     // R43-3: a Codex apply_patch names its files in the patch text — those
@@ -858,7 +917,7 @@ function approvalsStoreVerdict(tool, input, opts = {}) {
     // 2.11.1: a Write documenting the syntax was refused outright).
     let checked = input;
     if (tool === "apply_patch") {
-        const info = patchTargetsInfo(input);
+        const info = (0, tool_aliases_1.patchTargetsInfo)(input);
         if (info.truncated)
             return { tool: canonical, what: `Patch:           too many files to inspect` };
         if (info.targets.length)
@@ -867,32 +926,3 @@ function approvalsStoreVerdict(tool, input, opts = {}) {
     const what = _fileToolVerdict(checked, typeof opts.cwd === "string" && opts.cwd ? opts.cwd : null, opts);
     return what ? { tool: canonical, what } : null;
 }
-module.exports = {
-    onApprovalsTamper,
-    serveVault,
-    approvalsDir,
-    approvalsFilePath,
-    canonicalJSON,
-    hashSpec,
-    vaultKey,
-    isApprovableName,
-    displaySafe,
-    load,
-    isApproved,
-    listForVault,
-    approve,
-    revoke,
-    reader,
-    isApprovalsStorePath,
-    mentionsApprovalsStore,
-    approvalsStoreVerdict,
-    normalizeForMatch,
-    // #34: the same argument walker / path-key test for classify's
-    // name-independent default.
-    _argStrings,
-    _isCommandKey,
-    _resolveArgPaths,
-    PATH_ARG_RE,
-    BASE_ARG_RE,
-    STORE_COMMAND_RE,
-};

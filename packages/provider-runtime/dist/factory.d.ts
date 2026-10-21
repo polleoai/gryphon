@@ -37,6 +37,41 @@
  * detector, but no extra hook layer.
  */
 import type { LLMProvider, ProviderKind } from "./types";
+/** The settings fields the factory reads (host settings carry many more). */
+interface FactorySettings {
+    providerPreference?: string;
+    anthropicApiKey?: string;
+    openaiApiKey?: string;
+    googleApiKey?: string;
+    fallbackProviderPreference?: string;
+    fallbackModel?: string;
+}
+/** The host plugin (Gryphon's, or an embedder's stub); passed through to providers. */
+interface FactoryPlugin {
+    settings?: FactorySettings | null;
+    securityHostId?: string;
+    app?: unknown;
+}
+/** Per-call options; everything beyond these is passed through to the provider. */
+type FactoryOptions = {
+    cliPaths?: Record<string, string | null | undefined> | null;
+    securityHostId?: string;
+    securityOverrides?: {
+        paths?: unknown;
+    } | null;
+    hostAdapter?: unknown;
+    extraArgs?: unknown;
+    extraArgsByProvider?: Record<string, string[] | undefined> | null;
+    [key: string]: unknown;
+};
+/** Headless options-bag form of createProvider. */
+interface ProviderBag {
+    kind: string;
+    config?: object | null;
+    cwd?: string;
+    options?: object | null;
+    hostAdapter?: unknown;
+}
 /**
  * @param {object} pluginOrBag  — either:
  *   (a) Legacy positional form: the GryphonPlugin instance (we read settings).
@@ -58,7 +93,7 @@ import type { LLMProvider, ProviderKind } from "./types";
  *                              provider can be constructed (caller shows
  *                              setup guidance).
  */
-declare function createProvider(pluginOrBag: any, cwd?: string, options?: Record<string, any>): LLMProvider | null;
+declare function createProvider(pluginOrBag: FactoryPlugin | ProviderBag, cwd?: string, options?: FactoryOptions): LLMProvider | null;
 /**
  * Construct a provider for an EXPLICIT kind (issue #15 failover kernel).
  *
@@ -72,7 +107,7 @@ declare function createProvider(pluginOrBag: any, cwd?: string, options?: Record
  * Returns null when the kind has no usable key/CLI — same soft-failure
  * contract as createProvider.
  */
-declare function createProviderForKind(plugin: any, kind: ProviderKind, cwd?: string, options?: Record<string, any>, modelOverride?: string): LLMProvider | null;
+declare function createProviderForKind(plugin: FactoryPlugin | null | undefined, kind: ProviderKind, cwd?: string, options?: FactoryOptions, modelOverride?: string): LLMProvider | null;
 /**
  * The registry default model id for a provider kind's vendor. Used by
  * resolveFallback when `settings.fallbackModel` is unset.
@@ -92,7 +127,7 @@ declare function defaultModelForKind(kind: string): string;
  * `fallbackModel` is unset. Pure over `plugin.settings` + binary detection —
  * no chat-view dependency, so headless consumers can call it directly.
  */
-declare function resolveFallback(plugin: any, options?: Record<string, any>): {
+declare function resolveFallback(plugin: FactoryPlugin | null | undefined, options?: FactoryOptions): {
     kind: ProviderKind;
     model: string;
 } | null;
@@ -100,7 +135,7 @@ declare function resolveFallback(plugin: any, options?: Record<string, any>): {
  * Returns a human-readable explanation of why createProvider returned
  * null, used by chat-view to surface a setup hint to the user.
  */
-declare function explainUnavailable(plugin: any, options?: Record<string, any>): string;
+declare function explainUnavailable(plugin: FactoryPlugin, options?: FactoryOptions): string;
 /**
  * Inspect what's available right now, regardless of the user's selected
  * preference. Used by the welcome panel to render adaptive guidance:
@@ -122,14 +157,14 @@ declare function explainUnavailable(plugin: any, options?: Record<string, any>):
  *   apiKeySource: "settings" | "env" | null,
  * }}
  */
-declare function detectAvailable(plugin: any, options?: Record<string, any>): {
+declare function detectAvailable(plugin: FactoryPlugin, options?: FactoryOptions): {
     cliPath: string | null;
     apiKey: string;
-    apiKeySource: string | null;
+    apiKeySource: "settings" | "env" | null;
     openaiKey: string;
-    openaiKeySource: string | null;
+    openaiKeySource: "settings" | "env" | null;
     googleKey: string;
-    googleKeySource: string | null;
+    googleKeySource: "settings" | "env" | null;
     codexPath: string | null;
     geminiCliPath: string | null;
     antigravityPath: string | null;
@@ -147,5 +182,5 @@ declare function detectAvailable(plugin: any, options?: Record<string, any>): {
  * Returns one of: "claude-code" | "anthropic-api" | "openai-api" | "google-api" | null.
  * Mirrors createProvider's selection logic exactly (any divergence = bug).
  */
-declare function getActiveProviderKind(plugin: any, options?: Record<string, any>): ProviderKind | null;
+declare function getActiveProviderKind(plugin: FactoryPlugin | null | undefined, options?: FactoryOptions): ProviderKind | null;
 export { createProvider, explainUnavailable, detectAvailable, getActiveProviderKind, createProviderForKind, resolveFallback, defaultModelForKind, };

@@ -4,9 +4,9 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-// Static guard: no file in src/passive/ may import @gryphon/protect (C13/D8).
+// Static guard: no file in src/passive/ may import @polleoai/gryphon-protect (C13/D8).
 // The passive session must not load Obsidian's system prompt or permission-IPC.
-test("passive subtree does not import @gryphon/protect", () => {
+test("passive subtree does not import @polleoai/gryphon-protect", () => {
   const dir = path.join(__dirname, "..", "src", "passive");
   const offenders: string[] = [];
   const walk = (d: string) => {
@@ -14,7 +14,7 @@ test("passive subtree does not import @gryphon/protect", () => {
       const fp = path.join(d, e.name);
       if (e.isDirectory()) walk(fp);
       else if (/\.(ts|cjs|js)$/.test(e.name)) {
-        if (/@gryphon\/protect/.test(fs.readFileSync(fp, "utf8"))) offenders.push(fp);
+        if (/@polleoai\/gryphon-protect/.test(fs.readFileSync(fp, "utf8"))) offenders.push(fp);
       }
     }
   };

@@ -13,6 +13,39 @@
 // MCP calls in the same live process.
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5-6, §12.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ClaudePassiveSession = void 0;
 // These run in both the Obsidian renderer and headless Node paths (CLI probes,
@@ -22,14 +55,14 @@ exports.ClaudePassiveSession = void 0;
 // the headless paths.
 const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
-const fs = require("fs");
-const { isDeepStrictEqual } = require("node:util");
-const { managedSpawn, killProcessTree } = require("../subprocess-registry");
-const { buildEnhancedPath, findClaudeBinary } = require("../utils");
-const { buildPassiveArgs } = require("./arg-builder");
-const { PassiveStreamParser } = require("./stream-parser");
-const { MCP_SERVER_NAME } = require("./mcp-config-builder");
-const NS_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
+const fs = __importStar(require("fs"));
+const node_util_1 = require("node:util");
+const subprocess_registry_1 = require("../subprocess-registry");
+const arg_builder_1 = require("./arg-builder");
+const stream_parser_1 = require("./stream-parser");
+const mcp_config_builder_1 = require("./mcp-config-builder");
+const utils_1 = require("../utils");
+const NS_PREFIX = `mcp__${mcp_config_builder_1.MCP_SERVER_NAME}__`;
 function lastUserContent(messages) {
     for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i] && messages[i].role === "user")
@@ -61,7 +94,7 @@ function normalizeUsage(u) {
 class ClaudePassiveSession {
     constructor(config) {
         this.config = config;
-        this.claudePath = config.claudePath || findClaudeBinary() || "claude";
+        this.claudePath = config.claudePath || (0, utils_1.findClaudeBinary)() || "claude";
         this._spawnOverride = config._spawnOverride || null;
         this._mcpConfigPath = config._mcpConfigPath || null;
         this._allowedTools = config._allowedTools || null;
@@ -116,11 +149,12 @@ class ClaudePassiveSession {
             opts.mcpConfigPath = this._mcpConfigPath;
         if (this._allowedTools && this._allowedTools.length > 0)
             opts.allowedTools = this._allowedTools;
-        const args = buildPassiveArgs(this.config, opts);
-        const spawnOpts = { cwd: this.config.cwd, env: { ...process.env, PATH: buildEnhancedPath() }, stdio: ["pipe", "pipe", "pipe"] };
+        const args = (0, arg_builder_1.buildPassiveArgs)(this.config, opts);
+        const spawnOpts = { cwd: this.config.cwd, env: { ...process.env, PATH: (0, utils_1.buildEnhancedPath)() }, stdio: ["pipe", "pipe", "pipe"] };
         const proc = this._spawnOverride
             ? this._spawnOverride(args, spawnOpts)
-            : managedSpawn(this.claudePath, args, spawnOpts, { label: "claude-passive" });
+            // stdio is all "pipe", so stdin/stdout/stderr are non-null.
+            : (0, subprocess_registry_1.managedSpawn)(this.claudePath, args, spawnOpts, { label: "claude-passive" });
         this.process = proc;
         this._buffer = "";
         const mine = () => this.process === proc;
@@ -228,7 +262,7 @@ class ClaudePassiveSession {
             for (let i = 0; i < declared.length; i++) {
                 if (used.has(i))
                     continue;
-                if (this._bareName(declared[i].name) === pk.name && isDeepStrictEqual(declared[i].input, pk.input)) {
+                if (this._bareName(declared[i].name) === pk.name && (0, node_util_1.isDeepStrictEqual)(declared[i].input, pk.input)) {
                     idx = i;
                     break;
                 }
@@ -273,7 +307,7 @@ class ClaudePassiveSession {
             try {
                 clearTimeoutFn(this._turnTimer);
             }
-            catch { }
+            catch { /* best-effort */ }
             this._turnTimer = null;
         }
     }
@@ -330,6 +364,7 @@ class ClaudePassiveSession {
             }
         }
         const frame = JSON.stringify({ type: "user", message: { role: "user", content: lastUserContent(messages) } });
+        // send() spawned the process before routing, so it is non-null here.
         this.process.stdin.write(frame + "\n");
     }
     send(req) {
@@ -349,10 +384,10 @@ class ClaudePassiveSession {
             signal.addEventListener("abort", () => { try {
                 this._abort();
             }
-            catch { } }, { once: true });
+            catch { /* best-effort abort */ } }, { once: true });
         }
         this._resetTurn();
-        this._parser = new PassiveStreamParser();
+        this._parser = new stream_parser_1.PassiveStreamParser();
         if (this.sessionId)
             this._parser.sessionId = this.sessionId;
         return new Promise((resolve, reject) => {
@@ -386,9 +421,9 @@ class ClaudePassiveSession {
             const proc = this.process;
             this.process = null;
             try {
-                killProcessTree(proc, "SIGTERM");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGTERM");
             }
-            catch { }
+            catch { /* already dead */ }
         }
         this._reject(new Error("Aborted"));
     }
@@ -408,13 +443,13 @@ class ClaudePassiveSession {
             const proc = this.process;
             this.process = null;
             try {
-                killProcessTree(proc, "SIGTERM");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGTERM");
             }
-            catch { }
+            catch { /* already dead */ }
             const t = setTimeoutFn(() => { try {
-                killProcessTree(proc, "SIGKILL");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGKILL");
             }
-            catch { } }, 2000);
+            catch { /* already dead */ } }, 2000);
             if (t && typeof t.unref === "function")
                 t.unref(); // CR-M1: don't pin the event loop
         }
@@ -422,7 +457,7 @@ class ClaudePassiveSession {
             try {
                 await this._bridge.close();
             }
-            catch { }
+            catch { /* best-effort teardown */ }
         }
         this._cleanupConfigFile(); // CR-H1: don't leak the temp --mcp-config file
         if (this._pendingReject)

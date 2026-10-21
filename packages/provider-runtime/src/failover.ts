@@ -24,7 +24,7 @@
  * CLIs throw none).
  */
 
-const { CliStructuredOutputError } = require("./cli-structured-output");
+import { CliStructuredOutputError } from "./cli-structured-output";
 
 type FailureKind = "availability" | "content" | "runtime";
 type FailureReason =
@@ -60,7 +60,16 @@ const QUOTA_RE = /quota[\s_]?(?:exceeded|exhausted)/i;
 const CONTENT_RE =
   /no parseable json|did not match schema|schema validation|content[\s_-]?filter|response was blocked|safety/i;
 
-function _statusOf(err: any): number | null {
+/** The loose error shapes the SDKs and CLIs throw (see header). */
+interface ProviderErrorLike {
+  status?: number;
+  statusCode?: number;
+  error?: { status?: number };
+  response?: { status?: number };
+  message?: unknown;
+}
+
+function _statusOf(err: ProviderErrorLike | null | undefined): number | null {
   if (!err) return null;
   return (
     err.status ||
@@ -75,6 +84,15 @@ function _avail(reason: FailureReason) {
   return { kind: "availability" as FailureKind, reason };
 }
 
+/** String(v), spelled out per type: what the classifier matches against
+ *  must stay byte-identical to the text it always saw. */
+function _asString(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "object" && v !== null) return (v as { toString(): string }).toString();
+  if (typeof v === "function") return (v as { toString(): string }).toString();
+  return String(v);
+}
+
 /**
  * Classify a provider failure.
  *
@@ -84,14 +102,15 @@ function _avail(reason: FailureReason) {
  *   - kind "availability" → safe to retry on a fallback. `reason` names why.
  *   - kind "content" / "runtime" → do NOT fail over. `reason` is null.
  */
-function classifyProviderFailure(errOrNull: any): { kind: FailureKind; reason: FailureReason } {
+function classifyProviderFailure(errOrNull: unknown): { kind: FailureKind; reason: FailureReason } {
   // Construct-time: createProvider returned null (no key / no CLI). This
   // always fails *before* any assistant content streams, so it is always a
   // safe-to-retry availability failure.
   if (errOrNull == null) return _avail("construct-null");
 
-  const status = _statusOf(errOrNull);
-  const msg = String((errOrNull && errOrNull.message) || errOrNull || "");
+  const errLike = errOrNull as ProviderErrorLike;
+  const status = _statusOf(errLike);
+  const msg = _asString((errLike && errLike.message) || errOrNull || "");
 
   // Priority order matters: message-specific overrides are checked ahead of
   // raw status so OpenAI's insufficient_quota-as-429 lands on billing, and a
@@ -111,4 +130,4 @@ function classifyProviderFailure(errOrNull: any): { kind: FailureKind; reason: F
   return { kind: "runtime", reason: null };
 }
 
-module.exports = { classifyProviderFailure };
+export { classifyProviderFailure };

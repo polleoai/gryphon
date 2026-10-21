@@ -43,7 +43,7 @@ function fakeSpawn(cmd: string, args: string[], opts: any) {
   return proc;
 }
 
-const { securitySettings } = require("@gryphon/protect");
+const { securitySettings } = require("@polleoai/gryphon-protect");
 const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g30-ae-vault-")));
 const embedder = {
   app: { vault: { adapter: { getBasePath: () => vault } } },

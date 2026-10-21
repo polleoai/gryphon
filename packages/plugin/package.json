@@ -1,26 +1,68 @@
 {
-  "name": "@gryphon/plugin",
-  "version": "2.5.1",
+  "name": "@polleoai/gryphon-plugin",
+  "version": "2.12.0",
   "description": "Bring AI to your vault — with guardrails at runtime.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polleoai/gryphon"
+  },
   "main": "dist/plugin.js",
   "types": "dist/plugin.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/plugin.d.ts",
+      "require": "./dist/plugin.js",
+      "default": "./dist/plugin.js"
+    },
+    "./chat-view": {
+      "types": "./dist/chat-view.d.ts",
+      "require": "./dist/chat-view.js",
+      "default": "./dist/chat-view.js"
+    },
+    "./constants": {
+      "types": "./dist/constants.d.ts",
+      "require": "./dist/constants.js",
+      "default": "./dist/constants.js"
+    },
+    "./skills": {
+      "types": "./dist/skills.d.ts",
+      "require": "./dist/skills.js",
+      "default": "./dist/skills.js"
+    },
+    "./settings-view": {
+      "types": "./dist/settings-view.d.ts",
+      "require": "./dist/settings-view.js",
+      "default": "./dist/settings-view.js"
+    },
+    "./styles.css": "./styles.css",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/",
+    "styles.css",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "node --import tsx build.ts",
     "build:dist": "tsc -p tsconfig.build.json",
     "dev": "node --import tsx build.ts --watch",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/plugin.js')){console.error('prepack: dist/plugin.js missing - run npm run prebuild at the repo root first');process.exit(1)}fs.copyFileSync('../../LICENSE','LICENSE');fs.copyFileSync('../../styles.css','styles.css')\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@google/genai": "^1.51.0",
-    "@gryphon/protect": "file:../protect",
-    "@gryphon/provider-config": "file:../provider-config",
-    "@gryphon/provider-runtime": "file:../provider-runtime",
+    "@polleoai/gryphon-protect": "file:../protect",
+    "@polleoai/gryphon-provider-config": "file:../provider-config",
+    "@polleoai/gryphon-provider-runtime": "file:../provider-runtime",
     "openai": "^6.35.0",
     "undici": "^8.1.0"
+  },
+  "peerDependencies": {
+    "obsidian": ">=1.0.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"

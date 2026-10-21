@@ -5,9 +5,50 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md §5.
 
-const VALID_STOP = new Set(["end_turn", "tool_use", "max_tokens", "stop_sequence"]);
+import type { ContentBlock, PassiveUsage, StopReason } from "./types";
 
-function normalizeUsage(u: any): any {
+const VALID_STOP: ReadonlySet<unknown> = new Set(["end_turn", "tool_use", "max_tokens", "stop_sequence"]);
+
+// Loose wire shapes of the claude stream-json events this parser reads.
+interface RawUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+interface RawBlock {
+  type?: string;
+  text?: unknown;
+  id: string;
+  name: string;
+  input: object;
+}
+
+interface RawEvent {
+  type?: string;
+  subtype?: unknown;
+  session_id?: string;
+  model?: string;
+  message?: { content?: RawBlock[]; usage?: RawUsage };
+  stop_reason?: string;
+  is_error?: unknown;
+  api_error_status?: unknown;
+  usage?: RawUsage;
+  total_cost_usd?: unknown;
+}
+
+/** A finalized turn, returned by `push` on a `result` event. */
+interface PassiveTurnResult {
+  content: ContentBlock[];
+  stop_reason: StopReason;
+  usage: PassiveUsage;
+  total_cost_usd: number;
+  sessionId: string;
+  _resultError?: string | null;
+}
+
+function normalizeUsage(u: RawUsage | null | undefined): PassiveUsage {
   u = u || {};
   return {
     input_tokens: u.input_tokens || 0,
@@ -18,7 +59,10 @@ function normalizeUsage(u: any): any {
 }
 
 class PassiveStreamParser {
-  [key: string]: any;
+  declare sessionId: string | null;
+  declare resolvedModel: string | null;
+  declare _content: ContentBlock[];
+  declare _lastUsage: RawUsage | null;
   constructor() {
     this.sessionId = null;
     this.resolvedModel = null;
@@ -27,8 +71,9 @@ class PassiveStreamParser {
   }
 
   // Returns a finalized response object on `result`, else null.
-  push(raw: any): any {
-    if (!raw || typeof raw !== "object") return null;
+  push(rawEvent: unknown): PassiveTurnResult | null {
+    if (!rawEvent || typeof rawEvent !== "object") return null;
+    const raw = rawEvent as RawEvent;
 
     if (raw.type === "system" && raw.subtype === "init") {
       this.sessionId = raw.session_id || this.sessionId;
@@ -50,7 +95,7 @@ class PassiveStreamParser {
     }
 
     if (raw.type === "result") {
-      const stop = VALID_STOP.has(raw.stop_reason) ? raw.stop_reason : "end_turn";
+      const stop = VALID_STOP.has(raw.stop_reason) ? (raw.stop_reason as StopReason) : "end_turn";
       // C1: a CLI error result (is_error, error_* subtype, or api_error_status)
       // carries empty/partial content. Flag it so the session REJECTS rather
       // than laundering an API/runtime error into a fake successful turn.
@@ -82,3 +127,4 @@ class PassiveStreamParser {
 }
 
 export { PassiveStreamParser };
+export type { PassiveTurnResult };

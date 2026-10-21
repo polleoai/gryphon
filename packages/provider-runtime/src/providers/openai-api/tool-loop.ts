@@ -21,11 +21,36 @@
  * checkpoint on thrown error. Do not clone the array internally.
  */
 
-const { translateSchemasToOpenAI } = require("./tool-schema-translator") as typeof import("./tool-schema-translator");
-const {
+import type OpenAI from "openai";
+import { translateSchemasToOpenAI } from "./tool-schema-translator";
+import {
   getActiveTools,
   executeTool,
-} = require("../anthropic-api/tools/tool-registry") as typeof import("../anthropic-api/tools/tool-registry");
+} from "../anthropic-api/tools/tool-registry";
+import { BudgetExceededError } from "../../budget-error";
+
+type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+type OpenAIChatStream = ReturnType<OpenAI["chat"]["completions"]["stream"]>;
+type OpenAIStreamParams = Parameters<OpenAI["chat"]["completions"]["stream"]>[0];
+type OpenAIUsage = Partial<OpenAI.Completions.CompletionUsage>;
+
+// Execution context shared with the tool registry. A type alias (not an
+// interface) so it also satisfies the tools' Record<string, unknown> ctx.
+type OpenAIToolLoopContext = {
+  responseFormat?: OpenAIStreamParams["response_format"] | null;
+  maxUsdBudget?: number | null;
+  computeIterationCost?: ((usage: OpenAIUsage) => number) | null;
+  priorCumulativeCost?: number;
+  _loopCost?: number;
+  [key: string]: unknown;
+};
+
+interface OpenAIToolLoopCallbacks {
+  onMessage?: (text: string, type: string) => void;
+  onTool?: (name: string) => void;
+  onError?: (text: string) => void;
+  onStream?: (stream: OpenAIChatStream) => void;
+}
 
 const MAX_ITERATIONS = 25;
 
@@ -36,7 +61,14 @@ async function runOpenAIToolLoop({
   history,
   ctx,
   callbacks,
-}: { client: any; model: any; systemPrompt: any; history: any; ctx: any; callbacks: any }) {
+}: {
+  client: OpenAI;
+  model: string;
+  systemPrompt: string | null | undefined;
+  history: ChatMessageParam[];
+  ctx: OpenAIToolLoopContext;
+  callbacks: OpenAIToolLoopCallbacks;
+}) {
   // ctx.responseFormat is set by the provider when the caller passes
   // { structuredOutput: { name, schema } }. It is injected into every
   // chat.completions call in this loop so the vendor enforces the schema
@@ -49,7 +81,7 @@ async function runOpenAIToolLoop({
     allowWrite: true,
     allowWeb: true,
     allowBash: true,
-  }).map((t: any) => t.SCHEMA);
+  }).map((t) => t.SCHEMA);
   const tools = translateSchemasToOpenAI(anthropicSchemas);
 
   // OpenAI returns separate prompt/completion/cached counts per call;
@@ -74,7 +106,7 @@ async function runOpenAIToolLoop({
   // Carry earlier iterations' text forward so the bubble shows the full
   // turn (e.g. "summary." + "\n\n" + deny copy) instead of replacing.
   let priorTurnText = "";
-  let finalMessage = null;
+  let finalMessage: { role: string; content: string } | null = null;
   let iterations = 0;
 
   while (iterations < MAX_ITERATIONS) {
@@ -82,11 +114,11 @@ async function runOpenAIToolLoop({
 
     // Build the messages array sent to OpenAI: prepend the system prompt
     // each turn (it lives outside `history`, which holds only user/assistant/tool turns).
-    const messages = systemPrompt
+    const messages: ChatMessageParam[] = systemPrompt
       ? [{ role: "system", content: systemPrompt }, ...history]
       : [...history];
 
-    const streamParams: Record<string, any> = {
+    const streamParams: OpenAIStreamParams = {
       model,
       messages,
       tools: tools.length > 0 ? tools : undefined,
@@ -106,7 +138,7 @@ async function runOpenAIToolLoop({
     // the snapshot through onMessage("replace") so the chat bubble shows
     // the cumulative text without us maintaining an accumulator.
     let iterationText = "";
-    stream.on("content", (_delta: any, snapshot: any) => {
+    stream.on("content", (_delta: string, snapshot: string) => {
       iterationText = snapshot;
       // Issue #32: include prior iterations' text in the bubble snapshot
       // so the chat-view "replace" event shows the full accumulated turn.
@@ -116,19 +148,20 @@ async function runOpenAIToolLoop({
       if (callbacks.onMessage) callbacks.onMessage(turnText, "replace");
     });
 
-    stream.on("error", (err: any) => {
+    stream.on("error", (err: Error) => {
       if (callbacks.onError) callbacks.onError(String((err && err.message) || err));
     });
 
     // Wait for the stream to finish — finalChatCompletion() resolves with the
     // full ChatCompletion object (incl. usage when stream_options.include_usage).
     const completion = await stream.finalChatCompletion();
-    const choice = (completion.choices && completion.choices[0]) || {};
-    const message = choice.message || {};
+    const choice: Partial<OpenAI.Chat.Completions.ChatCompletion.Choice> =
+      (completion.choices && completion.choices[0]) || {};
+    const message: Partial<OpenAI.Chat.Completions.ChatCompletionMessage> = choice.message || {};
     finalMessage = { role: "assistant", content: message.content || iterationText };
 
     // Aggregate usage
-    const u = completion.usage || {};
+    const u: OpenAIUsage = completion.usage || {};
     totalUsage.prompt_tokens += u.prompt_tokens || 0;
     totalUsage.completion_tokens += u.completion_tokens || 0;
     if (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) {
@@ -152,14 +185,15 @@ async function runOpenAIToolLoop({
     // SDK providers throw here; CLI providers can only check post-turn
     // (subprocess owns its internal loop; cannot abort mid-stream).
     if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+      // The `as number` casts below are compile-time only: an undefined
+      // budget still compares false at runtime, exactly as before.
       const iterCost = ctx.computeIterationCost(u);
       if (!ctx._loopCost) ctx._loopCost = 0;
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
-      if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+      if (callCumulative >= (ctx.maxUsdBudget as number)) {
         throw new BudgetExceededError({
-          budget: ctx.maxUsdBudget,
+          budget: ctx.maxUsdBudget as number,
           spent: callCumulative,
           lastTurnCost: iterCost,
         });
@@ -169,7 +203,7 @@ async function runOpenAIToolLoop({
     // Append assistant turn to history. OpenAI requires preserving
     // tool_calls verbatim on the assistant message so subsequent tool
     // results can reference them by id.
-    const assistantTurn: Record<string, any> = { role: "assistant" };
+    const assistantTurn: OpenAI.Chat.Completions.ChatCompletionAssistantMessageParam = { role: "assistant" };
     // OpenAI's API requires `content` to be present (string or null) on
     // assistant messages — never undefined.
     assistantTurn.content = (message.content === undefined ? null : message.content);
@@ -206,10 +240,10 @@ async function runOpenAIToolLoop({
 
       const name = call.function && call.function.name;
       const argsRaw = (call.function && call.function.arguments) || "{}";
-      let input;
+      let input: unknown;
       try {
         input = JSON.parse(argsRaw);
-      } catch (e) {
+      } catch {
         // The model emitted malformed JSON — return a tool error so it
         // can self-correct rather than throwing the loop.
         history.push({
@@ -249,11 +283,13 @@ async function runOpenAIToolLoop({
  * surfaced inline as a prefix so the model can still recognize errors —
  * OpenAI's `role: "tool"` shape doesn't have a structured error field.
  */
-function serializeToolResultContent(result: any) {
+function serializeToolResultContent(
+  result: { content?: unknown; isError?: boolean } | null | undefined,
+) {
   if (!result) return "";
-  const parts = [];
+  const parts: string[] = [];
   if (Array.isArray(result.content)) {
-    for (const block of result.content) {
+    for (const block of result.content as Array<{ text?: unknown } | null | undefined>) {
       if (!block) continue;
       if (typeof block.text === "string") parts.push(block.text);
     }

@@ -1,6 +1,46 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GEMINI_HOOK_EVENTS = exports.kind = void 0;
+exports.buildSpawnExtras = buildSpawnExtras;
+exports._buildHooksJson = _buildHooksJson;
+exports._buildStoreGuardJson = _buildStoreGuardJson;
+exports._buildModelInstructions = _buildModelInstructions;
+exports._writeSettingsFile = _writeSettingsFile;
+exports._cleanupFile = _cleanupFile;
 /**
  * Gemini CLI hook adapter.
  *
@@ -39,15 +79,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   - Two vaults running Gryphon don't stomp on each other.
  *   - The plugin owns the lifecycle: spawn creates, close deletes.
  */
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const crypto = require("crypto");
-const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
-const { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT, } = require("../system-prompt-hints");
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
-const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
+const hook_settings_builder_1 = require("@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder");
+const system_prompt_hints_1 = require("../system-prompt-hints");
+const store_guard_command_1 = require("./store-guard-command");
+const shell_quote_1 = require("@polleoai/gryphon-provider-runtime/shell-quote");
 const KIND = "gemini-cli";
+exports.kind = KIND;
 /**
  * R43-4: a vault's own .gemini/settings.json (Gemini's workspace layer) can
  * switch hooks off — `hooksConfig.enabled: false`, or `hooksConfig.disabled`
@@ -65,12 +106,12 @@ function _hookNameNonce() {
  * `timeout` is MILLISECONDS (see _buildHooksJson).
  */
 function _buildStoreGuardJson({ nodePath, storeGuard, nonce = _hookNameNonce() }) {
-    const cmd = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "gemini" });
+    const cmd = (0, store_guard_command_1.storeGuardCommand)({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "gemini" });
     const hook = {
         name: `gryphon-store-guard-${nonce}`,
         type: "command",
         command: cmd.command,
-        timeout: STORE_GUARD_TIMEOUT_S * 1000,
+        timeout: store_guard_command_1.STORE_GUARD_TIMEOUT_S * 1000,
     };
     if (cmd.shell)
         hook.shell = cmd.shell;
@@ -83,16 +124,17 @@ function _buildStoreGuardJson({ nodePath, storeGuard, nonce = _hookNameNonce() }
  */
 const GEMINI_HOOK_EVENTS = [
     // [geminiEventName, hookFileName, matcher, timeoutKey]
-    ["BeforeTool", HOOK_FILES.PreToolUse, "", "PreToolUse"],
-    ["AfterTool", HOOK_FILES.PostToolUse, POSTTOOL_MATCHER, "PostToolUse"],
-    ["SessionStart", HOOK_FILES.SessionStart, "", "SessionStart"],
-    ["SessionEnd", HOOK_FILES.SessionEnd, "", "SessionEnd"],
+    ["BeforeTool", hook_settings_builder_1.HOOK_FILES.PreToolUse, "", "PreToolUse"],
+    ["AfterTool", hook_settings_builder_1.HOOK_FILES.PostToolUse, hook_settings_builder_1.POSTTOOL_MATCHER, "PostToolUse"],
+    ["SessionStart", hook_settings_builder_1.HOOK_FILES.SessionStart, "", "SessionStart"],
+    ["SessionEnd", hook_settings_builder_1.HOOK_FILES.SessionEnd, "", "SessionEnd"],
     // BeforeAgent is the closest Gemini analog to UserPromptSubmit —
     // fires before the agent processes a user message. The hook script
     // is the same `user-prompt.js` we ship for Claude Code.
-    ["BeforeAgent", HOOK_FILES.UserPromptSubmit, "", "UserPromptSubmit"],
-    ["Notification", HOOK_FILES.Notification, "", "Notification"],
+    ["BeforeAgent", hook_settings_builder_1.HOOK_FILES.UserPromptSubmit, "", "UserPromptSubmit"],
+    ["Notification", hook_settings_builder_1.HOOK_FILES.Notification, "", "Notification"],
 ];
+exports.GEMINI_HOOK_EVENTS = GEMINI_HOOK_EVENTS;
 /**
  * Build the canonical hook-config JSON object Gemini reads from
  * settings.json. Mirrors the JSON shape `buildHookSettings` returns
@@ -107,12 +149,12 @@ function _buildHooksJson({ pluginDir, nodePath, nonce = _hookNameNonce() }) {
         // R43-1: real shell quoting (the script path is under the vault folder).
         if (isWindows) {
             return {
-                command: hookCommandLine(nodePath, scriptPath, "win32"),
+                command: (0, shell_quote_1.hookCommandLine)(nodePath, scriptPath, "win32"),
                 shell: "powershell",
             };
         }
         return {
-            command: hookCommandLine(nodePath, scriptPath),
+            command: (0, shell_quote_1.hookCommandLine)(nodePath, scriptPath),
         };
     };
     const hooksBlock = {};
@@ -131,7 +173,7 @@ function _buildHooksJson({ pluginDir, nodePath, nonce = _hookNameNonce() }) {
             // through to default-allow. The rm ran, the model saw a
             // generic failure, and surfaced "file does not exist" to the
             // user. Reported by user 2026-05-03.
-            timeout: DEFAULT_HOOK_TIMEOUTS[timeoutKey] * 1000,
+            timeout: hook_settings_builder_1.DEFAULT_HOOK_TIMEOUTS[timeoutKey] * 1000,
         };
         if (cmd.shell)
             hookEntry.shell = cmd.shell;
@@ -149,7 +191,7 @@ function _buildHooksJson({ pluginDir, nodePath, nonce = _hookNameNonce() }) {
  * adapter — the directives are provider-agnostic.
  */
 function _buildModelInstructions() {
-    const bullets = GRYPHON_SYSTEM_PROMPT_HINT.split("· ").map((s) => s.trim()).filter(Boolean);
+    const bullets = system_prompt_hints_1.GRYPHON_SYSTEM_PROMPT_HINT.split("· ").map((s) => s.trim()).filter(Boolean);
     const head = bullets[0];
     const rest = bullets.slice(1).map((b) => `- ${b}`).join("\n\n");
     return [
@@ -161,7 +203,7 @@ function _buildModelInstructions() {
         "",
         "## On terse environment refusals (fallback path)",
         "",
-        GRYPHON_FALLBACK_DENY_HINT.replace(/^· /, ""),
+        system_prompt_hints_1.GRYPHON_FALLBACK_DENY_HINT.replace(/^· /, ""),
         "",
     ].join("\n");
 }
@@ -275,13 +317,3 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, storeGuardOnly }
         instructionsFile,
     };
 }
-module.exports = {
-    kind: KIND,
-    buildSpawnExtras,
-    _buildHooksJson,
-    _buildStoreGuardJson,
-    _buildModelInstructions,
-    _writeSettingsFile,
-    _cleanupFile,
-    GEMINI_HOOK_EVENTS,
-};

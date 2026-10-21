@@ -1,7 +1,7 @@
 /**
  * Issue #15 — fallback provider/model with automatic failover.
  *
- * The reusable kernel exported from @gryphon/provider-runtime:
+ * The reusable kernel exported from @polleoai/gryphon-provider-runtime:
  *   - classifyProviderFailure(errOrNull) → { kind, reason }
  *   - resolveFallback(plugin) → { kind, model } | null
  *   - createProviderForKind(plugin, kind, cwd, options, modelOverride?) → LLMProvider|null
@@ -27,9 +27,9 @@ Module._resolveFilename = function (request, ...args) {
 
 // Stub binary detectors so tests don't depend on the host system.
 const utils = require("../src/utils");
-const origCodex = utils.findCodexBinary;
-const origGemini = utils.findGeminiBinary;
-const origClaude = utils.findClaudeBinary;
+const origCodex = utils.binaryFinders.findCodexBinary;
+const origGemini = utils.binaryFinders.findGeminiBinary;
+const origClaude = utils.binaryFinders.findClaudeBinary;
 
 // #30: every resolved binary is validated (absolute, an executable file,
 // outside the vault) before it's probed or spawned, so a stubbed detection
@@ -47,14 +47,14 @@ function fake(p) {
   return full;
 }
 function stubBinaries({ codex = null, gemini = null, claude = null } = {}) {
-  utils.findCodexBinary = () => fake(codex);
-  utils.findGeminiBinary = () => fake(gemini);
-  utils.findClaudeBinary = () => fake(claude);
+  utils.binaryFinders.findCodexBinary = () => fake(codex);
+  utils.binaryFinders.findGeminiBinary = () => fake(gemini);
+  utils.binaryFinders.findClaudeBinary = () => fake(claude);
 }
 function restoreBinaries() {
-  utils.findCodexBinary = origCodex;
-  utils.findGeminiBinary = origGemini;
-  utils.findClaudeBinary = origClaude;
+  utils.binaryFinders.findCodexBinary = origCodex;
+  utils.binaryFinders.findGeminiBinary = origGemini;
+  utils.binaryFinders.findClaudeBinary = origClaude;
 }
 function freshEnv(fn) {
   const snap = { ...process.env };

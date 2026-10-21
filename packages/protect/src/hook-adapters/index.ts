@@ -22,16 +22,20 @@
  * the `GRYPHON_HOOK_DIALECT` env var the adapter sets.
  */
 
-const claudeCodeAdapter = require("./claude-code");
-const codexCliAdapter = require("./codex-cli");
-const geminiCliAdapter = require("./gemini-cli");
-const antigravityCliAdapter = require("./antigravity-cli");
+import * as claudeCode from "./claude-code";
+import * as codexCli from "./codex-cli";
+import * as geminiCli from "./gemini-cli";
+import * as antigravityCli from "./antigravity-cli";
 
+// One plain object per adapter, copied from its module. The dispatcher (and
+// every other caller) reaches an adapter only through getAdapter(), so this
+// object is the single replaceable seam: a test substitutes buildSpawnExtras /
+// lastRefusal here. (An ES module's own exports are read-only bindings.)
 const REGISTRY: Record<string, unknown> = {
-  [claudeCodeAdapter.kind]: claudeCodeAdapter,
-  [codexCliAdapter.kind]: codexCliAdapter,
-  [geminiCliAdapter.kind]: geminiCliAdapter,
-  [antigravityCliAdapter.kind]: antigravityCliAdapter,
+  [claudeCode.kind]: { ...claudeCode },
+  [codexCli.kind]: { ...codexCli },
+  [geminiCli.kind]: { ...geminiCli },
+  [antigravityCli.kind]: { ...antigravityCli },
 };
 
 function getAdapter(kind: string) {
@@ -42,4 +46,4 @@ function listSupportedKinds() {
   return Object.keys(REGISTRY).sort();
 }
 
-module.exports = { getAdapter, listSupportedKinds };
+export { getAdapter, listSupportedKinds };

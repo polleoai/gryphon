@@ -21,16 +21,51 @@
  * narrows this to out-of-vault + tagged in-vault files.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
+import * as path from "path";
+import * as fs from "fs";
 
-const {
+import {
   readStdinJson,
   writeStdoutJson,
   emitEvent,
   sendToGryphon,
   traceHook,
-} = require("./common/ipc-client");
+} from "./common/ipc-client";
+
+// Tool-input fields this hook reads (a type alias so it still satisfies
+// Record<string, unknown>).
+type PostToolInput = {
+  url?: unknown;
+  query?: unknown;
+  file_path?: unknown;
+  command?: unknown;
+} | null | undefined;
+
+// Where the session's untrusted content came from (provenance store).
+interface UntrustedSource {
+  tool?: string;
+  sourceUrl?: string;
+  sourceCommand?: string;
+  sourceQuery?: string;
+}
+
+// A provenance tag's metadata (provenance store).
+interface TagMetadata {
+  source?: string;
+  sourceUrl?: string;
+  sourceCommand?: string;
+}
+
+// The plugin's reply to `provenance_check`.
+interface ProvenanceCheckReply {
+  tagged?: boolean;
+  metadata?: TagMetadata | null;
+  sessionFlags?: {
+    untrustedContentActive?: boolean;
+    lastUntrustedSource?: UntrustedSource | null;
+  } | null;
+}
+
 
 // Short timeout for provenance IPC calls — they're small, in-memory,
 // no modal. A slow provenance lookup is much worse than silently
@@ -51,33 +86,17 @@ const NETWORK_BASH_RE =
 // into `hooks/common/` alongside ipc-client at build time so the hook
 // runtime can load them via `./common/...` without needing to know
 // about the SDK path.
-let scanForInjectionMarkers: ((text: string) => Array<{ id: string; severity: string; match: string; offset: number }>) | undefined;
-let buildFraming: ((opts: { tool?: string; sourceDetail?: string; injectionHits?: unknown[] }) => string) | undefined;
-let shouldFrame: ((tool: string) => boolean) | undefined;
-try {
-  // Built plugin layout: hooks/common/ contains the shared modules.
-  ({ scanForInjectionMarkers } = require("./common/injection-patterns"));
-  ({ buildFraming, shouldFrame } = require("./common/untrusted-framing"));
-} catch (_) {
-  try {
-    // Source-tree layout (tests spawn from packages/protect/src/hooks/):
-    // the modules live one level up. Same files, different path.
-    ({ scanForInjectionMarkers } = require("../injection-patterns"));
-    ({ buildFraming, shouldFrame } = require("../untrusted-framing"));
-  } catch (_) {
-    // Neither path — fail-open (framing becomes a no-op). Hook still
-    // drains stdin and emits `{}` so CC's contract holds. Surface this
-    // once to stderr so a missing build step (hooks/common/* not copied)
-    // doesn't hide as "tool outputs aren't being scanned" in production.
-    console.error("[gryphon/posttool] injection scanner + framing unavailable — tool output scanning disabled (both candidate require paths failed)");
-  }
-}
+// Static imports from ./common/: the shipped hook tree has the modules there
+// (build.ts builds them from src/), the source tree has re-exports at the same
+// path. Both compile to a plain synchronous require.
+import { scanForInjectionMarkers } from "./common/injection-patterns";
+import { buildFraming, shouldFrame } from "./common/untrusted-framing";
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) {
+  } catch {
     await writeStdoutJson({});
     process.exit(0);
     return;
@@ -86,7 +105,7 @@ async function main() {
 
   const toolName = input && input.tool_name;
   const toolResponse = input && input.tool_response;
-  const toolInput = input && input.tool_input;
+  const toolInput = (input && input.tool_input) as PostToolInput;
   const sessionId = input && input.session_id;
   const cwd = input && input.cwd;
 
@@ -133,13 +152,13 @@ async function main() {
       // Tag the destination if the session is currently untrusted-active.
       // The URL / command that caused the session to go untrusted was
       // stashed by provenance_mark on sessionFlags.lastUntrustedSource.
-      const checkResp = await sendToGryphon(
+      const checkResp = await sendToGryphon<ProvenanceCheckReply>(
         { req: "provenance_check", path: toolInput && toolInput.file_path, cwd, sessionId },
         { timeoutMs: PROVENANCE_TIMEOUT_MS },
       );
       const sessFlags = checkResp && checkResp.sessionFlags;
       if (sessFlags && sessFlags.untrustedContentActive && toolInput && toolInput.file_path) {
-        const lastSrc = sessFlags.lastUntrustedSource || {};
+        const lastSrc: UntrustedSource = sessFlags.lastUntrustedSource || {};
         const sourceLabel = lastSrc.tool
           ? `Write-after-${lastSrc.tool}`
           : "Write-after-untrusted";
@@ -177,7 +196,7 @@ async function main() {
         );
       }
     }
-  } catch (_) { /* fail-open — provenance loss this turn is tolerable */ }
+  } catch { /* fail-open — provenance loss this turn is tolerable */ }
 
   // Framing decision: Read goes through provenance + vault-boundary
   // rules; everything else uses shouldFrame. Read of an in-vault file
@@ -188,16 +207,16 @@ async function main() {
     const filePath = toolInput && toolInput.file_path;
     const isOutside = _isOutsideVault(filePath, cwd);
     let isTagged = false;
-    let tagMetadata = null;
+    let tagMetadata: TagMetadata | null | undefined = null;
     if (!isOutside) {
       try {
-        const checkResp = await sendToGryphon(
+        const checkResp = await sendToGryphon<ProvenanceCheckReply>(
           { req: "provenance_check", path: filePath, cwd, sessionId },
           { timeoutMs: PROVENANCE_TIMEOUT_MS },
         );
         isTagged = !!(checkResp && checkResp.tagged);
         tagMetadata = checkResp && checkResp.metadata;
-      } catch (_) { /* fail-open */ }
+      } catch { /* fail-open */ }
     }
     if (!isOutside && !isTagged) {
       await writeStdoutJson({});
@@ -226,7 +245,7 @@ async function main() {
   // WebFetch typically hands us a string body. We try the most common
   // shapes in order.
   const scannable = _extractScannableText(toolResponse);
-  const sourceDetail: string | undefined = (sourceAttribution || _summarizeSource(toolName as string, toolInput as Record<string, unknown> | null)) || undefined;
+  const sourceDetail: string | undefined = (sourceAttribution || _summarizeSource(toolName, toolInput)) || undefined;
 
   let hits: Array<{ id: string; severity: string; match: string; offset: number }> = [];
   if (scannable && typeof scanForInjectionMarkers === "function") {
@@ -244,11 +263,12 @@ async function main() {
   for (const hit of hits) {
     // No await — we don't want a slow IPC sink to delay framing. The
     // hook process exits once main() returns; best-effort is fine.
-    emitEvent("regex-hit", {
+    void emitEvent("regex-hit", {
       tool: toolName,
       patternId: hit.id,
       severity: hit.severity,
-      sessionId: input.session_id || null,
+      // `toolName` is a string here, so `input` is an object.
+      sessionId: (input as Record<string, unknown>).session_id || null,
     });
   }
 
@@ -290,7 +310,7 @@ function _extractScannableText(response: unknown): string {
   try {
     const s = JSON.stringify(response);
     return s.length > 64 * 1024 ? s.slice(0, 64 * 1024) : s;
-  } catch (_) {
+  } catch {
     return "";
   }
 }
@@ -334,10 +354,10 @@ function _isOutsideVault(filePath: unknown, vaultRoot: unknown): boolean {
     : path.resolve(vaultRoot, filePath);
   let resolved;
   try { resolved = fs.realpathSync(lexical); }
-  catch (_) { resolved = lexical; }
+  catch { resolved = lexical; }
   let normalizedRoot;
   try { normalizedRoot = fs.realpathSync(path.resolve(vaultRoot)); }
-  catch (_) { normalizedRoot = path.resolve(vaultRoot); }
+  catch { normalizedRoot = path.resolve(vaultRoot); }
   return !resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot;
 }
 
@@ -345,6 +365,6 @@ main().catch(async () => {
   // Fail-open: even on a main() throw, emit empty rather than a stray
   // deny. PostToolUse isn't load-bearing for safety; framing loss is
   // tolerable per design invariant #3.
-  try { await writeStdoutJson({}); } catch (_) { /* ignore */ }
+  try { await writeStdoutJson({}); } catch { /* ignore */ }
   process.exit(0);
 });

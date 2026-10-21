@@ -47,14 +47,19 @@
  *     agent's and revert only the latter's weakening changes.
  */
 
-const fs = require("fs") as typeof import("fs");
-const { isWithinByIdentity } = require("./path-identity");
-const { readRegularFile, clearNonFile } = require("./safe-read");
-const path = require("path") as typeof import("path");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
-const mcpApprovals = require("./mcp-approvals");
-const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
+// Tests that replace this module's functions in place (e.g.
+// checkSecurityStoreTamper) patch the tsc-built dist, whose exports stay
+// writable; callers reach the store through its module object so the stubs
+// take effect. Never add `module.exports` here (see no-mixed-module-syntax).
+import * as fs from "fs";
+import { isWithinByIdentity } from "./path-identity";
+import { readRegularFile, clearNonFile } from "./safe-read";
+import * as path from "path";
+import * as os from "os";
+import * as crypto from "crypto";
+import * as mcpApprovals from "./mcp-approvals";
+import { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } from "./constants";
+import * as runtimeUtils from "@polleoai/gryphon-provider-runtime/utils";
 
 const STORE_VERSION = 1;
 const FILE_NAME = "security-settings.json";
@@ -75,11 +80,27 @@ const WEAKENING_KEYS = Object.freeze([
 ] as const);
 
 type WeakeningKey = typeof WEAKENING_KEYS[number];
-type SecurityValues = Partial<Record<WeakeningKey, any>>;
+type SecurityValues = Partial<Record<WeakeningKey, unknown>>;
 type SecurityScope = { vaultKey: string; hostId: string };
+// The parts of an Obsidian App / host plugin this module reads.
+type AppLike = { vault?: { adapter?: { getBasePath?: () => unknown; basePath?: unknown } | null } | null };
+type HostPluginLike = { app?: unknown; securityHostId?: unknown };
 type Source = "override" | "machine" | "default";
 
-const DEFAULTS: Readonly<Record<WeakeningKey, any>> = Object.freeze({
+/** What each weakening key holds once validateSecurityValue() accepts it. */
+interface SecurityValueTypes {
+  protectedMode: boolean;
+  permissionMode: string;
+  protectedPathsEnabled: boolean;
+  protectedCommandsEnabled: boolean;
+  blockPackageInstall: boolean;
+  protectedPathsDisabled: string[];
+  protectedCommandsDisabled: string[];
+  claudeCodeInheritUserConfig: boolean;
+  obsidianRestApiPolicy: "blocked" | "allowed";
+}
+
+const DEFAULTS: Readonly<Record<WeakeningKey, unknown>> = Object.freeze({
   protectedMode: true,
   permissionMode: "default",
   protectedPathsEnabled: true,
@@ -110,8 +131,8 @@ function isExecutableKey(key: unknown): key is ExecutableKey {
   return typeof key === "string" && EXECUTABLE_KEY_SET.has(key);
 }
 
-function _patternsOf(defs: any[]): Set<string> {
-  return new Set(defs.map((d) => (typeof d === "string" ? d : d && d.pattern)).filter((p) => typeof p === "string"));
+function _patternsOf(defs: unknown[]): Set<string> {
+  return new Set(defs.map((d) => (typeof d === "string" ? d : d && (d as { pattern?: unknown }).pattern)).filter((p): p is string => typeof p === "string"));
 }
 const KNOWN_DISABLED: Record<string, Set<string>> = {
   protectedPathsDisabled: _patternsOf(DEFAULT_PROTECTED_PATHS),
@@ -127,7 +148,7 @@ function isWeakeningKey(key: unknown): key is WeakeningKey {
  * A `*Disabled` list keeps only entries naming a built-in pattern: disabling
  * a pattern that doesn't exist does nothing, so dropping it changes nothing.
  */
-function validateSecurityValue(key: unknown, value: unknown): { ok: true; value: any } | { ok: false; reason: string } {
+function validateSecurityValue(key: unknown, value: unknown): { ok: true; value: unknown } | { ok: false; reason: string } {
   if (!isWeakeningKey(key)) return { ok: false, reason: `unknown key ${JSON.stringify(key)}` };
   if (BOOLEAN_KEYS.has(key)) {
     return typeof value === "boolean" ? { ok: true, value } : { ok: false, reason: `${key} must be true or false` };
@@ -149,7 +170,8 @@ function validateSecurityValue(key: unknown, value: unknown): { ok: true; value:
     return { ok: false, reason: `${key} must be a list of built-in patterns` };
   }
   const known = KNOWN_DISABLED[key];
-  return { ok: true, value: [...new Set(value.filter((p) => known.has(p)))] };
+  // Every entry was checked to be a string just above.
+  return { ok: true, value: [...new Set((value as string[]).filter((p) => known.has(p)))] };
 }
 
 /** True when `value` removes protection relative to the default. */
@@ -166,7 +188,7 @@ function isWeakening(key: WeakeningKey, value: unknown): boolean {
       return v.value !== "default";
     case "protectedPathsDisabled":
     case "protectedCommandsDisabled":
-      return v.value.length > 0;
+      return (v.value as string[]).length > 0;
     case "claudeCodeInheritUserConfig":
       return v.value === true;
     case "obsidianRestApiPolicy":
@@ -206,22 +228,22 @@ function _validName(v: unknown): v is string {
  * `app.vault.adapter` base path and its manifest id — never
  * `_vaultRoot()`, which embedders don't have.
  */
-function describeSecurityScope(input: { app?: any; hostPlugin?: any; hostId?: string } = {}):
+function describeSecurityScope(input: { app?: unknown; hostPlugin?: unknown; hostId?: string } = {}):
   { scope: SecurityScope; missing: null } | { scope: null; missing: "app" | "basePath" | "hostId" } {
-  const app = input.app || (input.hostPlugin && input.hostPlugin.app);
+  const hp = input.hostPlugin as HostPluginLike | null | undefined;
+  const app = (input.app || (hp && hp.app)) as AppLike | null | undefined;
   if (!app) return { scope: null, missing: "app" };
   const adapter = app.vault && app.vault.adapter;
   let basePath: unknown = null;
   try {
     basePath = adapter && typeof adapter.getBasePath === "function" ? adapter.getBasePath() : adapter && adapter.basePath;
-  } catch (_) { basePath = null; }
+  } catch { basePath = null; }
   if (typeof basePath !== "string" || !basePath) return { scope: null, missing: "basePath" };
   // Host id precedence: explicit option > the host's own code-set
   // `securityHostId`. Never manifest.id (issue #30, G3): the manifest ships
   // inside the vault (.obsidian/plugins/<dir>/manifest.json), so a vault
   // could rename it to another host's id and inherit that host's confirmed
   // weakening values. With neither, there's no scope and reads fail closed.
-  const hp = input.hostPlugin;
   const hostId = input.hostId !== undefined && input.hostId !== null
     ? input.hostId
     : (hp && typeof hp.securityHostId === "string" && hp.securityHostId) || null;
@@ -229,7 +251,7 @@ function describeSecurityScope(input: { app?: any; hostPlugin?: any; hostId?: st
   return { scope: { vaultKey: mcpApprovals.vaultKey(basePath), hostId }, missing: null };
 }
 
-function resolveSecurityScope(input: { app?: any; hostPlugin?: any; hostId?: string } = {}): SecurityScope | null {
+function resolveSecurityScope(input: { app?: unknown; hostPlugin?: unknown; hostId?: string } = {}): SecurityScope | null {
   return describeSecurityScope(input).scope;
 }
 
@@ -260,15 +282,20 @@ function _report(file: string, stamp: string, message: string) {
   if (_reported.has(key)) return;
   _reported.add(key);
   for (const fn of _errorSinks) {
-    try { fn(message, file); } catch (_) { /* a sink must not break reads */ }
+    try { fn(message, file); } catch { /* a sink must not break reads */ }
   }
 }
 
-function _empty(): Store { return { version: STORE_VERSION, vaults: Object.create(null) }; }
+function _empty(): Store { return { version: STORE_VERSION, vaults: Object.create(null) as Store["vaults"] }; }
+
+// The parsed file before validation: every field is untrusted.
+type RawStore = { vaults?: unknown };
+type RawVault = { hosts?: unknown };
+type RawHostEntry = { values?: unknown; dismissed?: unknown; paths?: unknown; setAt?: unknown };
 
 function _parse(raw: string, file: string, stamp: string, report: typeof _report = _report): Store {
-  let parsed: any;
-  try { parsed = JSON.parse(raw); } catch (_) {
+  let parsed: RawStore | null;
+  try { parsed = JSON.parse(raw) as RawStore | null; } catch {
     report(file, stamp, `${file} is not valid JSON; every security setting uses its protected default`);
     return _empty();
   }
@@ -283,9 +310,11 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
   // with thousands of junk keys produced thousands of notices).
   const droppedValues: string[] = [];
   const droppedPaths: string[] = [];
-  for (const [vk, vault] of Object.entries(parsed.vaults as Record<string, any>)) {
+  for (const [vk, rawVault] of Object.entries(parsed.vaults as Record<string, unknown>)) {
+    const vault = rawVault as RawVault | null | undefined;
     if (!_validName(vk) || !vault || typeof vault !== "object" || !vault.hosts || typeof vault.hosts !== "object") continue;
-    for (const [hostId, entry] of Object.entries(vault.hosts as Record<string, any>)) {
+    for (const [hostId, rawEntry] of Object.entries(vault.hosts as Record<string, unknown>)) {
+      const entry = rawEntry as RawHostEntry | null | undefined;
       if (!_validName(hostId) || !entry || typeof entry !== "object") continue;
       const values: SecurityValues = {};
       const rawValues = entry.values && typeof entry.values === "object" && !Array.isArray(entry.values) ? entry.values : {};
@@ -307,7 +336,7 @@ function _parse(raw: string, file: string, stamp: string, report: typeof _report
         if (isExecutableKey(k) && typeof v === "string" && v && _isAbsoluteAnywhere(v)) paths[k] = v;
         else droppedPaths.push(k);
       }
-      if (!store.vaults[vk]) store.vaults[vk] = { hosts: Object.create(null) };
+      if (!store.vaults[vk]) store.vaults[vk] = { hosts: Object.create(null) as Store["vaults"][string]["hosts"] };
       store.vaults[vk].hosts[hostId] = { values, setAt: typeof entry.setAt === "string" ? entry.setAt : "", dismissed, paths };
     }
   }
@@ -378,7 +407,7 @@ function _load(file: string, fresh = false): Store {
 /**
  * Every content this store's writer puts on disk, by sha256 — the turn-end
  * tamper check's way to tell Gryphon's own writes from an agent's. It lives
- * on the renderer process (`process`), so every bundled copy of @gryphon/protect in one
+ * on the renderer process (`process`), so every bundled copy of @polleoai/gryphon-protect in one
  * Obsidian window (an embedder's and a standalone Gryphon's) shares it; an
  * agent subprocess can't reach it. Bounded: old entries fall off.
  */
@@ -395,11 +424,11 @@ function _ledger(): { seq: number; entries: LedgerEntry[] } {
   // Node — shared by every module copy loaded in it, and out of reach of an
   // agent subprocess. (window/globalThis would also do in the renderer, but
   // not headless, and the plugin lint rules steer away from both.)
-  const g = process as any;
-  if (!g[LEDGER_KEY] || !Array.isArray(g[LEDGER_KEY].entries)) {
+  const g = process as NodeJS.Process & Record<symbol, unknown>;
+  if (!g[LEDGER_KEY] || !Array.isArray((g[LEDGER_KEY] as { entries?: unknown }).entries)) {
     Object.defineProperty(g, LEDGER_KEY, { value: { seq: 0, entries: [] }, configurable: true, enumerable: false, writable: true });
   }
-  return g[LEDGER_KEY];
+  return g[LEDGER_KEY] as { seq: number; entries: LedgerEntry[] };
 }
 
 function _recordWrite(raw: string, priorRaw: string | null) {
@@ -417,7 +446,7 @@ function _sha256(s: string): string {
 function _save(store: unknown, file: string, priorRaw: string | null = null) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") { try { fs.chmodSync(dir, 0o700); } catch (_) {} }
+  if (process.platform !== "win32") { try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ } }
   const tmp = path.join(dir, `.${FILE_NAME}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
   const raw = JSON.stringify(store, null, 2) + "\n";
   // Ledgered BEFORE the rename: a turn-end check racing this write must
@@ -427,7 +456,7 @@ function _save(store: unknown, file: string, priorRaw: string | null = null) {
   try {
     fs.renameSync(tmp, file);
   } catch (e) {
-    try { fs.unlinkSync(tmp); } catch (_) {}
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     throw e;
   }
   // Issue #32: the trusted copy only once the store holds it (review: a
@@ -471,11 +500,11 @@ function _trustedPath(file: string): string {
  */
 const LAST_TRUSTED_KEY = Symbol.for("gryphon.securityStoreTrusted");
 function _lastTrusted(): Map<string, string> {
-  const g = process as any;
+  const g = process as NodeJS.Process & Record<symbol, unknown>;
   if (!(g[LAST_TRUSTED_KEY] instanceof Map)) {
     Object.defineProperty(g, LAST_TRUSTED_KEY, { value: new Map(), configurable: true, enumerable: false, writable: true });
   }
-  return g[LAST_TRUSTED_KEY];
+  return g[LAST_TRUSTED_KEY] as Map<string, string>;
 }
 
 /**
@@ -492,7 +521,7 @@ function _readTrustedCopy(file: string): string | null {
   try {
     const s2 = fs.statSync(file);
     if (s2.ino === r.st.ino && s2.dev === r.st.dev) return null;
-  } catch (_) { /* no store: nothing to alias */ }
+  } catch { /* no store: nothing to alias */ }
   return r.raw;
 }
 
@@ -508,7 +537,7 @@ function _writeTrusted(file: string, raw: string): void {
     clearNonFile(t);
     const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
-    try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+    try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* ignore */ } throw e; }
   } catch (e) {
     console.warn(`[gryphon/security-settings] couldn't record the trusted copy of the security settings: ${(e as Error).message}`);
   }
@@ -528,7 +557,7 @@ function onSecurityStoreTamper(fn: TamperSink): () => void {
 
 function _emitTamper(reverted: Reverted[], error: unknown, info?: "record-started") {
   for (const fn of _tamperSinks) {
-    try { fn(reverted, error, info); } catch (_) { /* a sink must not break reads */ }
+    try { fn(reverted, error, info); } catch { /* a sink must not break reads */ }
   }
 }
 
@@ -544,7 +573,7 @@ function _loosenedIn(raw: string, file: string): Reverted[] {
     return _weakenings(_parse(raw, file, "adopt", _quiet), _empty())
       .filter((w) => w.field !== "dismissed")
       .map((w) => ({ vaultKey: w.vaultKey, hostId: w.hostId, key: w.field === "values" ? w.key : `${w.field}.${w.key}` }));
-  } catch (_) {
+  } catch {
     return [];
   }
 }
@@ -552,9 +581,9 @@ function _loosenedIn(raw: string, file: string): Reverted[] {
 /** True when `raw` holds any per-vault entry (an empty store needs no look). */
 function _hasEntries(raw: string): boolean {
   try {
-    const o = JSON.parse(raw);
+    const o = JSON.parse(raw) as { vaults?: unknown } | null;
     return !!(o && typeof o === "object" && o.vaults && typeof o.vaults === "object" && Object.keys(o.vaults).length);
-  } catch (_) { return false; }
+  } catch { return false; }
 }
 
 /**
@@ -569,16 +598,16 @@ function _hasEntries(raw: string): boolean {
  */
 const SERVED_KEY = Symbol.for("gryphon.securityServedVaults");
 function _served(): Set<string> {
-  const g = process as any;
+  const g = process as NodeJS.Process & Record<symbol, unknown>;
   if (!(g[SERVED_KEY] instanceof Set)) Object.defineProperty(g, SERVED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
-  return g[SERVED_KEY];
+  return g[SERVED_KEY] as Set<string>;
 }
 function _serve(scope: SecurityScope | null | undefined): void {
   if (scope && typeof scope.vaultKey === "string" && scope.vaultKey) _served().add(scope.vaultKey);
 }
 
 function _sameContent(a: string, b: string): boolean {
-  try { return mcpApprovals.canonicalJSON(JSON.parse(a)) === mcpApprovals.canonicalJSON(JSON.parse(b)); } catch (_) { return false; }
+  try { return mcpApprovals.canonicalJSON(JSON.parse(a)) === mcpApprovals.canonicalJSON(JSON.parse(b)); } catch { return false; }
 }
 
 /**
@@ -605,8 +634,8 @@ function _prunedBaseline(raw: string | null): string | null {
   while (stack.length && !deep) {
     const [x, d] = stack.pop() as [unknown, number];
     if (!x || typeof x !== "object") continue;
-    if (d + 1 >= PRUNE_DEPTH) { deep = Object.values(x as object).some((c) => c && typeof c === "object"); continue; }
-    for (const c of Object.values(x as object)) stack.push([c, d + 1]);
+    if (d + 1 >= PRUNE_DEPTH) { deep = Object.values(x).some((c) => c && typeof c === "object"); continue; }
+    for (const c of Object.values(x)) stack.push([c, d + 1]);
   }
   return deep ? JSON.stringify(_pruneDeep(obj), null, 2) + "\n" : raw;
 }
@@ -652,7 +681,7 @@ function _othersFromCopy(base: string, copy: string): string {
       if (KNOWN_TOP.has(k)) continue;
       if (own(c, k)) _setOwnKey(out, k, c[k]); else delete out[k];
     }
-    const cv: Record<string, any> = _isPlainObject(c.vaults) ? c.vaults : {};
+    const cv: Record<string, unknown> = _isPlainObject(c.vaults) ? c.vaults : {};
     const served = _served();
     for (const vk of new Set([...Object.keys(out.vaults), ...Object.keys(cv)])) {
       if (served.has(vk)) continue;
@@ -718,7 +747,7 @@ function _verifyAgainstTrusted(file: string, raw: string): string | null {
     }
     // Review of 86d167a/452fc37: the content the undo computed, else the
     // checked baseline — never the stored or recorded content as-is.
-    const safe = e && typeof e === "object" ? (e as any).gryphonSafeContent : undefined;
+    const safe = e && typeof e === "object" ? (e as { gryphonSafeContent?: unknown }).gryphonSafeContent : undefined;
     return typeof safe === "string" ? safe : trusted;
   } finally {
     _verifying = false;
@@ -726,7 +755,7 @@ function _verifyAgainstTrusted(file: string, raw: string): string | null {
 }
 
 function _parses(raw: string): boolean {
-  try { JSON.parse(raw); return true; } catch (_) { return false; }
+  try { JSON.parse(raw); return true; } catch { return false; }
 }
 
 const _reportedBad = new Set<string>();
@@ -817,17 +846,17 @@ function _requireScope(scope: SecurityScope | null | undefined): SecurityScope {
  * 2.10.x copy erased every confirmed CLI path this way. Reads still
  * validate everything. A file this copy can't parse is rebuilt as before.
  */
-function _rawObject(raw: string | null): Record<string, any> | null {
+function _rawObject(raw: string | null): Record<string, unknown> | null {
   if (raw === null) return null;
   try {
-    const p = JSON.parse(raw);
-    return p && typeof p === "object" && !Array.isArray(p) ? p : null;
-  } catch (_) {
+    const p: unknown = JSON.parse(raw);
+    return p && typeof p === "object" && !Array.isArray(p) ? p as Record<string, unknown> : null;
+  } catch {
     return null;
   }
 }
 
-function _isPlainObject(v: unknown): v is Record<string, any> {
+function _isPlainObject(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
 }
 
@@ -838,9 +867,9 @@ function _isPlainObject(v: unknown): v is Record<string, any> {
  * isn't trimmed by an unrelated write. A key the write actually changed
  * gets its new value.
  */
-function _changedOnly(rawBag: unknown, validated: Record<string, any>): Record<string, any> {
+function _changedOnly(rawBag: unknown, validated: Record<string, unknown>): Record<string, unknown> {
   const raw = _isPlainObject(rawBag) ? rawBag : {};
-  const out: Record<string, any> = {};
+  const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(validated)) {
     if (Object.prototype.hasOwnProperty.call(raw, k)) {
       const r = validateSecurityValue(k, raw[k]);
@@ -850,7 +879,7 @@ function _changedOnly(rawBag: unknown, validated: Record<string, any>): Record<s
   }
   return out;
 }
-function _setOwnKey(o: Record<string, any>, k: string, v: unknown): void {
+function _setOwnKey(o: Record<string, unknown>, k: string, v: unknown): void {
   Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
@@ -860,7 +889,12 @@ function _composeForWrite(priorRaw: string | null, store: Store, touched: Array<
   // settings. A value deeper than PRUNE_DEPTH is dropped on the next write.
   const base = _pruneDeep(_rawObject(priorRaw));
   if (!base || !_isPlainObject(base.vaults)) return store;
-  const out: Record<string, any> = JSON.parse(JSON.stringify(base));
+  // A copy of the raw file (vaults checked to be a plain object just above;
+  // every level below is re-checked before use).
+  const out = JSON.parse(JSON.stringify(base)) as {
+    version?: unknown;
+    vaults: Record<string, { hosts: Record<string, Record<string, unknown>> }>;
+  };
   if (typeof out.version !== "number") out.version = STORE_VERSION;
   // Carried over: keys this version doesn't know, AND known keys whose raw
   // value it can't read (R44 F1 — e.g. a future version's longer pattern
@@ -870,9 +904,9 @@ function _composeForWrite(priorRaw: string | null, store: Store, touched: Array<
   for (const [vk, hostId] of touched) {
     if (!_isPlainObject(out.vaults[vk])) out.vaults[vk] = { hosts: {} };
     if (!_isPlainObject(out.vaults[vk].hosts)) out.vaults[vk].hosts = {};
-    const e = _entry(store, { vaultKey: vk, hostId } as SecurityScope);
+    const e = _entry(store, { vaultKey: vk, hostId });
     if (!e) { delete out.vaults[vk].hosts[hostId]; continue; }
-    const rawE = keepUnknown && _isPlainObject(out.vaults[vk].hosts[hostId]) ? out.vaults[vk].hosts[hostId] : {};
+    const rawE: Record<string, unknown> = keepUnknown && _isPlainObject(out.vaults[vk].hosts[hostId]) ? out.vaults[vk].hosts[hostId] : {};
     out.vaults[vk].hosts[hostId] = {
       ...rawE,
       values: { ...unknownOnly(rawE.values, isWeakeningKey, "values"), ..._changedOnly(rawE.values, e.values) },
@@ -894,7 +928,7 @@ function _update(scope: SecurityScope, file: string, fn: (entry: HostEntry) => v
   // an INCOMPATIBLE future format must use a new file name, never an
   // in-place version bump.
   const store = priorRaw === null ? _empty() : _parse(priorRaw, file, "update");
-  if (!store.vaults[scope.vaultKey]) store.vaults[scope.vaultKey] = { hosts: Object.create(null) };
+  if (!store.vaults[scope.vaultKey]) store.vaults[scope.vaultKey] = { hosts: Object.create(null) as Store["vaults"][string]["hosts"] };
   const hosts = store.vaults[scope.vaultKey].hosts;
   if (!hosts[scope.hostId]) hosts[scope.hostId] = { values: {}, setAt: "", dismissed: {}, paths: {} };
   fn(hosts[scope.hostId]);
@@ -974,7 +1008,7 @@ function _sameValue(a: unknown, b: unknown): boolean {
 
 function _freezeDeep<T>(o: T): T {
   if (o && typeof o === "object") {
-    for (const v of Object.values(o as any)) _freezeDeep(v);
+    for (const v of Object.values(o)) _freezeDeep(v);
     Object.freeze(o);
   }
   return o;
@@ -983,6 +1017,18 @@ function _freezeDeep<T>(o: T): T {
 function _stringList(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
 }
+
+/** The frozen snapshot effectiveSecuritySettings() returns. */
+type EffectiveSecurity = Readonly<SecurityValueTypes & {
+  autoDenyProtected: boolean;
+  protectedPathsCustom: string[];
+  protectedCommandsCustom: string[];
+  source: Partial<Record<WeakeningKey, Source>>;
+  unconfirmed: WeakeningKey[];
+  scopeAvailable: boolean;
+  paths: Partial<Record<ExecutableKey, string>>;
+  unconfirmedPaths: ExecutableKey[];
+}>;
 
 /**
  * The frozen snapshot every enforcement site reads: the nine weakening
@@ -993,10 +1039,10 @@ function _stringList(v: unknown): string[] {
  *   scopeAvailable — false when no store scope exists (reads failed closed)
  */
 function effectiveSecuritySettings(
-  settings: any, scope: SecurityScope | null, overrides?: SecurityValues & { paths?: unknown },
+  settings: unknown, scope: SecurityScope | null, overrides?: SecurityValues & { paths?: unknown },
   opts: { file?: string; detect?: (kind: string) => string | null } = {},
 ) {
-  const raw = settings && typeof settings === "object" ? settings : {};
+  const raw = (settings && typeof settings === "object" ? settings : {}) as Record<string, unknown>;
   const ov = sanitizeSecurityOverrides(overrides);
   let machine: SecurityValues = {};
   let dismissed: Record<string, string> = {};
@@ -1006,7 +1052,7 @@ function effectiveSecuritySettings(
     const entry = _entry(_load(opts.file || securitySettingsFilePath()), scope);
     if (entry) { machine = entry.values; dismissed = entry.dismissed; machinePaths = entry.paths || {}; }
   }
-  const out: Record<string, any> = {};
+  const out: Record<string, unknown> = {};
   const source: Record<string, Source> = {};
   const unconfirmed: WeakeningKey[] = [];
   for (const key of WEAKENING_KEYS) {
@@ -1017,7 +1063,7 @@ function effectiveSecuritySettings(
     } else {
       out[key] = DEFAULTS[key]; source[key] = "default";
     }
-    out[key] = Array.isArray(out[key]) ? [...out[key]] : out[key];
+    out[key] = Array.isArray(out[key]) ? [...(out[key] as unknown[])] : out[key];
     if (!scope || source[key] === "override") continue;
     // The data.json comparison: a suggestion, never an input.
     const fromFile = validateSecurityValue(key, raw[key]);
@@ -1037,9 +1083,9 @@ function effectiveSecuritySettings(
   // one-time confirm, never spawn inputs.
   out.paths = { ...machinePaths };
   out.unconfirmedPaths = scope
-    ? _unconfirmedPaths(raw, machinePaths, dismissed, sanitizeCliPathOverrides(overrides && (overrides as any).paths), opts.detect)
+    ? _unconfirmedPaths(raw, machinePaths, dismissed, sanitizeCliPathOverrides(overrides && overrides.paths), opts.detect)
     : [];
-  return _freezeDeep(out);
+  return _freezeDeep(out) as EffectiveSecurity;
 }
 
 function _unconfirmedPaths(
@@ -1062,9 +1108,9 @@ function _unconfirmedPaths(
 }
 
 /** Just the nine weakening values of a snapshot (for comparisons / logs). */
-function securityValuesOf(sec: any): SecurityValues {
+function securityValuesOf(sec: unknown): SecurityValues {
   const out: SecurityValues = {};
-  for (const k of WEAKENING_KEYS) out[k] = sec ? sec[k] : undefined;
+  for (const k of WEAKENING_KEYS) out[k] = sec ? (sec as Record<string, unknown>)[k] : undefined;
   return out;
 }
 
@@ -1082,10 +1128,11 @@ let _warnedNoSnapshot = false;
  * (autoDenyProtected, the custom pattern lists), frozen, and one warning
  * per process. Gryphon's own call sites always pass a snapshot.
  */
-function securityInputsOf(holder: any): Record<string, any> {
-  if (holder && holder.security && typeof holder.security === "object") return holder.security;
-  if (holder && holder.settings && typeof holder.settings === "object") return holder.settings;
-  const plugin = holder && holder.plugin;
+function securityInputsOf(holder: unknown): Record<string, unknown> {
+  const h = holder as { security?: unknown; settings?: unknown; plugin?: unknown } | null | undefined;
+  if (h && h.security && typeof h.security === "object") return h.security as Record<string, unknown>;
+  if (h && h.settings && typeof h.settings === "object") return h.settings as Record<string, unknown>;
+  const plugin = (h && h.plugin) as { settings?: unknown } | null | undefined;
   if (!plugin) return {};
   if (!_warnedNoSnapshot) {
     _warnedNoSnapshot = true;
@@ -1095,7 +1142,7 @@ function securityInputsOf(holder: any): Record<string, any> {
       "(effectiveSecuritySettings) or an explicit `settings` object.",
     );
   }
-  const ps = plugin.settings && typeof plugin.settings === "object" ? plugin.settings : {};
+  const ps = (plugin.settings && typeof plugin.settings === "object" ? plugin.settings : {}) as Record<string, unknown>;
   return _freezeDeep({
     ...DEFAULTS,
     protectedPathsDisabled: [],
@@ -1170,12 +1217,12 @@ function _inside(p: string, root: string): boolean {
 function _vaultRoots(vaultRoot: string | null | undefined): string[] {
   if (!vaultRoot) return [];
   const roots = [path.resolve(vaultRoot)];
-  try { roots.push(fs.realpathSync(vaultRoot)); } catch (_) { /* gone */ }
+  try { roots.push(fs.realpathSync(vaultRoot)); } catch { /* gone */ }
   return roots;
 }
 
 function _samePath(a: string, b: string): boolean {
-  const real = (p: string) => { try { return fs.realpathSync(p); } catch (_) { return path.resolve(p); } };
+  const real = (p: string) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
   return _norm(real(a)) === _norm(real(b));
 }
 
@@ -1196,15 +1243,15 @@ function validateCliPath(value: unknown, vaultRoot: string | null | undefined, p
   const inVault = (p: string) => roots.some((r) => _inside(p, r)) || isWithinByIdentity(p, roots);
   if (inVault(configured)) return { ok: false, reason: "inside-vault" };
   let real: string;
-  try { real = fs.realpathSync(configured); } catch (_) { return { ok: false, reason: "missing" }; }
+  try { real = fs.realpathSync(configured); } catch { return { ok: false, reason: "missing" }; }
   if (inVault(real)) return { ok: false, reason: "inside-vault" };
   let st: import("fs").Stats;
-  try { st = fs.statSync(real); } catch (_) { return { ok: false, reason: "missing" }; }
+  try { st = fs.statSync(real); } catch { return { ok: false, reason: "missing" }; }
   if (!st.isFile()) return { ok: false, reason: "not-a-file" };
   if (platform === "win32") {
     if (!WIN_EXEC_RE.test(real)) return { ok: false, reason: "not-executable" };
   } else {
-    try { fs.accessSync(real, fs.constants.X_OK); } catch (_) { return { ok: false, reason: "not-executable" }; }
+    try { fs.accessSync(real, fs.constants.X_OK); } catch { return { ok: false, reason: "not-executable" }; }
   }
   return { ok: true, configured, real };
 }
@@ -1250,20 +1297,20 @@ function sanitizeCliPathOverrides(paths: unknown): Partial<Record<ExecutableKey,
 /**
  * Detection is provider-runtime's find*Binary — the exact functions every
  * caller used before, so an embedder's fallback can't diverge from the chat
- * view's. Looked up through the module object on each call so a patched
- * finder (tests) applies. A caller may inject its own `detect`.
+ * view's. Those finders dispatch through utils.binaryFinders on every call,
+ * so a substituted finder (tests) applies. A caller may inject its own
+ * `detect`.
  */
-const FINDER_BY_KIND: Record<string, string> = {
-  "claude-code": "findClaudeBinary",
-  "codex-cli": "findCodexBinary",
-  "gemini-cli": "findGeminiBinary",
-  "antigravity-cli": "findAntigravityBinary",
+const FINDER_BY_KIND: Record<string, () => string | null> = {
+  "claude-code": runtimeUtils.findClaudeBinary,
+  "codex-cli": runtimeUtils.findCodexBinary,
+  "gemini-cli": runtimeUtils.findGeminiBinary,
+  "antigravity-cli": runtimeUtils.findAntigravityBinary,
 };
-function _runtimeUtils() { return require("../../provider-runtime/dist/utils"); }
 function _detect(kind: string, detect?: (kind: string) => string | null): string | null {
   try {
     if (typeof detect === "function") return detect(kind) || null;
-    const fn = _runtimeUtils()[FINDER_BY_KIND[kind]];
+    const fn = FINDER_BY_KIND[kind];
     return typeof fn === "function" ? fn() || null : null;
   } catch (e) {
     console.warn(`[gryphon/security-settings] detecting ${kind} failed: ${(e as Error).message}`);
@@ -1274,7 +1321,7 @@ function _detect(kind: string, detect?: (kind: string) => string | null): string
 /** The version floor check — runs ONLY on an already-validated realpath. */
 function _versionOf(kind: string, real: string): { version: number[] | null; tooOld: boolean } {
   try {
-    const u = _runtimeUtils();
+    const u = runtimeUtils;
     const label = ({ "claude-code": "claude", "codex-cli": "codex", "gemini-cli": "gemini", "antigravity-cli": "agy" } as Record<string, string>)[kind];
     const v = u.probeVersion(real, undefined, u._versionSignatureFor(label));
     // The runtime's floors are permissive today ("0.0.0"); a too-old
@@ -1283,7 +1330,7 @@ function _versionOf(kind: string, real: string): { version: number[] | null; too
     const r = u.resolveCliBinary(kind, real);
     const tooOld = !!(r && !r.ok && r.error === "too-old");
     return { version: v, tooOld };
-  } catch (_) {
+  } catch {
     return { version: null, tooOld: false };
   }
 }
@@ -1315,14 +1362,14 @@ type ResolvedCliPath = {
  */
 function resolveCliPath(
   kind: string,
-  ctx: { app?: any; hostPlugin?: any; hostId?: string; overrides?: { paths?: unknown } | null; detect?: (kind: string) => string | null } = {},
+  ctx: { app?: unknown; hostPlugin?: unknown; hostId?: string; overrides?: { paths?: unknown } | null; detect?: (kind: string) => string | null } = {},
 ): ResolvedCliPath {
   const key = CLI_PATH_KEY_BY_KIND[kind];
   if (!key) return { path: null, source: null, version: null, unavailable: "not-found" };
   const described = describeSecurityScope({ app: ctx.app, hostPlugin: ctx.hostPlugin, hostId: ctx.hostId });
   const scope = described.scope;
   _serve(scope);
-  const vaultRoot = scope ? scope.vaultKey : _basePathOf(ctx.app || (ctx.hostPlugin && ctx.hostPlugin.app));
+  const vaultRoot = scope ? scope.vaultKey : _basePathOf(ctx.app || (ctx.hostPlugin && (ctx.hostPlugin as HostPluginLike).app));
   let rejected: ResolvedCliPath["rejected"];
   let tooOldSeen = false;
 
@@ -1346,7 +1393,7 @@ function resolveCliPath(
 
   const ov = sanitizeCliPathOverrides(ctx.overrides && ctx.overrides.paths);
   if (ov[key]) {
-    const r = tryCandidate(ov[key] as string, "override");
+    const r = tryCandidate(ov[key], "override");
     if (r) return r;
   }
   if (scope) {
@@ -1354,7 +1401,7 @@ function resolveCliPath(
     try {
       const entry = _entry(_load(securitySettingsFilePath()), scope);
       stored = entry && entry.paths ? entry.paths[key] : undefined;
-    } catch (_) { stored = undefined; }
+    } catch { stored = undefined; }
     if (stored) {
       const r = tryCandidate(stored, "machine");
       if (r) return r;
@@ -1373,12 +1420,13 @@ function resolveCliPath(
   return out;
 }
 
-function _basePathOf(app: any): string | null {
+function _basePathOf(app: unknown): string | null {
   try {
-    const a = app && app.vault && app.vault.adapter;
+    const ap = app as AppLike | null | undefined;
+    const a = ap && ap.vault && ap.vault.adapter;
     const bp = a && typeof a.getBasePath === "function" ? a.getBasePath() : a && a.basePath;
     return typeof bp === "string" && bp ? bp : null;
-  } catch (_) { return null; }
+  } catch { return null; }
 }
 
 // ── turn-window tamper check (issue #30, G2) ──────────────────────────
@@ -1404,7 +1452,7 @@ const _quiet = () => { /* the tamper check reports through its own result */ };
 const PERM_STRENGTH: Record<string, number> = { plan: 3, default: 2, acceptEdits: 1, bypassPermissions: 0 };
 
 /** a is looser (removes protection) than b. Both are validated values. */
-function _looser(key: WeakeningKey, a: any, b: any): boolean {
+function _looser(key: WeakeningKey, a: unknown, b: unknown): boolean {
   switch (key) {
     case "protectedMode":
     case "protectedPathsEnabled":
@@ -1416,7 +1464,7 @@ function _looser(key: WeakeningKey, a: any, b: any): boolean {
     case "obsidianRestApiPolicy":
       return a === "allowed" && b !== "allowed";
     case "permissionMode":
-      return (PERM_STRENGTH[a] ?? 0) < (PERM_STRENGTH[b] ?? 0);
+      return (PERM_STRENGTH[a as string] ?? 0) < (PERM_STRENGTH[b as string] ?? 0);
     case "protectedPathsDisabled":
     case "protectedCommandsDisabled":
       return (a as string[]).some((p) => !(b as string[]).includes(p));
@@ -1424,7 +1472,7 @@ function _looser(key: WeakeningKey, a: any, b: any): boolean {
 }
 
 type Reverted = { vaultKey: string; hostId: string; key: string };
-type Weakened = { vaultKey: string; hostId: string; field: "values" | "paths" | "dismissed"; key: string; baseHas: boolean; baseVal: any; candVal: any };
+type Weakened = { vaultKey: string; hostId: string; field: "values" | "paths" | "dismissed"; key: string; baseHas: boolean; baseVal: unknown; candVal: unknown };
 
 function _emptyEntry(): HostEntry { return { values: {}, setAt: "", dismissed: {}, paths: {} }; }
 
@@ -1441,8 +1489,8 @@ function _weakenings(cand: Store, base: Store): Weakened[] {
         if (_looser(key, av, bv)) out.push({ vaultKey: vk, hostId, field: "values", key, baseHas: bHas, baseVal: b.values[key], candVal: entry.values[key] });
       }
       for (const field of ["paths", "dismissed"] as const) {
-        const cur: Record<string, string> = (entry as any)[field] || {};
-        const was: Record<string, string> = (b as any)[field] || {};
+        const cur = (entry[field] || {}) as Record<string, string>;
+        const was = (b[field] || {}) as Record<string, string>;
         for (const key of Object.keys(cur)) {
           if (was[key] === cur[key]) continue;
           out.push({ vaultKey: vk, hostId, field, key, baseHas: !!was[key], baseVal: was[key], candVal: cur[key] });
@@ -1544,9 +1592,9 @@ function _tooLarge(v: unknown): Record<string, string> {
     if (x && typeof x === "object") {
       const isArr = Array.isArray(x);
       h.update(isArr ? "[" : "{");
-      const keys = Object.keys(x as object);
+      const keys = Object.keys(x);
       h.update(String(keys.length));
-      for (let i = keys.length - 1; i >= 0; i--) { stack.push((x as any)[keys[i]]); if (!isArr) stack.push(`\u0001${keys[i]}`); }
+      for (let i = keys.length - 1; i >= 0; i--) { stack.push((x as Record<string, unknown>)[keys[i]]); if (!isArr) stack.push(`\u0001${keys[i]}`); }
     } else {
       h.update(`${typeof x}:${String(x)}\u0000`);
     }
@@ -1574,23 +1622,23 @@ function _shallowEnough(v: unknown): boolean {
  * store's own data is ~7 levels deep; anything far deeper is a plant.
  */
 const PRUNE_DEPTH = 32;
-function _pruneDeep(obj: Record<string, any> | null): Record<string, any> | null {
+function _pruneDeep(obj: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!obj) return obj;
-  const stack: Array<[Record<string, any>, number]> = [[obj, 0]];
+  const stack: Array<[Record<string, unknown>, number]> = [[obj, 0]];
   while (stack.length) {
-    const [node, d] = stack.pop() as [Record<string, any>, number];
+    const [node, d] = stack.pop() as [Record<string, unknown>, number];
     for (const k of Object.keys(node)) {
       const v = node[k];
       if (!v || typeof v !== "object") continue;
       if (d + 1 >= PRUNE_DEPTH) delete node[k];
-      else stack.push([v, d + 1]);
+      else stack.push([v as Record<string, unknown>, d + 1]);
     }
   }
   return obj;
 }
 
-function _unknownFlat(obj: Record<string, any> | null): Map<string, any> {
-  const flat = new Map<string, any>();
+function _unknownFlat(obj: Record<string, unknown> | null): Map<string, unknown> {
+  const flat = new Map<string, unknown>();
   // Commit review of 9cbc11e: an oversized value must still COUNT (else a
   // plant hides from the drift check) — it's recorded as a marker, never
   // compared deeply and never written back (the restore drops it).
@@ -1598,9 +1646,9 @@ function _unknownFlat(obj: Record<string, any> | null): Map<string, any> {
   if (!obj) return flat;
   for (const [k, v] of Object.entries(obj)) if (!KNOWN_TOP.has(k)) m.set(JSON.stringify(["t", k]), v);
   if (!_isPlainObject(obj.vaults)) return flat;
-  for (const [vk, vault] of Object.entries(obj.vaults as Record<string, any>)) {
+  for (const [vk, vault] of Object.entries(obj.vaults)) {
     if (!_isPlainObject(vault) || !_isPlainObject(vault.hosts)) continue;
-    for (const [hid, e] of Object.entries(vault.hosts as Record<string, any>)) {
+    for (const [hid, e] of Object.entries(vault.hosts)) {
       if (!_isPlainObject(e)) continue;
       for (const [k, v] of Object.entries(e)) if (!KNOWN_ENTRY.has(k)) m.set(JSON.stringify(["e", vk, hid, k]), v);
       for (const bag of Object.keys(BAG_KNOWN)) {
@@ -1615,12 +1663,12 @@ function _unknownFlat(obj: Record<string, any> | null): Map<string, any> {
   return flat;
 }
 
-function _flatCanon(m: Map<string, any>): string {
+function _flatCanon(m: Map<string, unknown>): string {
   return mcpApprovals.canonicalJSON([...m.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 }
 
 /** Own-property assignment: a key such as "__proto__" stays a plain key. */
-function _setOwn(o: Record<string, any>, k: string, v: unknown): void {
+function _setOwn(o: Record<string, unknown>, k: string, v: unknown): void {
   Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
@@ -1631,7 +1679,7 @@ function _setOwn(o: Record<string, any>, k: string, v: unknown): void {
  * unclean list in Settings mid-reply — is credited to Gryphon, never put
  * back (#33 R43-8 review 3). Everything else is foreign.
  */
-function _expectedUnknown(startRaw: string | null, own: Array<{ priorRaw: string | null; raw: string }>): Map<string, any> {
+function _expectedUnknown(startRaw: string | null, own: Array<{ priorRaw: string | null; raw: string }>): Map<string, unknown> {
   const exp = _unknownFlat(_rawObject(startRaw));
   for (const w of own) {
     const before = _unknownFlat(_rawObject(w.priorRaw));
@@ -1653,12 +1701,12 @@ function _expectedUnknown(startRaw: string | null, own: Array<{ priorRaw: string
 /** Attach the content an undo computed to the error its failed save threw. */
 function _attachSafe(e: unknown, obj: unknown): void {
   try {
-    if (e && typeof e === "object") (e as any).gryphonSafeContent = JSON.stringify(obj, null, 2) + "\n";
-  } catch (_) { /* unserialisable: callers fall back to Gryphon's own record */ }
+    if (e && typeof e === "object") (e as { gryphonSafeContent?: string }).gryphonSafeContent = JSON.stringify(obj, null, 2) + "\n";
+  } catch { /* unserialisable: callers fall back to Gryphon's own record */ }
 }
 
 
-function _applyUnknownRestore(nowSafe: string, expected: Map<string, any>, file: string, priorRaw: string): boolean {
+function _applyUnknownRestore(nowSafe: string, expected: Map<string, unknown>, file: string, priorRaw: string): boolean {
   const current = _rawObject(nowSafe);
   const restored = _restoreUnknown(current, expected);
   // Unchanged only if the file itself needs nothing (pruning counts as a change).
@@ -1677,13 +1725,13 @@ function _applyUnknownRestore(nowSafe: string, expected: Map<string, any>, file:
  * expected parts live in are recreated when they were deleted (R44 DP-2) —
  * a deleted entry that held only such fields comes back.
  */
-function _restoreUnknown(out: unknown, expected: Map<string, any>): unknown {
-  const res: Record<string, any> = _isPlainObject(out) ? JSON.parse(JSON.stringify(out)) : { version: STORE_VERSION, vaults: {} };
+function _restoreUnknown(out: unknown, expected: Map<string, unknown>): unknown {
+  const res: Record<string, unknown> = _isPlainObject(out) ? JSON.parse(JSON.stringify(out)) as Record<string, unknown> : { version: STORE_VERSION, vaults: {} };
   for (const k of Object.keys(res)) if (!KNOWN_TOP.has(k)) delete res[k];
   if (!_isPlainObject(res.vaults)) res.vaults = {};
-  for (const vault of Object.values(res.vaults as Record<string, any>)) {
+  for (const vault of Object.values(res.vaults as Record<string, unknown>)) {
     if (!_isPlainObject(vault) || !_isPlainObject(vault.hosts)) continue;
-    for (const e of Object.values(vault.hosts as Record<string, any>)) {
+    for (const e of Object.values(vault.hosts)) {
       if (!_isPlainObject(e)) continue;
       for (const k of Object.keys(e)) if (!KNOWN_ENTRY.has(k)) delete e[k];
       for (const bag of Object.keys(BAG_KNOWN)) {
@@ -1697,12 +1745,12 @@ function _restoreUnknown(out: unknown, expected: Map<string, any>): unknown {
   // Commit review of a1a8009: keys come from the file, so every container
   // lookup is OWN-property only — res.vaults["__proto__"] must never reach
   // Object.prototype (writing .hosts there would pollute every object).
-  const ownObj = (o: Record<string, any>, k: string): Record<string, any> => {
+  const ownObj = (o: Record<string, unknown>, k: string): Record<string, unknown> => {
     if (!Object.prototype.hasOwnProperty.call(o, k) || !_isPlainObject(o[k])) _setOwn(o, k, {});
-    return o[k];
+    return o[k] as Record<string, unknown>;
   };
-  const entryOf = (vk: string, hid: string): Record<string, any> => {
-    const vault = ownObj(res.vaults, vk);
+  const entryOf = (vk: string, hid: string): Record<string, unknown> => {
+    const vault = ownObj(res.vaults as Record<string, unknown>, vk);
     const hosts = ownObj(vault, "hosts");
     return ownObj(hosts, hid);
   };
@@ -1738,7 +1786,7 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
   const now = judged !== undefined ? judged : _readRaw(file);
   if (now === before.raw) return { changed: false, reverted: [] };
   const parse = (raw: string | null) => (raw === null ? _empty() : _parse(raw, file, "tamper", _quiet));
-  const parseable = (raw: string | null) => { if (raw === null) return true; try { JSON.parse(raw); return true; } catch (_) { return false; } };
+  const parseable = (raw: string | null) => { if (raw === null) return true; try { JSON.parse(raw); return true; } catch { return false; } };
 
   // Foreign changes: each (found, knownBefore) pair where they differ,
   // tagged with the index of the first Gryphon write that came after it.
@@ -1759,7 +1807,7 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
   const nowSafe = nowObj ? JSON.stringify(nowObj) : now;
   if (now !== known) for (const w of _weakenings(parse(now), parse(known))) foreign.push({ ...w, stage: mine.length });
   // The unknown-field pass must never block known reverts (re-review).
-  let expectedUnknown = new Map<string, any>();
+  let expectedUnknown = new Map<string, unknown>();
   let unknownDrift = false;
   try {
     expectedUnknown = _expectedUnknown(before.raw, mine);
@@ -1771,18 +1819,18 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
   if (!foreign.length) {
     if (!unknownDrift) return { changed: true, reverted: [] };
     if (!_applyUnknownRestore(nowSafe, expectedUnknown, file, now)) return { changed: true, reverted: [] };
-    return { changed: true, reverted: [{ vaultKey: "", hostId: "", key: "unrecognised settings" } as any] };
+    return { changed: true, reverted: [{ vaultKey: "", hostId: "", key: "unrecognised settings" }] };
   }
 
   // What each of Gryphon's own writes changed, judged against the content
   // it was based on — never against the result, which may carry a foreign
   // change forward (a Settings list write re-saves the whole list).
   const ownChange = mine.map((e) => ({ prior: parse(e.priorRaw), next: parse(e.raw) }));
-  const field = (st: Store, w: Weakened): any => {
+  const field = (st: Store, w: Weakened): unknown => {
     const en = _entry(st, { vaultKey: w.vaultKey, hostId: w.hostId });
-    return en ? ((en as any)[w.field] || {})[w.key] : undefined;
+    return en ? ((en[w.field] || {}) as Record<string, unknown>)[w.key] : undefined;
   };
-  const same = (a: any, b: any) => mcpApprovals.canonicalJSON(a) === mcpApprovals.canonicalJSON(b);
+  const same = (a: unknown, b: unknown) => mcpApprovals.canonicalJSON(a) === mcpApprovals.canonicalJSON(b);
 
   // Resolve each (vault, host, field, key) ONCE, back to a trusted value:
   // the latest value Gryphon itself set (its own change, judged against the
@@ -1802,13 +1850,14 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
     let entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
     if (!entry) {
       // QA P3-1: the entry was deleted — recreate it to put the value back.
-      if (!Object.prototype.hasOwnProperty.call(after.vaults, w0.vaultKey)) after.vaults[w0.vaultKey] = { hosts: Object.create(null) };
+      if (!Object.prototype.hasOwnProperty.call(after.vaults, w0.vaultKey)) after.vaults[w0.vaultKey] = { hosts: Object.create(null) as Store["vaults"][string]["hosts"] };
       after.vaults[w0.vaultKey].hosts[w0.hostId] = _emptyEntry();
-      entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId }) as HostEntry;
+      entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
     }
-    const bag: Record<string, any> = (entry as any)[w0.field] || ((entry as any)[w0.field] = {});
+    const hostEntry = entry as HostEntry;  // recreated just above when missing
+    const bag = (hostEntry[w0.field] || (hostEntry[w0.field] = {})) as Record<string, unknown>;
     const startEntry = _entry(start0, { vaultKey: w0.vaultKey, hostId: w0.hostId });
-    const startBag: Record<string, any> = startEntry ? (startEntry as any)[w0.field] || {} : {};
+    const startBag: Record<string, unknown> = startEntry ? (startEntry[w0.field] || {}) : {};
     const isList = w0.field === "values" && Array.isArray(DEFAULTS[w0.key as WeakeningKey]);
     let changed = false;
     if (isList) {
@@ -1817,7 +1866,7 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
       const foreignHeld = new Set<string>();
       const foreignAdded = new Set<string>();
       for (const w of ws) {
-        const base: string[] = Array.isArray(w.baseVal) ? w.baseVal : [];
+        const base: string[] = Array.isArray(w.baseVal) ? w.baseVal as string[] : [];
         for (const x of (Array.isArray(w.candVal) ? w.candVal : []) as string[]) {
           foreignHeld.add(x);
           if (!base.includes(x)) foreignAdded.add(x);
@@ -1825,10 +1874,10 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
       }
       const credited = new Set<string>();
       for (const c of ownChange) {
-        const p0: string[] = field(c.prior, w0) || [];
+        const p0 = (field(c.prior, w0) || []) as string[];
         for (const x of (field(c.next, w0) || []) as string[]) if (!p0.includes(x) && !foreignHeld.has(x)) credited.add(x);
       }
-      const cur: string[] = Array.isArray(bag[w0.key]) ? bag[w0.key] : [];
+      const cur: string[] = Array.isArray(bag[w0.key]) ? bag[w0.key] as string[] : [];
       const kept = cur.filter((x) => !foreignAdded.has(x) || credited.has(x));
       if (kept.length !== cur.length) {
         changed = true;
@@ -1869,12 +1918,12 @@ function checkSecurityStoreTamper(before: StoreSnapshot, judged?: string | null)
       reverted.map((r) => `${r.hostId}:${r.key}`).join(", "),
     );
   } else if (unknownDrift) {
-    if (_applyUnknownRestore(nowSafe, expectedUnknown, file, now)) reverted.push({ vaultKey: "", hostId: "", key: "unrecognised settings" } as any);
+    if (_applyUnknownRestore(nowSafe, expectedUnknown, file, now)) reverted.push({ vaultKey: "", hostId: "", key: "unrecognised settings" });
   }
   return { changed: true, reverted };
 }
 
-module.exports = {
+export {
   WEAKENING_KEYS,
   EXECUTABLE_KEYS,
   CLI_PATH_KEY_BY_KIND,
@@ -1887,7 +1936,7 @@ module.exports = {
   snapshotSecurityStore,
   checkSecurityStoreTamper,
   onSecurityStoreTamper,
-  SECURITY_DEFAULTS: DEFAULTS,
+  DEFAULTS as SECURITY_DEFAULTS,
   isWeakeningKey,
   isWeakening,
   validateSecurityValue,
@@ -1906,3 +1955,4 @@ module.exports = {
   securityValuesOf,
   securityInputsOf,
 };
+export type { SecurityScope, EffectiveSecurity, SecurityValueTypes, SecurityValues, StoreSnapshot, WeakeningKey, ExecutableKey };

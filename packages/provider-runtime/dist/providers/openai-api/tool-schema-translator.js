@@ -18,10 +18,11 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.translateSchemaToOpenAI = translateSchemaToOpenAI;
 exports.translateSchemasToOpenAI = translateSchemasToOpenAI;
-function translateSchemaToOpenAI(schema) {
-    if (!schema || typeof schema !== "object") {
+function translateSchemaToOpenAI(input) {
+    if (!input || typeof input !== "object") {
         throw new Error("translateSchemaToOpenAI: SCHEMA must be an object");
     }
+    const schema = input;
     if (!schema.name) {
         throw new Error("translateSchemaToOpenAI: SCHEMA.name is required");
     }

@@ -19,5 +19,10 @@
  *
  * Returns { ok, message } with a user-facing message either way.
  */
-declare function testCli(codexPath: any): Promise<unknown>;
+/** Result of a liveness probe: never throws, always settles. */
+interface CliTestResult {
+    ok: boolean;
+    message: string;
+}
+declare function testCli(codexPath: unknown): Promise<CliTestResult>;
 export { testCli };

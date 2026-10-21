@@ -1,6 +1,10 @@
 "use strict";
 // TypeScript module marker.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_CD_DIRS = exports.TOOL_ALIASES = void 0;
+exports.patchTargets = patchTargets;
+exports.patchTargetsInfo = patchTargetsInfo;
+exports.shellCdDirs = shellCdDirs;
 /**
  * Cross-CLI tool-name aliases. Different CLIs name the same tool
  * differently — Claude Code's "Bash" is Gemini's "run_shell_command",
@@ -84,6 +88,7 @@ const TOOL_ALIASES = Object.freeze({
     "search_file_content": "Grep", // Gemini SDK
     "grep_search": "Grep", // Antigravity — {Query, SearchPath}, captured live
 });
+exports.TOOL_ALIASES = TOOL_ALIASES;
 /**
  * R43-3: Codex's `apply_patch` names its files inside the patch text, not
  * in a path argument:
@@ -176,6 +181,7 @@ function patchTargets(input) {
  * patch's relative paths, so a miss here can't loosen anything.
  */
 const MAX_CD_DIRS = 256;
+exports.MAX_CD_DIRS = MAX_CD_DIRS;
 function shellCdDirs(command) {
     if (typeof command !== "string" || !/\b(?:cd|pushd|Set-Location|sl)\b/.test(command))
         return [];
@@ -194,4 +200,3 @@ function shellCdDirs(command) {
     }
     return out;
 }
-module.exports = { TOOL_ALIASES, patchTargets, patchTargetsInfo, shellCdDirs, MAX_CD_DIRS };

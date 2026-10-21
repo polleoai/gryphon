@@ -20,19 +20,38 @@
  * mutated IN PLACE so the caller's send() can roll back to a pre-turn
  * checkpoint on thrown error. Do not clone the array internally.
  */
+import type OpenAI from "openai";
+type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+type OpenAIChatStream = ReturnType<OpenAI["chat"]["completions"]["stream"]>;
+type OpenAIStreamParams = Parameters<OpenAI["chat"]["completions"]["stream"]>[0];
+type OpenAIUsage = Partial<OpenAI.Completions.CompletionUsage>;
+type OpenAIToolLoopContext = {
+    responseFormat?: OpenAIStreamParams["response_format"] | null;
+    maxUsdBudget?: number | null;
+    computeIterationCost?: ((usage: OpenAIUsage) => number) | null;
+    priorCumulativeCost?: number;
+    _loopCost?: number;
+    [key: string]: unknown;
+};
+interface OpenAIToolLoopCallbacks {
+    onMessage?: (text: string, type: string) => void;
+    onTool?: (name: string) => void;
+    onError?: (text: string) => void;
+    onStream?: (stream: OpenAIChatStream) => void;
+}
 declare const MAX_ITERATIONS = 25;
 declare function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }: {
-    client: any;
-    model: any;
-    systemPrompt: any;
-    history: any;
-    ctx: any;
-    callbacks: any;
+    client: OpenAI;
+    model: string;
+    systemPrompt: string | null | undefined;
+    history: ChatMessageParam[];
+    ctx: OpenAIToolLoopContext;
+    callbacks: OpenAIToolLoopCallbacks;
 }): Promise<{
     turnText: string;
     finalMessage: {
         role: string;
-        content: any;
+        content: string;
     } | null;
     totalUsage: {
         prompt_tokens: number;
@@ -52,5 +71,8 @@ declare function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, 
  * surfaced inline as a prefix so the model can still recognize errors —
  * OpenAI's `role: "tool"` shape doesn't have a structured error field.
  */
-declare function serializeToolResultContent(result: any): string;
+declare function serializeToolResultContent(result: {
+    content?: unknown;
+    isError?: boolean;
+} | null | undefined): string;
 export { runOpenAIToolLoop, MAX_ITERATIONS, serializeToolResultContent, };

@@ -1,4 +1,4 @@
-# @gryphon/provider-runtime
+# @polleoai/gryphon-provider-runtime
 
 LLM provider runtime for Gryphon. Spawn / stream / abort / retry across six providers.
 
@@ -19,17 +19,17 @@ const {
   explainUnavailable,
   detectAvailable,
   getActiveProviderKind,
-} = require("@gryphon/provider-runtime");
+} = require("@polleoai/gryphon-provider-runtime");
 
 const provider = createProvider(plugin, cwd, options);
 provider.onMessage = (text, type) => { ... };
 const result = await provider.send("Hello");
 ```
 
-A `protectionContext` (from `@gryphon/protect`) can be injected via options for protected spawn semantics. Pass `null` for unprotected mode.
+A `protectionContext` (from `@polleoai/gryphon-protect`) can be injected via options for protected spawn semantics. Pass `null` for unprotected mode.
 
 - `createPassiveSession` — passive LLM-backend mode (structured `tool_use` blocks; the caller executes tools). See [`src/passive/README.md`](src/passive/README.md).
 
 ## Boundary
 
-This package depends on `@gryphon/protect` (when present) and `@gryphon/provider-config` (for pricing tables and per-provider known-flag tables). It does not know about Obsidian — it can run in any Node host.
+This package depends on `@polleoai/gryphon-protect` (when present) and `@polleoai/gryphon-provider-config` (for pricing tables and per-provider known-flag tables). It does not know about Obsidian — it can run in any Node host.

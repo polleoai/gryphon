@@ -16,11 +16,68 @@
  * that file when Anthropic's pricing changes, and run
  * `scripts/probe-model.sh anthropic <id>` for any newly-added model id.
  */
-declare const resolveModel: any;
+import type AnthropicClient from "@anthropic-ai/sdk";
+import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
+declare const resolveModel: typeof import("@polleoai/gryphon-provider-config/dist/pricing/anthropic").resolveModel;
+type AnthropicMessageStream = MessageStream;
+interface AnthropicProviderOptions {
+    hostAdapter?: unknown;
+    client?: AnthropicClient;
+    initialHistory?: AnthropicClient.MessageParam[];
+    model?: string | null;
+    permissionMode?: string;
+    plugin?: unknown;
+    security?: unknown;
+    [key: string]: unknown;
+}
+interface AnthropicSendOptions {
+    maxUsdBudget?: number | null;
+    structuredOutput?: {
+        name: string;
+        schema: Record<string, unknown>;
+    } | null;
+    [key: string]: unknown;
+}
+interface AnthropicTurnResult {
+    text: string;
+    cost: number;
+    cumulativeCost: number;
+    sessionId: string;
+    duration: number;
+    contextTokens: number;
+    thinking?: string[];
+    json?: unknown;
+}
 declare class AnthropicAPIProvider {
-    [key: string]: any;
-    constructor(apiKey: any, cwd: any, options?: Record<string, any>);
+    apiKey: string;
+    cwd: string;
+    options: AnthropicProviderOptions;
+    hostAdapter: unknown;
+    client: AnthropicClient | null;
+    history: AnthropicClient.MessageParam[];
+    sessionId: string;
+    resolvedModel: string;
+    contextTokens: number;
+    cumulativeCost: number;
+    startTime: number;
+    activeStream: AnthropicMessageStream | null;
+    pending: boolean;
+    destroyed: boolean;
+    onMessage: ((text: string, type: string) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: AnthropicTurnResult) => void) | null;
+    _countTokensCache: {
+        key: string;
+        value: number | null;
+    } | null | undefined;
+    _needsHistoryReset: boolean | undefined;
+    constructor(apiKey: string, cwd: string, options?: AnthropicProviderOptions);
     isAlive(): boolean;
+    /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    _ensureClient(): Promise<AnthropicClient>;
     /**
      * Build the request body for `messages.countTokens` — authoritative
      * pre-send count of input tokens for the NEXT turn if it were sent
@@ -40,7 +97,7 @@ declare class AnthropicAPIProvider {
      * @param {string} prospectiveInput  — text the user has typed but not sent
      * @returns {object} — `{ model, system, tools, messages }`
      */
-    _buildCountTokensRequest(prospectiveInput: any): Record<string, any>;
+    _buildCountTokensRequest(prospectiveInput: unknown): AnthropicClient.Messages.MessageCountTokensParams;
     /**
      * Authoritative pre-send token count for SDK mode (F1).
      *
@@ -56,18 +113,18 @@ declare class AnthropicAPIProvider {
      * @param {string} prospectiveInput
      * @returns {Promise<number|null>}  input_tokens, or null on failure
      */
-    countTokensForNext(prospectiveInput: any): Promise<any>;
+    countTokensForNext(prospectiveInput: string | null | undefined): Promise<number | null>;
     get costIsEstimate(): boolean;
     abort(): void;
-    send(prompt: any, options?: Record<string, any>): Promise<Record<string, any>>;
-    _extractText(content: any): string;
-    _formatError(err: any): string;
+    send(prompt: string, options?: AnthropicSendOptions): Promise<AnthropicTurnResult>;
+    _extractText(content: unknown): string;
+    _formatError(err: unknown): string;
 }
 /**
  * Validate an API key by making a trivial /messages call. Used by the
  * "Test key" button in settings. Returns { ok, message }.
  */
-declare function testApiKey(apiKey: any): Promise<{
+declare function testApiKey(apiKey: string | null | undefined): Promise<{
     ok: boolean;
     message: string;
 }>;

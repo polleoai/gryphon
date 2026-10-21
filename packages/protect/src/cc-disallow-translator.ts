@@ -39,14 +39,14 @@
  *     for that entry — documented as a known gap.
  */
 
-const {
+import {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_PROTECTED_COMMANDS,
   PACKAGE_INSTALL_COMMAND_PATTERNS,
-} = require("./constants");
-const { resolveActivePatterns } = require("./path-utils");
-const { approvalsDir } = require("./mcp-approvals");
-const os = require("os") as typeof import("os");
+} from "./constants";
+import { resolveActivePatterns } from "./path-utils";
+import { approvalsDir } from "./mcp-approvals";
+import * as os from "os";
 
 // Default Obsidian config-folder name. Held as a const (not an inline literal)
 // so the deny-glob below reads as the intentional pattern it is — this is a
@@ -396,7 +396,7 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
  * object) into CC glob rules for the Write and Edit tools.
  */
 function _globsForPath(entry: unknown): string[] {
-  const pattern = typeof entry === "string" ? entry : (entry && typeof entry === "object" && "pattern" in entry ? (entry as { pattern: unknown }).pattern : null);
+  const pattern = typeof entry === "string" ? entry : (entry && typeof entry === "object" && "pattern" in entry ? entry.pattern : null);
   if (typeof pattern !== "string" || !pattern) return [];
   const norm = pattern.replace(/\\/g, "/");
   if (norm.endsWith("/")) {
@@ -428,13 +428,13 @@ function _extractKeyword(regex: unknown): string {
   const stripped = regex
     .replace(/\\[bBsSwWdD]/g, " ")   // word/whitespace metachars
     .replace(/\\\s/g, " ")
-    .replace(/[(){}\[\]^$+*?|.\\]/g, " ");
-  const match = stripped.match(/[A-Za-z0-9\-\/][A-Za-z0-9\-\/\.]{1,}/);
+    .replace(/[(){}[\]^$+*?|.\\]/g, " ");
+  const match = stripped.match(/[A-Za-z0-9\-/][A-Za-z0-9\-/.]{1,}/);
   return match ? match[0] : "";
 }
 
 function _globsForCommand(entry: unknown): string[] {
-  const pattern = typeof entry === "string" ? entry : (entry && typeof entry === "object" && "pattern" in entry ? (entry as { pattern: unknown }).pattern : null);
+  const pattern = typeof entry === "string" ? entry : (entry && typeof entry === "object" && "pattern" in entry ? entry.pattern : null);
   if (typeof pattern !== "string" || !pattern) return [];
   const mapped = CC_GLOBS_FOR_COMMAND_PATTERN.get(pattern);
   if (mapped && mapped.length) return [...mapped];
@@ -497,7 +497,7 @@ function buildDisallowedTools(security: Record<string, unknown> | null | undefin
     security.protectedCommandsDisabled,
     security.protectedCommandsCustom,
   );
-  const out = [];
+  const out: string[] = [];
   for (const p of activePaths) out.push(..._globsForPath(p));
   const muteInstall = security.blockPackageInstall === false;
   const installSet = new Set(PACKAGE_INSTALL_COMMAND_PATTERNS);
@@ -511,7 +511,7 @@ function buildDisallowedTools(security: Record<string, unknown> | null | undefin
   return [...new Set(out)];
 }
 
-module.exports = {
+export {
   buildDisallowedTools,
   buildApprovalsStoreDenyGlobs,
   // Exported for unit tests only:

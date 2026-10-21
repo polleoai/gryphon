@@ -21,5 +21,10 @@
  *
  * Returns { ok, message } with a user-facing message either way.
  */
-declare function testCli(geminiPath: any): Promise<unknown>;
+/** Result of a liveness probe: never throws, always settles. */
+interface CliTestResult {
+    ok: boolean;
+    message: string;
+}
+declare function testCli(geminiPath: unknown): Promise<CliTestResult>;
 export { testCli };

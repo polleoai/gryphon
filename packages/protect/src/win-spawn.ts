@@ -49,8 +49,6 @@
  * The caller still merges its own spawn options (cwd, env, stdio).
  */
 
-const path = require("path") as typeof import("path");
-
 /**
  * Detect a Windows .cmd / .bat shim. Callers gate the wrap on this so
  * the non-Windows / non-shim path stays untouched.
@@ -215,7 +213,7 @@ function wrapForCmdShim(commandPath: string, args: string[]): { command: string;
   };
 }
 
-module.exports = {
+export {
   isWindowsShim,
   wrapForCmdShim,
   // Exported for unit tests.

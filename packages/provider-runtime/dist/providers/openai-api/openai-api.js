@@ -28,15 +28,53 @@
  * to USD. Cached tokens are billed at full input rate per the v1.2 design
  * decision (track-but-don't-discount until OpenAI's pricing stabilizes).
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_MODEL = exports.resolveModel = exports.OpenAIProvider = void 0;
 exports.testApiKey = testApiKey;
-const OpenAI = require("openai");
-const { runOpenAIToolLoop } = require("./tool-loop");
-const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.openai;
+const tool_loop_1 = require("./tool-loop");
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+const host_adapter_1 = require("../../host-adapter");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+let _sdk = null;
+async function loadSdk() {
+    return (_sdk ??= (await Promise.resolve().then(() => __importStar(require("openai")))).default);
+}
+const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = gryphon_provider_config_1.pricing.openai;
 exports.resolveModel = resolveModel;
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_OPENAI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsidian plugin. The user's " +
     "own protected-pattern list inside Gryphon decides which file " +
     "paths and shell commands require approval or are refused. " +
@@ -67,7 +105,7 @@ const GRYPHON_OPENAI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Ob
 // Append the shared compound-request rule. See anthropic-api/tool-loop.js
 // for the rationale — the SDK model otherwise drops one half of a
 // compound prompt silently.
-const GRYPHON_OPENAI_SYSTEM_PROMPT = GRYPHON_OPENAI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
+const GRYPHON_OPENAI_SYSTEM_PROMPT = GRYPHON_OPENAI_SYSTEM_PROMPT_BASE + gryphon_protect_1.GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 class OpenAIProvider {
     constructor(apiKey, cwd, options = {}) {
         if (!apiKey) {
@@ -77,16 +115,10 @@ class OpenAIProvider {
         this.cwd = cwd;
         this.options = options;
         this.hostAdapter = options.hostAdapter ||
-            new (require("../../host-adapter").HeadlessHostAdapter)();
-        // dangerouslyAllowBrowser: same justification as anthropic-api — Obsidian
-        // exposes `window`, the SDK gates browser usage by default to prevent
-        // API-key leakage in shipped client apps. Gryphon ships the key only
-        // through plugin settings on the user's own disk, never to a third party.
-        this.client = options.client || new OpenAI({
-            apiKey,
-            dangerouslyAllowBrowser: true,
-            maxRetries: 3,
-        });
+            new host_adapter_1.HeadlessHostAdapter();
+        // Test seam: callers may inject a client. Otherwise the real SDK client
+        // is built on first use by `_ensureClient()` (the SDK loads lazily).
+        this.client = options.client || null;
         // Seed history from caller (defensive copy). OpenAI's message shape:
         //   { role: "system" | "user" | "assistant" | "tool", content, tool_calls?, tool_call_id? }
         this.history = Array.isArray(options.initialHistory)
@@ -108,6 +140,28 @@ class OpenAIProvider {
         this.onDone = null;
     }
     isAlive() { return !this.destroyed; }
+    /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    async _ensureClient() {
+        if (this.client)
+            return this.client;
+        const OpenAI = await loadSdk();
+        // A concurrent first call may have built one while we awaited.
+        if (this.client)
+            return this.client;
+        // dangerouslyAllowBrowser: same justification as anthropic-api — Obsidian
+        // exposes `window`, the SDK gates browser usage by default to prevent
+        // API-key leakage in shipped client apps. Gryphon ships the key only
+        // through plugin settings on the user's own disk, never to a third party.
+        this.client = new OpenAI({
+            apiKey: this.apiKey,
+            dangerouslyAllowBrowser: true,
+            maxRetries: 3,
+        });
+        return this.client;
+    }
     // OpenAI mode: cost is computed locally from token usage × MODEL_PRICES.
     // The price table may drift from OpenAI's published pricing between
     // Gryphon releases, and cached-token discounts are deliberately NOT
@@ -119,7 +173,7 @@ class OpenAIProvider {
             try {
                 this.activeStream.abort();
             }
-            catch { }
+            catch { /* stream already settled */ }
             this.activeStream = null;
         }
         this.pending = false;
@@ -195,8 +249,9 @@ class OpenAIProvider {
             return cost;
         };
         try {
-            const { turnText, finalMessage, totalUsage, peakUsage } = await runOpenAIToolLoop({
-                client: this.client,
+            const client = await this._ensureClient();
+            const { turnText, finalMessage, totalUsage, peakUsage } = await (0, tool_loop_1.runOpenAIToolLoop)({
+                client,
                 model: this.resolvedModel,
                 systemPrompt: GRYPHON_OPENAI_SYSTEM_PROMPT,
                 history: this.history,
@@ -287,29 +342,32 @@ class OpenAIProvider {
         }
     }
     _formatError(err) {
+        const e = err;
+        // No SDK loaded → no SDK error can exist; the class checks are skipped.
+        const OpenAI = _sdk;
         // Use the SDK's exported error classes via instanceof when available —
         // robust to minified production builds and class-name churn. Fall back
         // to `constructor.name` string match (which remains correct for the
         // mock-error path in tests, where the test creates its own
         // AuthenticationError class). Below-threshold finding BT-3 (Round 18).
         const looksLikeAuth = (OpenAI && OpenAI.AuthenticationError && err instanceof OpenAI.AuthenticationError) ||
-            (err && err.constructor && err.constructor.name === "AuthenticationError");
+            (e && e.constructor && e.constructor.name === "AuthenticationError");
         if (looksLikeAuth) {
             return "Invalid API key. Check Settings → Gryphon → OpenAI API key.";
         }
         const looksLikeRateLimit = (OpenAI && OpenAI.RateLimitError && err instanceof OpenAI.RateLimitError) ||
-            (err && err.constructor && err.constructor.name === "RateLimitError");
+            (e && e.constructor && e.constructor.name === "RateLimitError");
         if (looksLikeRateLimit) {
-            const retryAfter = err.headers && err.headers["retry-after"];
+            const retryAfter = e && e.headers && e.headers["retry-after"];
             const hint = retryAfter
                 ? `Retry-After header says ${retryAfter} seconds.`
                 : "Check your OpenAI usage dashboard for current rate limits.";
             return `Rate limited by OpenAI after 3 automatic retries. ${hint}`;
         }
-        if (err && err.status) {
-            return `OpenAI API error (${err.status}): ${err.message || String(err)}`;
+        if (e && e.status) {
+            return `OpenAI API error (${e.status}): ${e.message || String(err)}`;
         }
-        return String((err && err.message) || err);
+        return String((e && e.message) || err);
     }
 }
 exports.OpenAIProvider = OpenAIProvider;
@@ -330,7 +388,9 @@ function cloneOpenAIMessage(m) {
 async function testApiKey(apiKey) {
     if (!apiKey)
         return { ok: false, message: "No API key provided" };
+    let OpenAI = null;
     try {
+        OpenAI = await loadSdk();
         const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
         await client.chat.completions.create({
             model: "gpt-4o-mini",
@@ -340,13 +400,14 @@ async function testApiKey(apiKey) {
         return { ok: true, message: "Key works" };
     }
     catch (err) {
+        const e = err;
         const looksLikeAuth = (OpenAI && OpenAI.AuthenticationError && err instanceof OpenAI.AuthenticationError) ||
-            (err && err.constructor && err.constructor.name === "AuthenticationError");
+            (e && e.constructor && e.constructor.name === "AuthenticationError");
         if (looksLikeAuth) {
             return { ok: false, message: "Invalid API key" };
         }
-        if (err && err.status) {
-            return { ok: false, message: `API error (${err.status}): ${err.message}` };
+        if (e && e.status) {
+            return { ok: false, message: `API error (${e.status}): ${err.message}` };
         }
         return { ok: false, message: String((err && err.message) || err) };
     }

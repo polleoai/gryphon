@@ -1,7 +1,7 @@
 /**
  * Issue #16 — proactive provider-readiness signal.
  *
- * The host-agnostic kernel exported from @gryphon/provider-runtime:
+ * The host-agnostic kernel exported from @polleoai/gryphon-provider-runtime:
  *   - describeProviderReadiness(plugin, preference?) → { ready, reason, kind }
  *   - humanizeFailureReason(reason) → string
  *   - friendlyProviderLabel(kind) → string
@@ -28,21 +28,21 @@ Module._resolveFilename = function (request, ...args) {
 
 // Stub binary detectors so tests don't depend on the host system.
 const utils = require("../src/utils");
-const origCodex = utils.findCodexBinary;
-const origGemini = utils.findGeminiBinary;
-const origClaude = utils.findClaudeBinary;
-const origAntigravity = utils.findAntigravityBinary;
+const origCodex = utils.binaryFinders.findCodexBinary;
+const origGemini = utils.binaryFinders.findGeminiBinary;
+const origClaude = utils.binaryFinders.findClaudeBinary;
+const origAntigravity = utils.binaryFinders.findAntigravityBinary;
 function stubBinaries({ codex = null, gemini = null, claude = null, antigravity = null } = {}) {
-  utils.findCodexBinary = () => codex;
-  utils.findGeminiBinary = () => gemini;
-  utils.findClaudeBinary = () => claude;
-  utils.findAntigravityBinary = () => antigravity;
+  utils.binaryFinders.findCodexBinary = () => codex;
+  utils.binaryFinders.findGeminiBinary = () => gemini;
+  utils.binaryFinders.findClaudeBinary = () => claude;
+  utils.binaryFinders.findAntigravityBinary = () => antigravity;
 }
 function restoreBinaries() {
-  utils.findCodexBinary = origCodex;
-  utils.findGeminiBinary = origGemini;
-  utils.findClaudeBinary = origClaude;
-  utils.findAntigravityBinary = origAntigravity;
+  utils.binaryFinders.findCodexBinary = origCodex;
+  utils.binaryFinders.findGeminiBinary = origGemini;
+  utils.binaryFinders.findClaudeBinary = origClaude;
+  utils.binaryFinders.findAntigravityBinary = origAntigravity;
 }
 function freshEnv(fn) {
   const snap = { ...process.env };

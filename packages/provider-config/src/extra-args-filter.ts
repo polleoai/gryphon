@@ -167,7 +167,7 @@ function filterExtraArgs(extraArgs: string[], providerKind: string) {
   return { filtered, dropped };
 }
 
-module.exports = {
+export {
   filterExtraArgs,
   PROVIDER_FLAGS,
   ALL_PROVIDER_FLAGS,

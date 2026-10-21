@@ -11,15 +11,17 @@
  * Permission: read-only network operation. Refused only in plan mode;
  * allowed in default / acceptEdits / bypassPermissions without prompt.
  *
- * SSRF hardening (post-v0.2.0):
- *   - `redirect: "manual"` — we follow redirects ourselves so each hop's
- *     hostname/IP gets re-validated. `fetch`'s default `"follow"` silently
- *     chases a 302 → http://127.0.0.1/admin without any re-check.
- *   - DNS pre-resolution with undici.Agent connect pinning — reject any
- *     hostname that resolves to a private/loopback IP, and pin the TCP
- *     connect to the resolved address so DNS rebinding (TTL=0 attacker
- *     DNS that flips from public to 127.0.0.1 between our check and
- *     undici's own resolution) can't bypass the guard.
+ * SSRF hardening:
+ *   - The URL's hostname is refused if it is a private / loopback /
+ *     link-local literal, or if DNS resolves it to one (checked before the
+ *     request).
+ *   - Headless hosts (HeadlessHostAdapter → nodeFetch) also get
+ *     `blockAddress`: every redirect hop's hostname and every address DNS
+ *     resolves it to are checked at connect time, so a redirect to an
+ *     internal address and DNS rebinding are both refused.
+ *   - Known gap (Obsidian): requestUrl follows redirects itself and ignores
+ *     `blockAddress`, so there a redirect hop to a private address isn't
+ *     re-checked and the connection isn't pinned to the checked address.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SCHEMA = void 0;
@@ -32,19 +34,17 @@ exports._isAllowedContentType = _isAllowedContentType;
 // accepts timer names that resolve to a local binding; window.* would throw in
 // the headless paths.
 const setTimeoutFn = setTimeout;
-const dns = require("dns").promises;
+const dns_1 = require("dns");
+const host_response_1 = require("../../../host-response");
 // Network requests are routed through ctx.hostAdapter.fetch(url, opts)
 // (supplied at execute() time from the provider that owns the tool loop).
 // In Obsidian, ObsidianHostAdapter.fetch wraps requestUrl — requestUrl
 // runs in Obsidian's main process and bypasses the renderer's
 // CORS-restricted browser fetch. In headless / test contexts,
-// HeadlessHostAdapter.fetch wraps globalThis.fetch.
+// HeadlessHostAdapter.fetch uses nodeFetch (node http/https).
 //
-// Response shape: ObsidianHostAdapter returns the requestUrl shape
-// ({ status, text (string), json, arrayBuffer, headers }).
-// HeadlessHostAdapter returns standard fetch Response (async .text()/.json()).
-// The body-extraction code below handles both: it checks `typeof
-// response.text === "string"` first (Obsidian) then falls back.
+// Response shape: requestUrl-style properties (text / json / arrayBuffer) or
+// fetch-style methods (text() / json()); readText() handles both.
 const SCHEMA = {
     name: "WebFetch",
     description: "Fetches content from a URL and returns it as text. HTML is converted " +
@@ -147,6 +147,9 @@ async function execute(input, ctx) {
                 // throw:false → return even non-2xx responses so we can surface
                 // HTTP errors to the model as text instead of exceptions.
                 throw: false,
+                // Headless (nodeFetch): re-check every redirect hop and every
+                // resolved address at connect time. requestUrl ignores it.
+                blockAddress: _isPrivateHost,
             }),
             timeoutPromise,
         ]);
@@ -173,12 +176,9 @@ async function execute(input, ctx) {
             `archives, images, etc.), ask the assistant to use Bash with curl/wget ` +
             `to download the file — you'll approve the exact command before it runs.`);
     }
-    // requestUrl gives us `.text` directly (already decoded) and `.arrayBuffer`.
-    // Prefer `.text` for text content; it handles charset decoding internally.
-    let body = typeof response.text === "string" ? response.text : "";
-    if (!body && response.arrayBuffer) {
-        body = Buffer.from(response.arrayBuffer).toString("utf8");
-    }
+    // requestUrl's `.text` (already decoded), else fetch-style `.text()`, else
+    // `.arrayBuffer` as UTF-8.
+    const body = await (0, host_response_1.readText)(response);
     let text = body;
     if (contentType.includes("html")) {
         text = _htmlToText(body);
@@ -204,7 +204,7 @@ async function execute(input, ctx) {
 async function _resolveAndCheck(hostname) {
     let addrs;
     try {
-        addrs = await dns.lookup(hostname, { all: true });
+        addrs = await dns_1.promises.lookup(hostname, { all: true });
     }
     catch (e) {
         throw new Error(`DNS lookup failed for ${hostname}: ${e.message}`);
@@ -214,7 +214,8 @@ async function _resolveAndCheck(hostname) {
     }
     for (const a of addrs) {
         if (_isPrivateHost(a.address)) {
-            throw new Error(`Refusing to fetch ${hostname} — resolves to private/loopback IP ${a.address}`);
+            // The address itself isn't echoed: this message reaches the model.
+            throw new Error(`Refusing to fetch ${hostname} — it resolves to a private or loopback address`);
         }
     }
     return addrs[0];
@@ -240,11 +241,11 @@ function _isPrivateHost(hostname) {
     //   169.254/16 link-local (incl. AWS/GCP metadata 169.254.169.254)
     //   0/8        "this network" / wildcard bind
     //   100.64/10  RFC6598 CGNAT (shared address space)
-    //   224/4      multicast (224.0.0.0 – 239.255.255.255)
-    //   255.255.255.255 limited broadcast
+    //   224/4      multicast, 240/4 reserved (incl. 255.255.255.255 broadcast)
+    //   198.18/15  benchmarking; 192.0.0/24 IETF; TEST-NETs 1–3
     const ipv4 = h.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
     if (ipv4) {
-        const [_, a, b, c, d] = ipv4.map(Number);
+        const [, a, b, c, d] = ipv4.map(Number);
         if (a === 127 || a === 10 || a === 0)
             return true;
         if (a === 169 && b === 254)
@@ -255,10 +256,19 @@ function _isPrivateHost(hostname) {
             return true;
         if (a === 100 && b >= 64 && b <= 127)
             return true;
-        if (a >= 224 && a <= 239)
-            return true;
-        if (a === 255 && b === 255 && c === 255 && d === 255)
-            return true;
+        if (a >= 224)
+            return true; // 224/4 multicast, 240/4 reserved, 255.255.255.255
+        if (a === 198 && (b === 18 || b === 19))
+            return true; // 198.18/15 benchmarking
+        if (a === 192 && b === 0 && c === 0)
+            return true; // 192.0.0/24 IETF protocol assignments
+        if (a === 192 && b === 0 && c === 2)
+            return true; // 192.0.2/24 TEST-NET-1
+        if (a === 198 && b === 51 && c === 100)
+            return true; // 198.51.100/24 TEST-NET-2
+        if (a === 203 && b === 0 && c === 113)
+            return true; // 203.0.113/24 TEST-NET-3
+        void d;
     }
     // IPv6 ranges:
     //   ::1             loopback
@@ -273,10 +283,14 @@ function _isPrivateHost(hostname) {
     //                    traverses 6to4 relays that land on the embedded v4)
     if (h === "::1" || h === "::")
         return true;
-    if (h.startsWith("fe80:") || h.startsWith("fe80::"))
+    // The fe..:: prefixes below only apply to IPv6 addresses (which contain
+    // ':'); without that guard they'd also match hostnames like feather.com.
+    const isV6 = h.includes(":");
+    // fe80::/10 link-local — first 10 bits 1111 1110 10xx → fe8..feb
+    if (isV6 && /^fe[89ab][0-9a-f]?:/.test(h))
         return true;
     // fec0::/10 site-local — first 10 bits 1111 1110 11xx → fec..fef
-    if (/^fe[cdef]/.test(h))
+    if (isV6 && /^fe[cdef][0-9a-f]?:/.test(h))
         return true;
     if (/^fc[0-9a-f]{2}:/.test(h) || /^fd[0-9a-f]{2}:/.test(h))
         return true;
@@ -296,6 +310,9 @@ function _isPrivateHost(hostname) {
         const rest = h.slice(2);
         if (/^\d+\.\d+\.\d+\.\d+$/.test(rest))
             return _isPrivateHost(rest);
+        // One group (::ffff, ::7f) embeds 0.0.x.x — in 0/8, never routable.
+        if (/^[0-9a-f]{1,4}$/.test(rest))
+            return true;
         const hex = rest.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
         if (hex) {
             const hi = parseInt(hex[1], 16);
@@ -303,6 +320,19 @@ function _isPrivateHost(hostname) {
             const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
             return _isPrivateHost(v4);
         }
+    }
+    // NAT64 — 64:ff9b::/96 (well-known) and 64:ff9b:1::/48 (local-use) embed an
+    // IPv4 address that a NAT64 gateway forwards to: treat as private when the
+    // embedded v4 is, and the local-use prefix as private outright.
+    if (/^64:ff9b:1:/.test(h))
+        return true;
+    const nat64 = h.match(/^64:ff9b::(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/);
+    if (nat64) {
+        if (nat64[3])
+            return _isPrivateHost(nat64[3]);
+        const hi = parseInt(nat64[1], 16);
+        const lo = parseInt(nat64[2], 16);
+        return _isPrivateHost(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
     }
     // 6to4 — 2002:AABB:CCDD::/48 wraps AA.BB.CC.DD in bytes 2-5. Decode those
     // and recurse. If the embedded v4 is private, traffic to this v6 address

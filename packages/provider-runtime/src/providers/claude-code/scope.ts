@@ -18,7 +18,7 @@
  *
  * MCP trust (#25 Design rev 2). An entry in `<cwd>/.mcp.json` is a command
  * line. A vault server runs only when an approval stored OUTSIDE the vault
- * (`@gryphon/protect` mcpApprovals, injected here as `ctx.approvals`)
+ * (`@polleoai/gryphon-protect` mcpApprovals, injected here as `ctx.approvals`)
  * matches its exact spec hash. Everything else is left out and returned in
  * `pendingApprovals` for the host to offer. Approval files inside the vault
  * (`.claude/settings*.json`, `enabledMcpjsonServers`, Gryphon's own
@@ -72,10 +72,13 @@
  * contract error and the resolver throws.
  */
 
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const path = require("path") as typeof import("path");
-const { mcpApprovals } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { mcpApprovals } from "@polleoai/gryphon-protect";
+
+/** A `name → server spec` map (specs are opaque JSON from .mcp.json / consumers). */
+type McpServerMap = Record<string, unknown>;
 
 const VALID_SOURCES = new Set(["user", "project", "local"]);
 // #27: scoped = no settings files at all; inherit = the user's own only.
@@ -85,7 +88,7 @@ const INHERIT_SOURCES = ["user"];
 interface ClaudeCodeScopeOptions {
   inheritUserConfig?: boolean;
   settingSources?: string[];
-  mcpServers?: "project" | "inherit" | Record<string, any>;
+  mcpServers?: "project" | "inherit" | McpServerMap;
   includeProjectMcp?: boolean;
   autoMemory?: boolean;
   pluginDirs?: string[];
@@ -100,7 +103,7 @@ interface McpApprovalsReader {
 interface PendingApproval {
   name: string;
   /** The raw `.mcp.json` entry, for the review modal. May hold secrets in env/headers. */
-  spec: any;
+  spec: unknown;
   specHash: string;
   reason: "new" | "changed";
 }
@@ -109,9 +112,9 @@ interface ResolvedScope {
   /** Args Gryphon adds to the CLI argv (excluding --mcp-config, whose path the caller supplies). */
   args: string[];
   /** Servers for the --mcp-config temp file; null = emit no --mcp-config. */
-  mcpServers: Record<string, any> | null;
+  mcpServers: McpServerMap | null;
   /** Keys merged into the --settings flag object; empty = nothing to add. */
-  settingsKeys: Record<string, any>;
+  settingsKeys: Record<string, unknown>;
   /** Problems that cost the session its vault MCP servers (malformed .mcp.json). */
   warnings: string[];
   /** Vault servers left out because nothing outside the vault approved their exact spec. */
@@ -135,23 +138,25 @@ function hasFlag(args: string[], name: string): boolean {
  * key → `{ servers: {} }` (not an error: most vaults have none).
  * Unreadable / malformed → `{ servers: {}, error }`.
  */
-function readProjectMcpServers(cwd: string): { servers: Record<string, any>; error?: string } {
+function readProjectMcpServers(cwd: string): { servers: McpServerMap; error?: string } {
   if (!cwd) return { servers: {} };
   const file = path.join(cwd, ".mcp.json");
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
-  } catch (e: any) {
-    if (e && e.code === "ENOENT") return { servers: {} };
-    return { servers: {}, error: `couldn't read .mcp.json (${e && e.message})` };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException | null;
+    if (err && err.code === "ENOENT") return { servers: {} };
+    return { servers: {}, error: `couldn't read .mcp.json (${err && err.message})` };
   }
-  let parsed: any;
+  let parsed: unknown;
   try {
     // Strip a UTF-8 BOM: Claude Code reads such a file fine, and in inherit
     // mode a parse we fail but it passes would leave servers un-disabled.
     parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
-  } catch (e: any) {
-    return { servers: {}, error: `.mcp.json is not valid JSON (${e && e.message})` };
+  } catch (e) {
+    const err = e as Error | null;
+    return { servers: {}, error: `.mcp.json is not valid JSON (${err && err.message})` };
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     return { servers: {}, error: `.mcp.json is not a JSON object` };
@@ -160,11 +165,11 @@ function readProjectMcpServers(cwd: string): { servers: Record<string, any>; err
   // loads nothing from it either (issue #28). Present but not an object
   // stays an error: fail closed.
   if (!Object.prototype.hasOwnProperty.call(parsed, "mcpServers")) return { servers: {} };
-  const servers = parsed.mcpServers;
+  const servers = (parsed as { mcpServers?: unknown }).mcpServers;
   if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
     return { servers: {}, error: `.mcp.json's "mcpServers" is not an object` };
   }
-  return { servers };
+  return { servers: servers as McpServerMap };
 }
 
 /** `~/.claude.json`, honouring CLAUDE_CONFIG_DIR the way Claude Code does. */
@@ -181,31 +186,33 @@ function defaultUserConfigFile(): string {
  * (a fresh install has none). Unreadable / malformed → empty + `error`:
  * it costs the personal servers only, never the spawn.
  */
-function readUserMcpServers(file: string, cwd: string): { user: Record<string, any>; local: Record<string, any>; error?: string } {
+function readUserMcpServers(file: string, cwd: string): { user: McpServerMap; local: McpServerMap; error?: string } {
   const empty = { user: {}, local: {} };
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
-  } catch (e: any) {
-    if (e && e.code === "ENOENT") return empty;
-    return { ...empty, error: `couldn't read your personal MCP servers from ${path.basename(file)} (${e && e.message})` };
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException | null;
+    if (err && err.code === "ENOENT") return empty;
+    return { ...empty, error: `couldn't read your personal MCP servers from ${path.basename(file)} (${err && err.message})` };
   }
-  let parsed: any;
+  let parsed: { projects?: unknown; mcpServers?: unknown } | null;
   try {
-    parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
-  } catch (e: any) {
-    return { ...empty, error: `couldn't read your personal MCP servers: ${path.basename(file)} is not valid JSON (${e && e.message})` };
+    parsed = JSON.parse(raw.replace(/^\uFEFF/, "")) as { projects?: unknown; mcpServers?: unknown } | null;
+  } catch (e) {
+    const err = e as Error | null;
+    return { ...empty, error: `couldn't read your personal MCP servers: ${path.basename(file)} is not valid JSON (${err && err.message})` };
   }
-  const asMap = (v: any) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
+  const asMap = (v: unknown): McpServerMap => (v && typeof v === "object" && !Array.isArray(v) ? v as McpServerMap : {});
   const projects = asMap(parsed && parsed.projects);
-  let local: Record<string, any> = {};
+  let local: McpServerMap = {};
   if (cwd) {
     // Claude Code keys projects by the launch directory; try the realpath
     // and the path as given (they differ under a symlinked vault).
     const keys = [cwd];
-    try { keys.unshift(fs.realpathSync(cwd)); } catch (_) { /* keep cwd */ }
+    try { keys.unshift(fs.realpathSync(cwd)); } catch { /* keep cwd */ }
     for (const k of keys) {
-      const p = Object.prototype.hasOwnProperty.call(projects, k) ? projects[k] : null;
+      const p = Object.prototype.hasOwnProperty.call(projects, k) ? projects[k] as { mcpServers?: unknown } | null : null;
       if (p) { local = asMap(p.mcpServers); break; }
     }
   }
@@ -218,12 +225,12 @@ function readUserMcpServers(file: string, cwd: string): { user: Record<string, a
  * A missing reader approves nothing — fail closed.
  */
 function partitionVaultServers(
-  servers: Record<string, any>,
+  servers: McpServerMap,
   vk: string,
   approvals: McpApprovalsReader | null | undefined,
   shadowed: Set<string>,
-): { approved: Record<string, any>; pending: PendingApproval[] } {
-  const approved: Record<string, any> = {};
+): { approved: McpServerMap; pending: PendingApproval[] } {
+  const approved: McpServerMap = {};
   const pending: PendingApproval[] = [];
   for (const [name, spec] of Object.entries(servers)) {
     if (shadowed.has(name)) continue;
@@ -280,7 +287,7 @@ function resolveClaudeCodeScope(
   // --- consumer plugin dirs + memory (#27) ------------------------------
   const absList = (v: unknown, field: string): string[] => {
     if (!Array.isArray(v)) return [];
-    const ok = v.filter((x) => typeof x === "string" && x !== "" && path.isAbsolute(x));
+    const ok = (v as unknown[]).filter((x): x is string => typeof x === "string" && x !== "" && path.isAbsolute(x));
     if (ok.length !== v.length) {
       console.error(`[gryphon/claude-code] claudeCodeScope.${field}: ignored entries that aren't absolute paths`);
     }
@@ -307,8 +314,8 @@ function resolveClaudeCodeScope(
   // --mcp-config we write from objects parsed once here.
   const mode = s.mcpServers !== undefined ? s.mcpServers : (s.inheritUserConfig === true ? "inherit" : "project");
   const vk = ctx.cwd ? mcpApprovals.vaultKey(ctx.cwd) : "";
-  const settingsKeys: Record<string, any> = {};
-  let servers: Record<string, any> = {};
+  const settingsKeys: Record<string, unknown> = {};
+  let servers: McpServerMap = {};
   let pendingApprovals: PendingApproval[] = [];
   let personal: string[] = [];
   if (mode === "inherit") {
@@ -324,7 +331,7 @@ function resolveClaudeCodeScope(
     const approvedNames = new Set(Object.keys(split.approved));
     personal = Object.keys(servers).filter((n) => !approvedNames.has(n));
   } else {
-    const consumer: Record<string, any> = mode && typeof mode === "object" ? mode : {};
+    const consumer: McpServerMap = mode && typeof mode === "object" ? mode : {};
     const wantProject = mode === "project" || (typeof mode === "object" && s.includeProjectMcp !== false);
     if (wantProject) {
       const proj = readProjectMcpServers(ctx.cwd);

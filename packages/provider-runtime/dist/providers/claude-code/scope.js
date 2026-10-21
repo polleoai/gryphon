@@ -19,7 +19,7 @@
  *
  * MCP trust (#25 Design rev 2). An entry in `<cwd>/.mcp.json` is a command
  * line. A vault server runs only when an approval stored OUTSIDE the vault
- * (`@gryphon/protect` mcpApprovals, injected here as `ctx.approvals`)
+ * (`@polleoai/gryphon-protect` mcpApprovals, injected here as `ctx.approvals`)
  * matches its exact spec hash. Everything else is left out and returned in
  * `pendingApprovals` for the host to offer. Approval files inside the vault
  * (`.claude/settings*.json`, `enabledMcpjsonServers`, Gryphon's own
@@ -72,14 +72,47 @@
  * the last value, so one set of rules would vanish silently — that's a
  * contract error and the resolver throws.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveClaudeCodeScope = resolveClaudeCodeScope;
 exports.readProjectMcpServers = readProjectMcpServers;
 exports.readUserMcpServers = readUserMcpServers;
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const { mcpApprovals } = require("@gryphon/protect");
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const path = __importStar(require("path"));
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
 const VALID_SOURCES = new Set(["user", "project", "local"]);
 // #27: scoped = no settings files at all; inherit = the user's own only.
 const SCOPED_SOURCES = [];
@@ -101,9 +134,10 @@ function readProjectMcpServers(cwd) {
         raw = fs.readFileSync(file, "utf8");
     }
     catch (e) {
-        if (e && e.code === "ENOENT")
+        const err = e;
+        if (err && err.code === "ENOENT")
             return { servers: {} };
-        return { servers: {}, error: `couldn't read .mcp.json (${e && e.message})` };
+        return { servers: {}, error: `couldn't read .mcp.json (${err && err.message})` };
     }
     let parsed;
     try {
@@ -112,7 +146,8 @@ function readProjectMcpServers(cwd) {
         parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
     }
     catch (e) {
-        return { servers: {}, error: `.mcp.json is not valid JSON (${e && e.message})` };
+        const err = e;
+        return { servers: {}, error: `.mcp.json is not valid JSON (${err && err.message})` };
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
         return { servers: {}, error: `.mcp.json is not a JSON object` };
@@ -126,7 +161,7 @@ function readProjectMcpServers(cwd) {
     if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
         return { servers: {}, error: `.mcp.json's "mcpServers" is not an object` };
     }
-    return { servers };
+    return { servers: servers };
 }
 /** `~/.claude.json`, honouring CLAUDE_CONFIG_DIR the way Claude Code does. */
 function defaultUserConfigFile() {
@@ -148,16 +183,18 @@ function readUserMcpServers(file, cwd) {
         raw = fs.readFileSync(file, "utf8");
     }
     catch (e) {
-        if (e && e.code === "ENOENT")
+        const err = e;
+        if (err && err.code === "ENOENT")
             return empty;
-        return { ...empty, error: `couldn't read your personal MCP servers from ${path.basename(file)} (${e && e.message})` };
+        return { ...empty, error: `couldn't read your personal MCP servers from ${path.basename(file)} (${err && err.message})` };
     }
     let parsed;
     try {
         parsed = JSON.parse(raw.replace(/^\uFEFF/, ""));
     }
     catch (e) {
-        return { ...empty, error: `couldn't read your personal MCP servers: ${path.basename(file)} is not valid JSON (${e && e.message})` };
+        const err = e;
+        return { ...empty, error: `couldn't read your personal MCP servers: ${path.basename(file)} is not valid JSON (${err && err.message})` };
     }
     const asMap = (v) => (v && typeof v === "object" && !Array.isArray(v) ? v : {});
     const projects = asMap(parsed && parsed.projects);
@@ -169,7 +206,7 @@ function readUserMcpServers(file, cwd) {
         try {
             keys.unshift(fs.realpathSync(cwd));
         }
-        catch (_) { /* keep cwd */ }
+        catch { /* keep cwd */ }
         for (const k of keys) {
             const p = Object.prototype.hasOwnProperty.call(projects, k) ? projects[k] : null;
             if (p) {
@@ -191,11 +228,11 @@ function partitionVaultServers(servers, vk, approvals, shadowed) {
     for (const [name, spec] of Object.entries(servers)) {
         if (shadowed.has(name))
             continue;
-        const specHash = mcpApprovals.hashSpec(spec);
+        const specHash = gryphon_protect_1.mcpApprovals.hashSpec(spec);
         let stored = null;
         // A name the store can't hold (`__proto__`) is never approved; it stays
         // pending so the modal can say why instead of Approve doing nothing.
-        if (mcpApprovals.isApprovableName(name)) {
+        if (gryphon_protect_1.mcpApprovals.isApprovableName(name)) {
             try {
                 stored = approvals && typeof approvals.lookup === "function" ? approvals.lookup(vk, name) : null;
             }
@@ -265,7 +302,7 @@ function resolveClaudeCodeScope(scope, ctx) {
     // Every mode is strict (#27 Part B): Claude Code gets only the
     // --mcp-config we write from objects parsed once here.
     const mode = s.mcpServers !== undefined ? s.mcpServers : (s.inheritUserConfig === true ? "inherit" : "project");
-    const vk = ctx.cwd ? mcpApprovals.vaultKey(ctx.cwd) : "";
+    const vk = ctx.cwd ? gryphon_protect_1.mcpApprovals.vaultKey(ctx.cwd) : "";
     const settingsKeys = {};
     let servers = {};
     let pendingApprovals = [];

@@ -48,11 +48,11 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 
-const net = require("net") as typeof import("net");
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
+import * as net from "net";
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+import * as crypto from "crypto";
 
 const IS_WINDOWS = process.platform === "win32";
 
@@ -188,7 +188,7 @@ class PermissionIPCServer {
           try { fs.chmodSync(socketPath, 0o600); }
           catch (e) {
             chmodOk = false;
-            try { console.warn("[gryphon/ipc] chmod failed:", e && (e as Error).message); } catch (_) {}
+            try { console.warn("[gryphon/ipc] chmod failed:", e && (e as Error).message); } catch { /* ignore */ }
           }
           if (!chmodOk) {
             try {
@@ -200,7 +200,7 @@ class PermissionIPCServer {
                 // so `isListening()` doesn't later claim we're safe).
                 server.removeAllListeners("error");
                 server.close(() => {});
-                try { fs.unlinkSync(socketPath); } catch (_) {}
+                try { fs.unlinkSync(socketPath); } catch { /* ignore */ }
                 this._socketPath = null;
                 reject(new Error(
                   `IPC socket perms too permissive (mode ${st.mode.toString(8)}) ` +
@@ -208,7 +208,7 @@ class PermissionIPCServer {
                 ));
                 return;
               }
-            } catch (_) { /* stat failed too — proceed, umask dance should've set 0600 */ }
+            } catch { /* stat failed too — proceed, umask dance should've set 0600 */ }
           }
         }
         server.removeListener("error", onError);
@@ -222,7 +222,7 @@ class PermissionIPCServer {
         // with a null-pointing socket env var. Null the state here so
         // the next `isListening()` returns false and recovery kicks in.
         server.on("error", (e: Error) => {
-          try { console.warn("[gryphon/ipc] server error:", e.message); } catch (_) {}
+          try { console.warn("[gryphon/ipc] server error:", e.message); } catch { /* ignore */ }
           if (this._server === server) {
             this._server = null;
             this._socketPath = null;
@@ -261,7 +261,7 @@ class PermissionIPCServer {
     this._server = null;
 
     for (const sock of this._activeSockets) {
-      try { sock.destroy(); } catch (_) { /* ignore */ }
+      try { sock.destroy(); } catch { /* ignore */ }
     }
     this._activeSockets.clear();
 
@@ -272,7 +272,7 @@ class PermissionIPCServer {
     if (this._socketPath && !IS_WINDOWS) {
       try {
         if (fs.existsSync(this._socketPath)) fs.unlinkSync(this._socketPath);
-      } catch (_) { /* best-effort */ }
+      } catch { /* best-effort */ }
     }
     this._socketPath = null;
   }
@@ -295,7 +295,7 @@ class PermissionIPCServer {
       // end() flushes the rejection line before closing; destroy() would
       // race with the pending write and leave the client with no reason.
       this._safeWrite(socket, { resp: "error", error: "too-many-connections" });
-      try { socket.end(); } catch (_) { /* ignore */ }
+      try { socket.end(); } catch { /* ignore */ }
       return;
     }
     this._activeSockets.add(socket);
@@ -308,8 +308,8 @@ class PermissionIPCServer {
     // MODAL_REQUEST_LIFETIME_MS when we see a `classify` request,
     // which legitimately blocks on user input.
     let deadlineTimer: ReturnType<typeof setTimeout> | null = setTimeoutFn(() => {
-      try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch (_) {}
-      try { socket.destroy(); } catch (_) {}
+      try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch { /* ignore */ }
+      try { socket.destroy(); } catch { /* ignore */ }
       this._activeSockets.delete(socket);
     }, REQUEST_LIFETIME_MS);
     // unref so a pending timer doesn't keep the process alive at unload
@@ -326,7 +326,7 @@ class PermissionIPCServer {
         this._safeWrite(socket, { resp: "error", error: "line-too-long" });
         // pause reads so further data doesn't grow buffer; end() after
         // the error write flushes then closes gracefully.
-        try { socket.pause(); socket.end(); } catch (_) { /* ignore */ }
+        try { socket.pause(); socket.end(); } catch { /* ignore */ }
         buffer = "";
         clearDeadline();
         this._activeSockets.delete(socket);
@@ -342,16 +342,16 @@ class PermissionIPCServer {
         if (line.includes('"classify"') && deadlineTimer) {
           clearTimeoutFn(deadlineTimer);
           deadlineTimer = setTimeoutFn(() => {
-            try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch (_) {}
-            try { socket.destroy(); } catch (_) {}
+            try { this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" }); } catch { /* ignore */ }
+            try { socket.destroy(); } catch { /* ignore */ }
             this._activeSockets.delete(socket);
           }, MODAL_REQUEST_LIFETIME_MS);
           if (deadlineTimer.unref) deadlineTimer.unref();
         }
-        this._handleLine(socket, line).catch((e) => {
+        this._handleLine(socket, line).catch((e: unknown) => {
           this._safeWrite(socket, {
             resp: "error",
-            error: String((e && e.message) || e),
+            error: String((e && (e as Error).message) || e),
           });
         });
       }
@@ -365,9 +365,9 @@ class PermissionIPCServer {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    let req;
+    let req: Record<string, unknown> | null;
     try {
-      req = JSON.parse(trimmed);
+      req = JSON.parse(trimmed) as Record<string, unknown> | null;
     } catch (e) {
       this._safeWrite(socket, { resp: "error", error: "invalid-json", detail: (e as Error).message });
       return;
@@ -389,7 +389,8 @@ class PermissionIPCServer {
 
     let result;
     try {
-      result = await handler(req);
+      // reqType is a string here, so `req` is an object.
+      result = await handler(req as Record<string, unknown>);
     } catch (e) {
       this._safeWrite(socket, {
         resp: "error",
@@ -409,7 +410,7 @@ class PermissionIPCServer {
   _safeWrite(socket: import("net").Socket, obj: Record<string, unknown>) {
     try {
       socket.write(JSON.stringify(obj) + "\n");
-    } catch (_) { /* client may have disconnected */ }
+    } catch { /* client may have disconnected */ }
   }
 }
 
@@ -428,7 +429,7 @@ function defaultSocketPath() {
   return path.join(os.tmpdir(), `gryphon-${pid}-${randHex}.sock`);
 }
 
-module.exports = {
+export {
   PermissionIPCServer,
   defaultSocketPath,
   MAX_LINE_BYTES,

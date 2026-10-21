@@ -7,25 +7,69 @@
  * optional locally-installed Claude CLI) that can read/edit vault files
  * and use the standard chat tools.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const { Plugin, PluginSettingTab, Setting, Notice, Modal, setTooltip } = require("obsidian");
-const path = require("path");
-const { GryphonChatView } = require("./chat-view");
+const obsidian_1 = require("obsidian");
+const path = __importStar(require("path"));
+const chat_view_1 = require("./chat-view");
 // Portable settings renderer (issue #14). The Provider + Defaults config zone
 // lives in settings-view.ts so consumers can render the same fields without
 // hand-mirroring rows (which drifted and dropped the API-key inputs). The tab
 // delegates its shared render helpers to the same module for a single source.
-const { renderGryphonSettings, renderSectionHeading, descToTooltip, renderUnconfirmedSecurityRow } = require("./settings-view");
-const securityUi = require("./security-settings");
-const { DEFAULT_SETTINGS, MODEL_ALIAS_MIGRATION, MODEL_RETIREMENT_MIGRATION, DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
-const { SkillRegistry } = require("./skills");
-const { isObsidianRestApiUrl, buildRestApiDenyReason, RestApiTurnCounter, } = require("./rest-api-policy");
-const { buildDenyReason } = require("@gryphon/protect");
-const { PermissionIPCServer, defaultSocketPath, } = require("@gryphon/protect");
-const { attackDetector } = require("@gryphon/protect");
-const { patchTargets } = require("@gryphon/protect");
-const { ProvenanceStore } = require("@gryphon/protect");
-const { sweepGryphonOrphans } = require("@gryphon/protect");
+const settings_view_1 = require("./settings-view");
+const securityUi = __importStar(require("./security-settings"));
+const constants_1 = require("./constants");
+const skills_1 = require("./skills");
+const rest_api_policy_1 = require("./rest-api-policy");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const gryphon_protect_2 = require("@polleoai/gryphon-protect");
+const gryphon_protect_3 = require("@polleoai/gryphon-protect");
+const gryphon_protect_4 = require("@polleoai/gryphon-protect");
+const gryphon_protect_5 = require("@polleoai/gryphon-protect");
+const gryphon_protect_6 = require("@polleoai/gryphon-protect");
+const settings_view_2 = require("./settings-view");
+const obsidian_2 = require("obsidian");
+const obsidian_host_adapter_1 = require("./obsidian-host-adapter");
+const mcp_approval_ui_1 = require("./mcp-approval-ui");
+const gryphon_provider_runtime_1 = require("@polleoai/gryphon-provider-runtime");
+const gryphon_protect_7 = require("@polleoai/gryphon-protect");
+const fs = __importStar(require("fs"));
+const obsidian_compat_1 = require("./obsidian-compat");
+// protect never loads "obsidian" itself (it must run headless); hand it
+// Obsidian's Modal and Setting for the permission prompt.
+(0, gryphon_protect_6.setPermissionModalUi)({ Modal: obsidian_1.Modal, Setting: obsidian_1.Setting });
 const VIEW_TYPE = "gryphon-view";
 /**
  * Format a provenance `taggedAt` ISO-8601 timestamp for user-facing
@@ -50,7 +94,7 @@ function _formatTaggedAt(iso) {
     try {
         return d.toLocaleString("sv-SE");
     }
-    catch (_) {
+    catch {
         // Fallback — extremely rare (Intl unavailable). Strip ms + Z so
         // the output at least doesn't show microsecond noise.
         return iso.replace("T", " ").replace(/\..+$/, "");
@@ -66,7 +110,7 @@ function _deriveActionTarget(tool, input) {
         return { action: "write", target: input.file_path || "?" };
     if (tool === "Edit") {
         // R43-3: a Codex apply_patch names its files in the patch text.
-        const targets = input.file_path ? [] : patchTargets(input);
+        const targets = input.file_path ? [] : (0, gryphon_protect_4.patchTargets)(input);
         return { action: "edit", target: input.file_path || (targets.length ? targets.join(", ") : "?") };
     }
     // Both Bash (POSIX) and PowerShell (Windows) are shell-exec tools
@@ -78,21 +122,67 @@ function _deriveActionTarget(tool, input) {
     }
     return { action: tool.toLowerCase(), target: JSON.stringify(input).slice(0, 80) };
 }
-class GryphonSettingTab extends PluginSettingTab {
+/**
+ * Words Obsidian's settings search (1.13+) should match to Gryphon's tab: the
+ * names of the settings it renders. Security labels and CLI path labels come
+ * from security-settings so they can't drift from what the UI shows.
+ */
+const SETTINGS_SEARCH_TERMS = [
+    "Models", "Advanced", "Security",
+    "Provider", "Default model", "Default effort", "Default permissions",
+    "Fallback provider", "Fallback model", "Connection timeout (seconds)",
+    "Anthropic API key", "OpenAI API key", "Google API key", "Brave Search API key",
+    "Auto-compact at 95% (SDK mode)", "Auto-retry on rate-limit", "Confirm before overflow sends",
+    "Use exact token counts (SDK mode)", "Max file size (MB)", "Open in main tab", "CLI debug logging",
+    "Block Obsidian REST API access", "Approved vault MCP servers", "MCP servers",
+    ...securityUi.WEAKENING_KEYS.map((k) => securityUi.securityKeyLabel(k)),
+    ...["claudePath", "codexPath", "geminiCliPath", "antigravityPath"].map((k) => `${securityUi.cliPathLabel(k)} path`),
+];
+class GryphonSettingTab extends obsidian_1.PluginSettingTab {
     constructor(app, plugin) {
         super(app, plugin);
         this.plugin = plugin;
     }
+    /**
+     * Obsidian 1.13+ renders a settings tab from these definitions and then
+     * never calls display(). Gryphon's settings are a tabbed custom UI, so one
+     * render item hosts it unchanged; its aliases let the settings search find
+     * every setting. No control definitions: the security settings keep
+     * writing through the machine-scoped store, never through
+     * setControlValue / data.json.
+     */
+    getSettingDefinitions() {
+        return [{
+                name: "Gryphon",
+                aliases: SETTINGS_SEARCH_TERMS,
+                render: (setting) => {
+                    const hostEl = setting.settingEl;
+                    hostEl.empty();
+                    hostEl.className = "gryphon-settings-host";
+                    this._renderInto(hostEl);
+                },
+            }];
+    }
+    /** Obsidian before 1.13 renders the tab through display(). */
     display() {
+        this._renderInto(this.containerEl);
+    }
+    /** Re-render the visible tab (after a change made outside it). */
+    refresh() {
+        if ((0, obsidian_1.requireApiVersion)("1.13.0"))
+            this.update();
+        else
+            this._renderInto(this.containerEl);
+    }
+    _renderInto(containerEl) {
         // Round-8 F7: stash a reference so non-settings callers (e.g. the
-        // post-clear-provenance flow) can call display() to refresh the
+        // post-clear-provenance flow) can call refresh() to update the
         // visible tab content. PluginSettingTab instances aren't workspace
         // leaves so getActiveViewOfType doesn't return them — this is the
         // simplest correct hook.
         this.plugin._activeSettingTab = this;
-        const { containerEl } = this;
         containerEl.empty();
-        renderGryphonSettings(this.plugin, containerEl, {
+        (0, settings_view_1.renderGryphonSettings)(this.plugin, containerEl, {
             initialTabId: this._activeSettingsTabId || "models",
             onTabChange: (id) => { this._activeSettingsTabId = id; },
             extraTabs: [{
@@ -111,13 +201,12 @@ class GryphonSettingTab extends PluginSettingTab {
         // toast so they don't unknowingly chat against an inert provider. Silent
         // on the happy path. Best-effort — never throw out of a lifecycle hook.
         try {
-            const { buildProviderUnreadyNotice } = require("./settings-view");
-            const msg = buildProviderUnreadyNotice(this.plugin);
+            const msg = (0, settings_view_2.buildProviderUnreadyNotice)(this.plugin);
             // Defer the toast: hide() runs synchronously DURING the settings-modal
             // teardown, and a Notice created mid-teardown is swallowed (never paints).
             // A next-tick timer fires it after the modal has finished closing.
             if (msg)
-                window.setTimeout(() => new Notice(msg, 10000), 0);
+                window.setTimeout(() => new obsidian_1.Notice(msg, 10000), 0);
         }
         catch { /* best-effort */ }
     }
@@ -159,12 +248,12 @@ class GryphonSettingTab extends PluginSettingTab {
                 ctx.rerenderSelf();
             },
         });
-        renderUnconfirmedSecurityRow(containerEl, this.plugin, "protectedMode", { rerender: () => ctx.rerenderSelf() });
+        (0, settings_view_1.renderUnconfirmedSecurityRow)(containerEl, this.plugin, "protectedMode", { rerender: () => ctx.rerenderSelf() });
         // Everything inside this wrapper gets dimmed when Protected Mode is
         // OFF — the sub-items are still visible (so the user remembers what
         // they've configured) but can't be interacted with while the master
         // is down.
-        const protectedContainer = containerEl.createEl("div", {
+        const protectedContainer = containerEl.createDiv({
             cls: "gryphon-protected-children" +
                 (protectedModeOn ? "" : " gryphon-section-disabled"),
         });
@@ -172,7 +261,7 @@ class GryphonSettingTab extends PluginSettingTab {
         // under it. Only rendered when Protected Mode is ON; when OFF, the
         // modal-vs-refuse distinction is moot (nothing triggers either way).
         if (protectedModeOn) {
-            const autoDenySection = protectedContainer.createEl("div", {
+            const autoDenySection = protectedContainer.createDiv({
                 cls: "gryphon-protected-section gryphon-protected-subsection",
             });
             this._renderSecurityHeaderRow(autoDenySection, {
@@ -193,7 +282,7 @@ class GryphonSettingTab extends PluginSettingTab {
             title: "Protect file paths",
             shortDesc: "Paths that always prompt before a write or edit — Gryphon's own settings plus any content you choose to protect.",
             manualAnchor: "Gryphon/MANUAL#Permission modes",
-            defaults: DEFAULT_PROTECTED_PATHS,
+            defaults: constants_1.DEFAULT_PROTECTED_PATHS,
             enabledKey: "protectedPathsEnabled",
             tooltipDetail: "Off = no path-based approval modal at any mode; Claude Code's " +
                 "active permission mode is the only gate. Your per-pattern " +
@@ -213,7 +302,7 @@ class GryphonSettingTab extends PluginSettingTab {
             title: "Protect commands",
             shortDesc: "Shell commands that always prompt before running — even in YOLO mode.",
             manualAnchor: "Gryphon/MANUAL#Permission modes",
-            defaults: DEFAULT_PROTECTED_COMMANDS,
+            defaults: constants_1.DEFAULT_PROTECTED_COMMANDS,
             enabledKey: "protectedCommandsEnabled",
             tooltipDetail: "Off = no command-based approval modal at any mode; Claude Code's " +
                 "active permission mode is the only gate. Your per-pattern " +
@@ -240,13 +329,13 @@ class GryphonSettingTab extends PluginSettingTab {
             tooltipDetail: "Gryphon runs inside Obsidian and never needs to install packages. Blocking installs stops a common off-task action and the first step of clean-repo prompt-injection attacks. You can still approve an install when prompted, or turn this off.",
             toggleKey: "blockPackageInstall",
         });
-        renderUnconfirmedSecurityRow(protectedContainer, this.plugin, "blockPackageInstall", { rerender: () => ctx.rerenderSelf() });
+        (0, settings_view_1.renderUnconfirmedSecurityRow)(protectedContainer, this.plugin, "blockPackageInstall", { rerender: () => ctx.rerenderSelf() });
         // Untrusted-content tagging — header row without a toggle (the
         // feature is always on when the plugin dir is writable), followed
         // by the status + action toolbar.
         if (this.plugin.provenanceStore) {
             const count = this.plugin.provenanceStore.size();
-            const provSection = containerEl.createEl("div", { cls: "gryphon-protected-section" });
+            const provSection = containerEl.createDiv({ cls: "gryphon-protected-section" });
             this._renderSecurityHeaderRow(provSection, {
                 title: "Untrusted-content tagging",
                 shortDesc: `${count} file${count === 1 ? "" : "s"} currently tagged as originating from external sources.`,
@@ -259,35 +348,38 @@ class GryphonSettingTab extends PluginSettingTab {
             });
             // Action row: three buttons inline so they read as a toolbar,
             // not three separate settings with titles.
-            const actions = provSection.createEl("div", { cls: "gryphon-provenance-actions" });
+            const actions = provSection.createDiv({ cls: "gryphon-provenance-actions" });
             const viewBtn = actions.createEl("button", { text: "View tagged files" });
             viewBtn.addEventListener("click", () => {
                 this.plugin._openProvenanceListModal();
             });
             const cleanBtn = actions.createEl("button", { text: "Clean stale" });
-            setTooltip(cleanBtn, "Remove tags for files that no longer exist on disk. Safe to run anytime.", { placement: "bottom" });
-            cleanBtn.addEventListener("click", async () => {
-                const vaultRoot = this.plugin._vaultRoot();
-                if (!vaultRoot) {
-                    new Notice("Vault root unavailable.");
-                    return;
-                }
-                try {
-                    const { removed } = this.plugin.provenanceStore.lint(vaultRoot);
-                    new Notice(removed.length === 0
-                        ? "No stale tags found."
-                        : `Removed ${removed.length} stale tag${removed.length === 1 ? "" : "s"}.`);
-                    ctx.rerenderSelf();
-                }
-                catch (e) {
-                    new Notice(`Lint failed: ${(e && e.message) || e}`);
-                }
+            (0, obsidian_1.setTooltip)(cleanBtn, "Remove tags for files that no longer exist on disk. Safe to run anytime.", { placement: "bottom" });
+            cleanBtn.addEventListener("click", () => {
+                void (async () => {
+                    const vaultRoot = this.plugin._vaultRoot();
+                    if (!vaultRoot) {
+                        new obsidian_1.Notice("Vault root unavailable.");
+                        return;
+                    }
+                    try {
+                        const { removed } = this.plugin.provenanceStore.lint(vaultRoot);
+                        new obsidian_1.Notice(removed.length === 0
+                            ? "No stale tags found."
+                            : `Removed ${removed.length} stale tag${removed.length === 1 ? "" : "s"}.`);
+                        ctx.rerenderSelf();
+                    }
+                    catch (e) {
+                        const err = e;
+                        new obsidian_1.Notice(`Lint failed: ${(err && err.message) || String(err)}`);
+                    }
+                })();
             });
             const clearBtn = actions.createEl("button", {
                 text: "Clear all",
                 cls: "mod-warning",
             });
-            setTooltip(clearBtn, "Remove every tag. Files themselves are not touched, but Claude no longer gets a data-not-instructions notice when re-reading them.", { placement: "bottom" });
+            (0, obsidian_1.setTooltip)(clearBtn, "Remove every tag. Files themselves are not touched, but Claude no longer gets a data-not-instructions notice when re-reading them.", { placement: "bottom" });
             clearBtn.addEventListener("click", () => {
                 this.plugin._confirmClearProvenance();
             });
@@ -303,7 +395,7 @@ class GryphonSettingTab extends PluginSettingTab {
                 "(Cmd+Option+I on macOS, Ctrl+Shift+I on Linux / Windows) " +
                 "— nothing is written to a file or sent off-device.",
         });
-        this._descToTooltip(new Setting(containerEl).setName("CLI debug logging"), "When on, each CLI subprocess spawn logs its full argument " +
+        this._descToTooltip(new obsidian_1.Setting(containerEl).setName("CLI debug logging"), "When on, each CLI subprocess spawn logs its full argument " +
             "vector, hook-settings JSON contents, and (on spawn failure) " +
             "a structured diagnostic context to the console. Useful for " +
             "reporting \"(No response)\" cases or spawn errors. Off by default.")
@@ -323,7 +415,7 @@ class GryphonSettingTab extends PluginSettingTab {
         // differs from Obsidian's cached label, tell the user so the lag
         // in the Community Plugins list is explained, not mysterious.
         const cachedVersion = (this.plugin.manifest && this.plugin.manifest.version) || "(unknown)";
-        const versionEl = containerEl.createEl("div", {
+        const versionEl = containerEl.createDiv({
             cls: "gryphon-settings-version",
             text: `Gryphon ${cachedVersion} (running)`,
         });
@@ -371,7 +463,7 @@ class GryphonSettingTab extends PluginSettingTab {
      */
     _renderProtectedChecklist(containerEl, opts) {
         const { title, shortDesc, defaults, disabledKey, customKey, addPlaceholder, validateNew, customHint = null, customEmptyText = "No custom entries. Add one below.", enabledKey, manualAnchor, tooltipDetail, } = opts;
-        const section = containerEl.createEl("div", { cls: "gryphon-protected-section" });
+        const section = containerEl.createDiv({ cls: "gryphon-protected-section" });
         // Header row first (title + info icon + toggle on one line).
         // Late-bound applyEnabledVisual because listEl is created below
         // but the toggle's change handler needs to reach it.
@@ -383,9 +475,9 @@ class GryphonSettingTab extends PluginSettingTab {
                 applyEnabledVisual(value); },
         });
         if (enabledKey)
-            renderUnconfirmedSecurityRow(section, this.plugin, enabledKey, {});
-        renderUnconfirmedSecurityRow(section, this.plugin, disabledKey, {});
-        const listEl = section.createEl("div", { cls: "gryphon-protected-list" });
+            (0, settings_view_1.renderUnconfirmedSecurityRow)(section, this.plugin, enabledKey, {});
+        (0, settings_view_1.renderUnconfirmedSecurityRow)(section, this.plugin, disabledKey, {});
+        const listEl = section.createDiv({ cls: "gryphon-protected-list" });
         applyEnabledVisual = (on) => {
             listEl.style.opacity = on ? "" : "0.45";
             listEl.style.pointerEvents = on ? "" : "none";
@@ -456,23 +548,25 @@ class GryphonSettingTab extends PluginSettingTab {
                 // Use Obsidian's native tooltip for consistency with the
                 // rest of the settings tab — right-placed, dark background.
                 if (tooltip)
-                    setTooltip(row, tooltip, { placement: "bottom" });
+                    (0, obsidian_1.setTooltip)(row, tooltip, { placement: "bottom" });
                 const cb = row.createEl("input", { type: "checkbox" });
                 cb.checked = !disabledSet.has(pattern);
-                cb.addEventListener("change", async () => {
-                    const next = cb.checked
-                        ? disabledList.filter((p) => p !== pattern)
-                        : (disabledList.includes(pattern) ? disabledList : [...disabledList, pattern]);
-                    try {
-                        await securityUi.applySecuritySetting(this.plugin, disabledKey, next);
-                    }
-                    catch (e) {
-                        securityUi.reportSecurityWriteError(e);
-                    }
-                    // Re-render so the summary count updates to match. Minor
-                    // DOM churn; acceptable because toggling default rules is
-                    // a rare, deliberate action.
-                    rerender();
+                cb.addEventListener("change", () => {
+                    void (async () => {
+                        const next = cb.checked
+                            ? disabledList.filter((p) => p !== pattern)
+                            : (disabledList.includes(pattern) ? disabledList : [...disabledList, pattern]);
+                        try {
+                            await securityUi.applySecuritySetting(this.plugin, disabledKey, next);
+                        }
+                        catch (e) {
+                            securityUi.reportSecurityWriteError(e);
+                        }
+                        // Re-render so the summary count updates to match. Minor
+                        // DOM churn; acceptable because toggling default rules is
+                        // a rare, deliberate action.
+                        rerender();
+                    })();
                 });
                 row.createEl("code", { text: pattern });
             }
@@ -481,12 +575,13 @@ class GryphonSettingTab extends PluginSettingTab {
             // default-open when ANY custom exists (that's a clear "I care
             // about this" signal); closed when empty (just the Add input
             // matters).
-            const customsOpen = settings[customKey].length > 0;
+            const customs = settings[customKey];
+            const customsOpen = customs.length > 0;
             const customsDetails = listEl.createEl("details", { cls: "gryphon-protected-details" });
             if (customsOpen)
                 customsDetails.open = true;
             customsDetails.createEl("summary", {
-                text: `Your rules — ${settings[customKey].length}`,
+                text: `Your rules — ${customs.length}`,
                 cls: "gryphon-protected-summary",
             });
             if (customHint) {
@@ -495,35 +590,37 @@ class GryphonSettingTab extends PluginSettingTab {
                     text: customHint,
                 });
             }
-            if (settings[customKey].length === 0) {
+            if (customs.length === 0) {
                 customsDetails.createEl("p", {
                     cls: "gryphon-protected-empty",
                     text: customEmptyText,
                 });
             }
             else {
-                for (let i = 0; i < settings[customKey].length; i++) {
-                    const pattern = settings[customKey][i];
-                    const row = customsDetails.createEl("div", { cls: "gryphon-protected-row gryphon-protected-row-custom" });
+                for (let i = 0; i < customs.length; i++) {
+                    const pattern = customs[i];
+                    const row = customsDetails.createDiv({ cls: "gryphon-protected-row gryphon-protected-row-custom" });
                     row.createEl("code", { text: pattern });
                     const removeBtn = row.createEl("button", { text: "×", cls: "gryphon-protected-remove", attr: { title: "Remove" } });
-                    removeBtn.addEventListener("click", async () => {
-                        settings[customKey] = settings[customKey].filter((_, idx) => idx !== i);
-                        await this.plugin.saveSettings();
-                        rerender();
+                    removeBtn.addEventListener("click", () => {
+                        void (async () => {
+                            settings[customKey] = settings[customKey].filter((_, idx) => idx !== i);
+                            await this.plugin.saveSettings();
+                            rerender();
+                        })();
                     });
                 }
             }
             // Add-new row (inside customsDetails so all custom-related UI
             // shares one collapsible region).
-            const addRow = customsDetails.createEl("div", { cls: "gryphon-protected-add" });
+            const addRow = customsDetails.createDiv({ cls: "gryphon-protected-add" });
             const input = addRow.createEl("input", {
                 type: "text",
                 cls: "gryphon-protected-add-input",
                 attr: { placeholder: addPlaceholder },
             });
             const addBtn = addRow.createEl("button", { text: "Add", cls: "gryphon-protected-add-btn" });
-            const errEl = addRow.createEl("span", { cls: "gryphon-protected-add-error" });
+            const errEl = addRow.createSpan({ cls: "gryphon-protected-add-error" });
             const submit = async () => {
                 const val = input.value.trim();
                 errEl.setText("");
@@ -546,11 +643,11 @@ class GryphonSettingTab extends PluginSettingTab {
                 input.value = "";
                 rerender();
             };
-            addBtn.addEventListener("click", submit);
+            addBtn.addEventListener("click", () => { void submit(); });
             input.addEventListener("keydown", (e) => {
                 if (e.key === "Enter") {
                     e.preventDefault();
-                    submit();
+                    void submit();
                 }
             });
         };
@@ -580,7 +677,7 @@ class GryphonSettingTab extends PluginSettingTab {
         // Delegate to the shared module helper (issue #14) so the standalone tab
         // and embedding consumers render identical section headings. `this.plugin`
         // supplies the settings/saveSettings the master-toggle path needs.
-        return renderSectionHeading(parentEl, opts, this.plugin);
+        return (0, settings_view_1.renderSectionHeading)(parentEl, opts, this.plugin);
     }
     /**
      * Collapse a Setting row's description into Obsidian's native
@@ -599,7 +696,7 @@ class GryphonSettingTab extends PluginSettingTab {
     _descToTooltip(setting, tooltipText) {
         // Delegate to the shared module helper (issue #14) — single source for the
         // info-icon affordance across the standalone tab and embedding consumers.
-        return descToTooltip(setting, tooltipText);
+        return (0, settings_view_1.descToTooltip)(setting, tooltipText);
     }
     /**
      * One-line header row for the Security section. Uses Obsidian's
@@ -623,16 +720,16 @@ class GryphonSettingTab extends PluginSettingTab {
      */
     _renderSecurityHeaderRow(parentEl, opts) {
         const { title, shortDesc, tooltipDetail, toggleKey, onToggle } = opts;
-        const setting = new Setting(parentEl).setName(title);
+        const setting = new obsidian_1.Setting(parentEl).setName(title);
         setting.setDesc(""); // no visible description; tooltip carries it
         const tooltipText = [shortDesc, tooltipDetail].filter(Boolean).join("\n\n");
         if (tooltipText) {
-            const info = setting.nameEl.createEl("span", {
+            const info = setting.nameEl.createSpan({
                 cls: "gryphon-info-icon gryphon-info-icon-inline",
                 attr: { tabindex: "0" },
             });
-            info.createEl("span", { text: "i", cls: "gryphon-info-icon-glyph" });
-            setTooltip(info, tooltipText, { placement: "bottom" });
+            info.createSpan({ text: "i", cls: "gryphon-info-icon-glyph" });
+            (0, obsidian_1.setTooltip)(info, tooltipText, { placement: "bottom" });
         }
         if (toggleKey) {
             // Issue #29: a weakening key shows the effective value and writes
@@ -672,7 +769,9 @@ class GryphonSettingTab extends PluginSettingTab {
 // the Gryphon repo, or equivalently, to invoke Obsidian's disablePlugin
 // on "gryphon" themselves during their own onload.
 const GRYPHON_HOST_PLUGIN_IDS = [];
-class GryphonPlugin extends Plugin {
+class GryphonPlugin extends obsidian_1.Plugin {
+    /** The settings tab class (exposed for tests; Obsidian loads only the plugin). */
+    static SettingTab = GryphonSettingTab;
     // #29 review: the security-settings store namespace for Gryphon's own
     // views and settings tabs. Pinned in code, never read from manifest.json
     // (which ships inside the vault and could be renamed to another host's id).
@@ -682,7 +781,7 @@ class GryphonPlugin extends Plugin {
         // defer to it to avoid duplicate view/ribbon registration.
         for (const hostId of GRYPHON_HOST_PLUGIN_IDS) {
             if (this.app.plugins.enabledPlugins.has(hostId)) {
-                new Notice(`The "${hostId}" plugin embeds Gryphon — disable it to run ` +
+                new obsidian_1.Notice(`The "${hostId}" plugin embeds Gryphon — disable it to run ` +
                     `Gryphon standalone.`, 10000);
                 return;
             }
@@ -700,7 +799,7 @@ class GryphonPlugin extends Plugin {
         // but without persistent tags. Session flags live on the plugin
         // instance (cleared on unload), keyed by CC session_id.
         const pluginDir = this.absolutePluginDir();
-        this.provenanceStore = pluginDir ? new ProvenanceStore(pluginDir) : null;
+        this.provenanceStore = pluginDir ? new gryphon_protect_5.ProvenanceStore(pluginDir) : null;
         this._sessionFlags = new Map(); // session_id → { untrustedContentActive: bool }
         // Sessions whose JSONL/transcript carries a Gryphon protected-deny
         // result. CLI providers (codex-cli, gemini-cli, claude-code) check
@@ -729,7 +828,7 @@ class GryphonPlugin extends Plugin {
         // that crosses `restApiWarnThreshold` surfaces a one-time toast.
         // `_resetRestApiCounter()` runs on every user send (wired from
         // chat-view) and on /new / /clear.
-        this._restApiCounter = new RestApiTurnCounter({
+        this._restApiCounter = new rest_api_policy_1.RestApiTurnCounter({
             threshold: typeof this.settings.restApiWarnThreshold === "number"
                 ? this.settings.restApiWarnThreshold
                 : 50,
@@ -740,14 +839,15 @@ class GryphonPlugin extends Plugin {
         // reloads. Pid-liveness protects concurrent Obsidian windows
         // from having their in-flight files touched.
         try {
-            const s = sweepGryphonOrphans({
+            const s = (0, gryphon_protect_6.sweepGryphonOrphans)({
                 pluginDir,
                 truncateTraceLog: !!(this.settings && this.settings.devCliDebug),
             });
             // Debug-gated: an orphan sweep is internal housekeeping a user cannot
             // act on, and Obsidian's guidelines call for keeping the console quiet.
-            if (s.totalRemoved > 0 && this.settings && this.settings.devCliDebug) {
-                console.log(`[gryphon] orphan sweep: removed ${s.totalRemoved} file(s) ` +
+            const totalRemoved = s.totalRemoved;
+            if (totalRemoved > 0 && this.settings && this.settings.devCliDebug) {
+                console.debug(`[gryphon] orphan sweep: removed ${totalRemoved} file(s) ` +
                     `(hook-settings:${s.hookSettings.removed.length}, ` +
                     `sockets:${s.sockets.removed.length}, ` +
                     `provenance-tmp:${s.provenanceTmp.removed.length}, ` +
@@ -755,9 +855,10 @@ class GryphonPlugin extends Plugin {
             }
         }
         catch (e) {
-            console.warn("[gryphon] orphan sweep failed:", e && e.message);
+            const err = e;
+            console.warn("[gryphon] orphan sweep failed:", err && err.message);
         }
-        this.ipcServer = new PermissionIPCServer();
+        this.ipcServer = new gryphon_protect_2.PermissionIPCServer();
         this._registerIpcHandlers(this.ipcServer);
         // Cache the bound socket path so ensureIpcListening can re-bind
         // to the SAME path on recovery. If we rebind to a new path, any
@@ -765,39 +866,34 @@ class GryphonPlugin extends Plugin {
         // GRYPHON_PERMISSION_SOCKET env var at the old path — its hooks
         // connect to a dead endpoint and silently fail (CC treats exit≠0
         // as "allow"). Multi-view / openInMainTab users hit this.
-        this._ipcSocketPath = defaultSocketPath();
+        this._ipcSocketPath = (0, gryphon_protect_2.defaultSocketPath)();
         try {
             await this.ipcServer.create(this._ipcSocketPath);
         }
         catch (e) {
-            console.warn("[gryphon] IPC server failed to start:", e && e.message);
+            const err = e;
+            console.warn("[gryphon] IPC server failed to start:", err && err.message);
             this.ipcServer = null;
             // Also surface via Notice — onload failures previously only hit
             // console.warn, so users had zero signal until their first CLI
             // send (which could be hours/days later).
             try {
-                const { Notice } = require("obsidian");
-                new Notice(`Gryphon: IPC server failed to start (${(e && e.message) || e}). ` +
+                new obsidian_1.Notice(`Gryphon: IPC server failed to start (${(err && err.message) || String(err)}). ` +
                     `Claude Code mode will run with basic pattern enforcement only (no Unicode ` +
                     `normalization). Reload Obsidian (Cmd/Ctrl+P → "Reload app without ` +
                     `saving") to retry.`, 15000);
             }
-            catch (_) { /* obsidian unavailable in tests */ }
+            catch { /* obsidian unavailable in tests */ }
         }
-        // Single shared HostAdapter instance for the entire plugin session.
-        // Passed to createProvider() and createProtectionContext() so runtime/
-        // protect internals stay headless and never require("obsidian") directly.
-        const { ObsidianHostAdapter } = require("./obsidian-host-adapter");
-        const { handlePendingApprovals } = require("./mcp-approval-ui");
-        this.hostAdapter = new ObsidianHostAdapter({
-            onMcpApprovalsPending: (report) => handlePendingApprovals(this, report),
+        this.hostAdapter = new obsidian_host_adapter_1.ObsidianHostAdapter({
+            onMcpApprovalsPending: (report) => (0, mcp_approval_ui_1.handlePendingApprovals)(this, report),
         });
-        this.skillRegistry = new SkillRegistry(this.app);
+        this.skillRegistry = new skills_1.SkillRegistry(this.app);
         // Init asynchronously — folder seeding + scan. The view consults the
         // registry lazily (on every autocomplete update), so if init finishes
         // after the view mounts, skills appear on the next keystroke.
         this.skillRegistry.init().catch((e) => console.warn("[gryphon] SkillRegistry init failed:", e));
-        this.registerView(VIEW_TYPE, (leaf) => new GryphonChatView(leaf, this, {
+        this.registerView(VIEW_TYPE, (leaf) => new chat_view_1.GryphonChatView(leaf, this, {
             viewType: VIEW_TYPE,
             displayText: "Gryphon",
             icon: "shield-check",
@@ -827,7 +923,7 @@ class GryphonPlugin extends Plugin {
             callback: async () => {
                 const picked = this._pickSelectionForInjection();
                 if (!picked) {
-                    new Notice("Gryphon: no text selected");
+                    new obsidian_1.Notice("Gryphon: no text selected");
                     return;
                 }
                 await this.activateView();
@@ -837,7 +933,7 @@ class GryphonPlugin extends Plugin {
                     gryphonView.insertSelectionIntoInput(picked.text, picked.file);
                 }
                 else {
-                    new Notice("Gryphon: chat view not available");
+                    new obsidian_1.Notice("Gryphon: chat view not available");
                 }
             },
         });
@@ -858,8 +954,9 @@ class GryphonPlugin extends Plugin {
         if (leaf) {
             workspace.revealLeaf(leaf);
             window.requestAnimationFrame(() => {
-                if (leaf.view.inputEl)
-                    leaf.view.inputEl.focus();
+                const view = leaf.view;
+                if (view.inputEl)
+                    view.inputEl.focus();
             });
         }
     }
@@ -877,8 +974,7 @@ class GryphonPlugin extends Plugin {
             return { text: viewCache.text, file: viewCache.file };
         }
         // 2. Active editor selection (Source / Live Preview)
-        const { MarkdownView } = require("obsidian");
-        const mdView = this.app.workspace.getActiveViewOfType(MarkdownView);
+        const mdView = this.app.workspace.getActiveViewOfType(obsidian_2.MarkdownView);
         if (mdView && mdView.editor) {
             const sel = mdView.editor.getSelection();
             if (sel)
@@ -985,8 +1081,9 @@ class GryphonPlugin extends Plugin {
     }
     onunload() {
         for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-            if (leaf.view.claudeProcess)
-                leaf.view.claudeProcess.abort();
+            const view = leaf.view;
+            if (view.claudeProcess)
+                view.claudeProcess.abort();
         }
         // Belt-and-suspenders (R4): flush the subprocess registry so any CLI
         // child tree the runtime spawned — including one whose provider
@@ -994,9 +1091,8 @@ class GryphonPlugin extends Plugin {
         // abort() it — is reaped. Without this, a leaked `claude` + its MCP
         // grandchildren would orphan on plugin unload / Obsidian quit.
         try {
-            const { killAllSubprocesses } = require("@gryphon/provider-runtime");
-            if (typeof killAllSubprocesses === "function") {
-                killAllSubprocesses("SIGTERM");
+            if (typeof gryphon_provider_runtime_1.killAllSubprocesses === "function") {
+                (0, gryphon_provider_runtime_1.killAllSubprocesses)("SIGTERM");
                 // Escalate: a tree that ignores SIGTERM (a wedged MCP grandchild)
                 // must not survive unload. The registry deregisters children that
                 // already exited and killProcessTree skips exited pids, so this
@@ -1004,15 +1100,15 @@ class GryphonPlugin extends Plugin {
                 // does not tear down the renderer, so the timer still fires.
                 window.setTimeout(() => {
                     try {
-                        killAllSubprocesses("SIGKILL");
+                        (0, gryphon_provider_runtime_1.killAllSubprocesses)("SIGKILL");
                     }
-                    catch (_) { /* best-effort */ }
+                    catch { /* best-effort */ }
                 }, 2000);
             }
         }
-        catch (_) { /* best-effort — never block unload */ }
+        catch { /* best-effort — never block unload */ }
         if (this.skillRegistry)
-            this.skillRegistry.unload();
+            void this.skillRegistry.unload();
         // Close IPC server last so any in-flight hook request from a CC
         // process we just aborted gets a clean connection drop rather than
         // a stranded half-response.
@@ -1020,16 +1116,15 @@ class GryphonPlugin extends Plugin {
             try {
                 void this.ipcServer.close();
             }
-            catch (_) { /* best-effort */ }
+            catch { /* best-effort */ }
             this.ipcServer = null;
         }
         // Remove the body-appended settings hover-tooltip singleton, if one was
         // ever shown — Obsidian asks plugins to clean up DOM they add to body.
         try {
-            const { disposeHoverTooltip } = require("./settings-view");
-            disposeHoverTooltip?.();
+            (0, settings_view_2.disposeHoverTooltip)?.();
         }
-        catch (_) { /* best-effort */ }
+        catch { /* best-effort */ }
     }
     /**
      * Absolute filesystem path to this plugin's directory (where
@@ -1063,7 +1158,7 @@ class GryphonPlugin extends Plugin {
         server.on("provenance_add", async (req) => this._handleProvenanceAdd(req));
         server.on("provenance_mark", async (req) => this._handleProvenanceMark(req));
         server.on("session_end", async (req) => this._handleSessionEnd(req));
-        server.on("ping", async (req) => this._handlePing(req));
+        server.on("ping", async () => this._handlePing());
         server.on("notice", async (req) => this._handleNotice(req));
     }
     /**
@@ -1095,8 +1190,7 @@ class GryphonPlugin extends Plugin {
         // the first path — rebinding elsewhere leaves them connecting
         // to a dead endpoint. Fallback to a fresh path only if we somehow
         // lost the cache (shouldn't happen, but defensive).
-        const { defaultSocketPath } = require("@gryphon/protect");
-        const socketPath = this._ipcSocketPath || defaultSocketPath();
+        const socketPath = this._ipcSocketPath || (0, gryphon_protect_2.defaultSocketPath)();
         try {
             await Promise.race([
                 this.ipcServer.create(socketPath),
@@ -1105,12 +1199,13 @@ class GryphonPlugin extends Plugin {
             return !!(this.ipcServer && this.ipcServer.isListening());
         }
         catch (e) {
+            const err = e;
             // If the error is "already created" (a racing path beat us to
             // binding), the server is actually healthy — return the real
             // state rather than propagating a spurious failure.
             if (this.ipcServer && this.ipcServer.isListening())
                 return true;
-            console.warn("[gryphon] IPC recovery failed:", (e && e.message) || e, "— CLI spawn will proceed on fallback path");
+            console.warn("[gryphon] IPC recovery failed:", (err && err.message) || err, "— CLI spawn will proceed on fallback path");
             return false;
         }
     }
@@ -1120,7 +1215,7 @@ class GryphonPlugin extends Plugin {
      * provenance store (if applicable) is healthy. Anything else returns
      * `{ok: false, reason}`. SessionStart fail-closes on non-ok.
      */
-    async _handlePing(_req) {
+    async _handlePing() {
         if (!this.ipcServer || !this.ipcServer.isListening()) {
             return { ok: false, reason: "ipc-server-not-listening" };
         }
@@ -1150,10 +1245,11 @@ class GryphonPlugin extends Plugin {
         const display = message.length > 280 ? message.slice(0, 277) + "..." : message;
         const durationMs = display.length > 80 ? 8000 : 4000;
         try {
-            new Notice(`CLI: ${display}`, durationMs);
+            new obsidian_1.Notice(`CLI: ${display}`, durationMs);
         }
         catch (e) {
-            return { ok: false, reason: (e && e.message) || String(e) };
+            const err = e;
+            return { ok: false, reason: (err && err.message) || String(err) };
         }
         return { ok: true };
     }
@@ -1174,19 +1270,18 @@ class GryphonPlugin extends Plugin {
         // path.resolve for paths that don't exist on disk (e.g. a Write to
         // a not-yet-created path).
         const lexical = path.isAbsolute(p) ? path.resolve(p) : path.resolve(base, p);
-        const fs = require("fs");
         let resolved;
         try {
             resolved = fs.realpathSync(lexical);
         }
-        catch (_) {
+        catch {
             resolved = lexical;
         }
         let normalizedRoot;
         try {
             normalizedRoot = fs.realpathSync(path.resolve(vaultRoot));
         }
-        catch (_) {
+        catch {
             normalizedRoot = path.resolve(vaultRoot);
         }
         if (resolved !== normalizedRoot && !resolved.startsWith(normalizedRoot + path.sep)) {
@@ -1286,7 +1381,8 @@ class GryphonPlugin extends Plugin {
             });
         }
         catch (e) {
-            return { tagged: false, error: (e && e.message) || String(e) };
+            const err = e;
+            return { tagged: false, error: (err && err.message) || String(err) };
         }
         return { tagged: true, key };
     }
@@ -1308,7 +1404,7 @@ class GryphonPlugin extends Plugin {
     _openProvenanceListModal() {
         if (!this.provenanceStore)
             return;
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Untrusted-content tags");
         const entries = this.provenanceStore.list().sort((a, b) => a.path.localeCompare(b.path));
         if (entries.length === 0) {
@@ -1324,7 +1420,8 @@ class GryphonPlugin extends Plugin {
                 const th = head.createEl("th", { text: h });
                 th.setCssStyles({ textAlign: "left", padding: "4px 8px", borderBottom: "1px solid var(--background-modifier-border)" });
             }
-            for (const { path: p, metadata } of entries) {
+            for (const { path: p, metadata: rawMetadata } of entries) {
+                const metadata = rawMetadata;
                 const tr = table.createEl("tr");
                 const cells = [
                     p,
@@ -1347,30 +1444,30 @@ class GryphonPlugin extends Plugin {
     _confirmClearProvenance() {
         if (!this.provenanceStore)
             return;
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Clear all untrusted-content tags?");
         modal.contentEl.createEl("p", {
             text: "This removes every tag, but does NOT delete the files themselves. " +
                 "Claude will no longer be warned about previously-tagged content " +
                 "until those files are re-tagged.",
         });
-        new Setting(modal.contentEl)
+        new obsidian_1.Setting(modal.contentEl)
             .addButton((btn) => btn.setButtonText("Cancel").onClick(() => modal.close()))
-            .addButton((btn) => btn.setButtonText("Clear all").setWarning().onClick(() => {
+            .addButton((btn) => (0, obsidian_compat_1.warningButton)(btn.setButtonText("Clear all")).onClick(() => {
             try {
                 this.provenanceStore.clear();
-                new Notice("Cleared all tags.");
+                new obsidian_1.Notice("Cleared all tags.");
             }
             catch (e) {
-                new Notice(`Clear failed: ${(e && e.message) || e}`);
+                const err = e;
+                new obsidian_1.Notice(`Clear failed: ${(err && err.message) || String(err)}`);
             }
             modal.close();
             // Round-8 F7: refresh the settings tab via the stashed
-            // reference (PluginSettingTab.display() is idempotent).
+            // reference (refresh() is idempotent).
             // getActiveViewOfType doesn't work for settings tabs.
-            if (this._activeSettingTab && typeof this._activeSettingTab.display === "function") {
-                this._activeSettingTab.display();
-            }
+            if (this._activeSettingTab)
+                this._activeSettingTab.refresh();
         }));
         modal.open();
     }
@@ -1404,7 +1501,7 @@ class GryphonPlugin extends Plugin {
     }
     async _handleClassifyRequest(req) {
         const tool = req && typeof req.tool === "string" ? req.tool : null;
-        const input = req && req.input && typeof req.input === "object" ? req.input : null;
+        const input = (req && req.input && typeof req.input === "object" ? req.input : null);
         if (!tool || !input) {
             return { decision: "deny", reason: "gryphon: classify request missing tool/input" };
         }
@@ -1420,7 +1517,7 @@ class GryphonPlugin extends Plugin {
         // resolving links, so a vault opened through a symlink must be too.
         let realRoot = vaultRoot;
         try {
-            realRoot = require("fs").realpathSync(vaultRoot);
+            realRoot = fs.realpathSync(vaultRoot);
         }
         catch { /* keep as given */ }
         const ctx = {
@@ -1434,12 +1531,13 @@ class GryphonPlugin extends Plugin {
         };
         let classification;
         try {
-            classification = attackDetector.classify(tool, input, ctx);
+            classification = gryphon_protect_3.attackDetector.classify(tool, input, ctx);
         }
         catch (e) {
+            const err = e;
             return {
                 decision: "deny",
-                reason: `gryphon: classification failed: ${(e && e.message) || e}`,
+                reason: `gryphon: classification failed: ${(err && err.message) || String(err)}`,
             };
         }
         // Route decision by tool + match:
@@ -1474,7 +1572,7 @@ class GryphonPlugin extends Plugin {
         // use that when classification fired, else normalize the raw name
         // here as a defensive default.
         const canonicalTool = (classification && classification.tool) ||
-            attackDetector.normalizeToolName(tool) ||
+            gryphon_protect_3.attackDetector.normalizeToolName(tool) ||
             tool;
         const isMutating = canonicalTool === "Bash" || canonicalTool === "PowerShell" ||
             canonicalTool === "Write" || canonicalTool === "Edit";
@@ -1496,7 +1594,7 @@ class GryphonPlugin extends Plugin {
         // Auto-deny + no classification → short-circuit to allow. Hooks
         // are enabled in auto-deny mode SO the Unicode-normalization path
         // in classify() fires on shapes the byte-exact deny-globs miss
-        // (fullwidth `ｒｍ`, zero-width-joined `r​m`). But the auto-deny
+        // (fullwidth `ｒｍ`, zero-width-joined `r<U+200B>m`). But the auto-deny
         // UX contract is "no modal prompts for routine ops" — so when the
         // pattern check returns null, we must bypass gate() (which would
         // modal in default permission mode for mutating tools) and allow
@@ -1509,7 +1607,7 @@ class GryphonPlugin extends Plugin {
         const kind = (canonicalTool === "Bash" || canonicalTool === "PowerShell") ? "exec" : "fileEdit";
         let gateResult;
         try {
-            gateResult = await attackDetector.gate(classification, {
+            gateResult = (await gryphon_protect_3.attackDetector.gate(classification, {
                 ctx, action, target, detail: null, kind,
                 // Allow the gate to use the session cache. Protected ops
                 // never cache in either direction — every retry of a
@@ -1518,12 +1616,13 @@ class GryphonPlugin extends Plugin {
                 // per-target when the user ticks "Remember"; bash never
                 // caches (per-command decisions).
                 cacheable: true,
-            });
+            }));
         }
         catch (e) {
+            const err = e;
             return {
                 decision: "deny",
-                reason: `gryphon: permission modal failed: ${(e && e.message) || e}`,
+                reason: `gryphon: permission modal failed: ${(err && err.message) || String(err)}`,
             };
         }
         // Compose a user-facing deny reason so the model has something
@@ -1553,7 +1652,7 @@ class GryphonPlugin extends Plugin {
             const protectedKind = (tool === "Bash" || tool === "PowerShell")
                 ? "protected-exec"
                 : "protected";
-            displayReason = buildDenyReason({
+            displayReason = (0, gryphon_protect_1.buildDenyReason)({
                 action,
                 target,
                 category: classification.category || null,
@@ -1615,12 +1714,13 @@ class GryphonPlugin extends Plugin {
      */
     _applyRestApiPolicy(input, security = securityUi.effectiveSecurityFor(this)) {
         const url = input && typeof input.url === "string" ? input.url : "";
-        if (!isObsidianRestApiUrl(url))
+        if (!(0, rest_api_policy_1.isObsidianRestApiUrl)(url))
             return null;
         const policy = security && security.obsidianRestApiPolicy;
         if (policy === "allowed") {
             try {
-                this._restApiCounter && this._restApiCounter.note();
+                if (this._restApiCounter)
+                    this._restApiCounter.note();
             }
             catch (e) {
                 // The counter is arithmetic + callback dispatch; the callback
@@ -1634,7 +1734,7 @@ class GryphonPlugin extends Plugin {
         // string is the same text the model surfaces to the user; we keep
         // it short and instructive so the model doesn't paraphrase away
         // the "use vault-native search" recovery path.
-        return { decision: "deny", reason: buildRestApiDenyReason() };
+        return { decision: "deny", reason: (0, rest_api_policy_1.buildRestApiDenyReason)() };
     }
     /**
      * F4 (v1.7.0): fires once per turn when REST API GET count crosses
@@ -1645,8 +1745,7 @@ class GryphonPlugin extends Plugin {
      */
     _onRestApiThresholdCrossed(count) {
         try {
-            const { Notice } = require("obsidian");
-            new Notice(`Gryphon: the model has issued ${count} Obsidian REST API GETs ` +
+            new obsidian_1.Notice(`Gryphon: the model has issued ${count} Obsidian REST API GETs ` +
                 `this turn. This pattern usually means enumeration — consider ` +
                 `interrupting and asking it to use vault search instead.`, 12000);
         }
@@ -1706,7 +1805,7 @@ class GryphonPlugin extends Plugin {
         // needs it to distinguish "user explicitly set X" from "default filled
         // X in" — Object.assign collapses those two cases into the same value.
         const userData = (await this.loadData()) || {};
-        this.settings = Object.assign({}, DEFAULT_SETTINGS, userData);
+        this.settings = Object.assign({}, constants_1.DEFAULT_SETTINGS, userData);
         this._migrateSettings(userData);
         const retired = this._migrateRetiredModels();
         // Persist so the rewrite (and any Notice below) happens once, not on
@@ -1727,7 +1826,7 @@ class GryphonPlugin extends Plugin {
         if (retiredMsg && typeof window !== "undefined") {
             // Deferred like the provider-unready notice: settings load runs before
             // the workspace paints, and a Notice created that early can be lost.
-            window.setTimeout(() => new Notice(retiredMsg, 10000), 0);
+            window.setTimeout(() => new obsidian_1.Notice(retiredMsg, 10000), 0);
         }
         this._dropStalePerReloadSessionIds();
         this._stripStaleAntigravityHooks();
@@ -1746,7 +1845,7 @@ class GryphonPlugin extends Plugin {
      */
     _stripStaleAntigravityHooks() {
         try {
-            require("@gryphon/protect").hookAdapters.getAdapter("antigravity-cli")?.stripStaleHooks();
+            gryphon_protect_7.hookAdapters.getAdapter("antigravity-cli")?.stripStaleHooks();
         }
         catch (e) {
             console.warn(`[gryphon] antigravity hook self-heal skipped: ${e.message}`);
@@ -1799,7 +1898,7 @@ class GryphonPlugin extends Plugin {
             // Debug-gated for the same reason: the session reset is automatic and
             // needs no user action; the detail matters only when diagnosing.
             if (this.settings && this.settings.devCliDebug)
-                console.log(`[gryphon] dropping stale CLI lastSessionId on plugin load: ${sid} ` +
+                console.debug(`[gryphon] dropping stale CLI lastSessionId on plugin load: ${sid} ` +
                     `(chat history preserved; next message starts a fresh CLI session ` +
                     `to pick up any sandbox/hook config changes from the new plugin build)`);
             this.settings.lastSessionId = null;
@@ -1830,8 +1929,8 @@ class GryphonPlugin extends Plugin {
             }
             delete this.settings[oldKey];
         };
-        migrateList("protectedPaths", "protectedPathsCustom", DEFAULT_PROTECTED_PATHS);
-        migrateList("protectedCommands", "protectedCommandsCustom", DEFAULT_PROTECTED_COMMANDS);
+        migrateList("protectedPaths", "protectedPathsCustom", constants_1.DEFAULT_PROTECTED_PATHS);
+        migrateList("protectedCommands", "protectedCommandsCustom", constants_1.DEFAULT_PROTECTED_COMMANDS);
         // v0.9.2: hookInstrumentation → protectedMode + autoDenyProtected.
         // Old semantics:
         //   hookInstrumentation=true  → modal via hooks
@@ -1884,8 +1983,8 @@ class GryphonPlugin extends Plugin {
         //   opus[1m] → claude-opus-5-5      (same — intrinsically 1M)
         const aliased = this.settings.model;
         if (typeof aliased === "string"
-            && Object.prototype.hasOwnProperty.call(MODEL_ALIAS_MIGRATION, aliased)) {
-            this.settings.model = MODEL_ALIAS_MIGRATION[aliased];
+            && Object.prototype.hasOwnProperty.call(constants_1.MODEL_ALIAS_MIGRATION, aliased)) {
+            this.settings.model = constants_1.MODEL_ALIAS_MIGRATION[aliased];
         }
     }
     /**
@@ -1905,8 +2004,8 @@ class GryphonPlugin extends Plugin {
         for (const key of ["model", "fallbackModel"]) {
             const from = this.settings[key];
             if (typeof from === "string"
-                && Object.prototype.hasOwnProperty.call(MODEL_RETIREMENT_MIGRATION, from)) {
-                const to = MODEL_RETIREMENT_MIGRATION[from];
+                && Object.prototype.hasOwnProperty.call(constants_1.MODEL_RETIREMENT_MIGRATION, from)) {
+                const to = constants_1.MODEL_RETIREMENT_MIGRATION[from];
                 this.settings[key] = to;
                 changes.push({ key, from, to });
             }
@@ -2005,8 +2104,9 @@ class GryphonPlugin extends Plugin {
                 w.trigger("gryphon:settings-changed", this.settings);
             }
             catch (e) {
+                const err = e;
                 console.error(`[gryphon] gryphon:settings-changed listener threw — settings DID persist. ` +
-                    `Listener error: ${(e && e.message) || e}`);
+                    `Listener error: ${(err && err.message) || String(err)}`);
             }
         }
         else if (this.app) {

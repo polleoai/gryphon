@@ -43,14 +43,30 @@
  *                      claude-code keeps its permissions.deny globs instead.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const runtimeUtils = require("../../provider-runtime/dist/utils");
-const { getAdapter, listSupportedKinds } = require("./hook-adapters");
-const { securityInputsOf } = require("./security-settings-store");
-const { ensureStoreGuardScript } = require("./store-guard");
-const { approvalsDir } = require("./mcp-approvals");
-const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+import * as path from "path";
+import * as fs from "fs";
+import { getAdapter, listSupportedKinds } from "./hook-adapters";
+import { ensureStoreGuardScript } from "./store-guard";
+import { approvalsDir } from "./mcp-approvals";
+
+import * as runtimeUtils from "@polleoai/gryphon-provider-runtime/utils";
+import { securityInputsOf } from "./security-settings-store";
+import { HOOK_FILES } from "@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder";
+
+// What an adapter's buildSpawnExtras returns.
+interface SpawnExtras {
+  env?: Record<string, string>;
+  args?: string[];
+  cleanup?: () => void;
+  settingsFile?: string | null;
+}
+
+// A hook adapter (hook-adapters/*; CommonJS modules, see index.ts).
+interface HookAdapter {
+  kind: string;
+  buildSpawnExtras(args: Record<string, unknown>): SpawnExtras | null;
+  lastRefusal?: () => string | null;
+}
 
 function _protectedModeOn(plugin: Record<string, unknown> | null | undefined, security?: Record<string, unknown> | null): boolean {
   // The spawn's security snapshot. Without one, securityInputsOf returns the
@@ -90,7 +106,7 @@ function _preflight(plugin: Record<string, unknown> | null | undefined, security
   }
 
   const hasIpcServer = !!(plugin && plugin.ipcServer);
-  const ipcServer = plugin && (plugin.ipcServer as Record<string, unknown>);
+  const ipcServer = plugin && (plugin.ipcServer as { isListening?: () => unknown } | null | undefined);
   const ipcServerListening = !!(ipcServer && typeof ipcServer.isListening === "function" && ipcServer.isListening());
   const hasAbsolutePluginDir = !!(plugin && typeof plugin.absolutePluginDir === "function" && (plugin.absolutePluginDir as () => unknown)());
 
@@ -128,7 +144,7 @@ function _notify(options: Record<string, unknown>, key: string, msg: string) {
   if (_degradedNoticed.has(key)) return;
   _degradedNoticed.add(key);
   const ha = options && (options.hostAdapter as { notify?: (m: string, o?: unknown) => void } | undefined);
-  try { ha?.notify?.(msg, { level: "warn", timeoutMs: 15000 }); } catch (_) { /* a notice must not break a spawn */ }
+  try { ha?.notify?.(msg, { level: "warn", timeoutMs: 15000 }); } catch { /* a notice must not break a spawn */ }
 }
 function _noticeStoreGuardDegraded(kind: string, reason: string, options: Record<string, unknown>) {
   // Review: Antigravity refuses to start without this check (except when
@@ -162,14 +178,14 @@ function _noticeStoreGuardDegraded(kind: string, reason: string, options: Record
  * "ipc server not listening" or adapter errors stay in the console.
  */
 /** QA P2-B: an adapter's own reason for refusing, when it gives one. */
-function _refusalOf(adapter: any): string {
+function _refusalOf(adapter: HookAdapter | null | undefined): string {
   try {
     const r = adapter && typeof adapter.lastRefusal === "function" ? adapter.lastRefusal() : null;
     return r ? ` (refused: ${r})` : "";
-  } catch (_) { return ""; }
+  } catch { return ""; }
 }
 
-const { launcherRefusalText } = require("../../provider-runtime/dist/launcher-refusal-text");
+import { launcherRefusalText } from "@polleoai/gryphon-provider-runtime/launcher-refusal-text";
 
 function _plainCause(reason: string): string {
   const refusal = launcherRefusalText(reason);
@@ -206,8 +222,8 @@ function _noticeFullDegraded(kind: string, reason: string, fallbackOk: boolean, 
 }
 
 /** Store-guard-only extras for `kind`, or why they couldn't be built. */
-function _storeGuardExtras(kind: string, adapter: any, nodePath: string | null, options: Record<string, unknown>):
-  { ok: true; extras: any; scriptPath: string } | { ok: false; reason: string } {
+function _storeGuardExtras(kind: string, adapter: HookAdapter, nodePath: string | null, options: Record<string, unknown>):
+  { ok: true; extras: SpawnExtras; scriptPath: string } | { ok: false; reason: string } {
   if (!nodePath) return { ok: false, reason: "no node binary found" };
   const sg = ensureStoreGuardScript();
   if (!sg.ok) return { ok: false, reason: "store-guard script unavailable" };
@@ -231,7 +247,7 @@ function _storeGuardExtras(kind: string, adapter: any, nodePath: string | null, 
  */
 function _verifyHookScripts(pluginDir: string): string[] {
   const hookDir = path.join(pluginDir, "hooks");
-  const missing = [];
+  const missing: string[] = [];
   for (const scriptName of Object.values(HOOK_FILES)) {
     const p = path.join(hookDir, String(scriptName));
     if (!fs.existsSync(p)) missing.push(p);
@@ -265,7 +281,7 @@ function prepareSpawn({ kind, plugin, options = {} }: { kind: string; plugin: Re
   // we couldn't wire hooks (just nothing to merge).
   const empty = { ok: false, env: {}, args: [], cleanup: () => {}, details: {}, missing: [] };
 
-  const adapter = getAdapter(kind);
+  const adapter = getAdapter(kind) as HookAdapter | null;
   if (!adapter) {
     return {
       ...empty,
@@ -395,15 +411,17 @@ function prepareSpawn({ kind, plugin, options = {} }: { kind: string; plugin: Re
  */
 function preparePermissionsFallback({ kind, plugin, denyGlobs }: { kind: string; plugin: Record<string, unknown>; denyGlobs: string[] }) {
   if (kind !== "claude-code") return null;
-  const adapter = getAdapter(kind);
+  const adapter = getAdapter(kind) as HookAdapter | null;
   if (!adapter) return null;
   try {
+    // Not null-checked, as before: a null return throws on `.env` below and
+    // lands in the catch.
     const extras = adapter.buildSpawnExtras({
       pluginDir: (plugin as Record<string, unknown> & { absolutePluginDir: () => string }).absolutePluginDir(),
       ipcSocketPath: "",
       nodePath: "",
       permissionsOnly: { denyGlobs },
-    });
+    }) as SpawnExtras;
     return {
       ok: true,
       env: extras.env || {},
@@ -416,9 +434,9 @@ function preparePermissionsFallback({ kind, plugin, denyGlobs }: { kind: string;
   }
 }
 
-module.exports = {
+export {
   prepareSpawn,
   preparePermissionsFallback,
-  _preflight,         // exported for tests
+  _preflight, // exported for tests
   _verifyHookScripts, // exported for tests
 };

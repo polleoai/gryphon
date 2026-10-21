@@ -5,7 +5,7 @@
  * Every UI write of a weakening key — the toolbar picker, `/perm`, the REST
  * chip, Settings (Gryphon's own tab and the host-agnostic renderer an
  * embedder draws), the confirm prompt — goes through `applySecuritySetting`.
- * It writes the machine-local store in `@gryphon/protect` (outside the
+ * It writes the machine-local store in `@polleoai/gryphon-protect` (outside the
  * vault), mirrors the value into the host's settings for display continuity
  * (never enforced), and announces the change on the workspace bus.
  *
@@ -17,9 +17,29 @@
  * never dropped silently.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-const { Modal, Setting, Notice } = require("obsidian");
-const { securitySettings, mcpApprovals } = require("@gryphon/protect");
-const { WEAKENING_KEYS, SecurityScopeUnavailableError, describeSecurityScope, scopeKey, isWeakeningKey, isExecutableKey, validateSecurityValue, validateCliPath, setMachineSecuritySetting, setMachineCliPath, dismissVaultSecuritySuggestion, effectiveSecuritySettings, onSecurityStoreError, onSecurityStoreTamper, CLI_PATH_KEY_BY_KIND, } = securitySettings;
+exports.ConfirmVaultSecurityModal = exports.SecurityScopeUnavailableError = exports.SECURITY_CHANGED_EVENT = exports.WEAKENING_KEYS = void 0;
+exports.applySecuritySetting = applySecuritySetting;
+exports.applyCliPathSetting = applyCliPathSetting;
+exports.reportCliPathRejected = reportCliPathRejected;
+exports.reportSecurityTamperReverted = reportSecurityTamperReverted;
+exports.reportSecurityTamperUndoFailed = reportSecurityTamperUndoFailed;
+exports.cliPathLabel = cliPathLabel;
+exports.cliKindForPathKey = cliKindForPathKey;
+exports.reportSecurityWriteError = reportSecurityWriteError;
+exports.installSecurityStoreErrorNotice = installSecurityStoreErrorNotice;
+exports.securityScopeFor = securityScopeFor;
+exports.effectiveSecurityFor = effectiveSecurityFor;
+exports.securityKeyLabel = securityKeyLabel;
+exports.describeSecurityValue = describeSecurityValue;
+exports.hostDisplayName = hostDisplayName;
+exports.maybePromptVaultSecurity = maybePromptVaultSecurity;
+exports._resetPromptedScopes = _resetPromptedScopes;
+const obsidian_1 = require("obsidian");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const obsidian_compat_1 = require("./obsidian-compat");
+const { WEAKENING_KEYS, SecurityScopeUnavailableError, describeSecurityScope, scopeKey, isWeakeningKey, isExecutableKey, validateSecurityValue, validateCliPath, setMachineSecuritySetting, setMachineCliPath, dismissVaultSecuritySuggestion, effectiveSecuritySettings, onSecurityStoreError, onSecurityStoreTamper, CLI_PATH_KEY_BY_KIND, } = gryphon_protect_1.securitySettings;
+exports.WEAKENING_KEYS = WEAKENING_KEYS;
+exports.SecurityScopeUnavailableError = SecurityScopeUnavailableError;
 /** Issue #30: human names for the CLI path keys. */
 const CLI_PATH_LABELS = {
     claudePath: "Claude Code",
@@ -38,6 +58,7 @@ function cliKindForPathKey(key) {
     return null;
 }
 const SECURITY_CHANGED_EVENT = "gryphon:security-settings-changed";
+exports.SECURITY_CHANGED_EVENT = SECURITY_CHANGED_EVENT;
 const KEY_LABELS = {
     protectedMode: "Protected Mode",
     permissionMode: "Permission mode",
@@ -56,24 +77,39 @@ const PERM_LABELS = {
 function securityKeyLabel(key) {
     return KEY_LABELS[key] || key;
 }
+/** Display text for a value read from a vault file: strings as-is, other
+ *  values as JSON (an object shows its content, not "[object Object]"). */
+function _displayText(v) {
+    if (typeof v === "string")
+        return v;
+    if (typeof v === "number" || typeof v === "bigint")
+        return v.toString();
+    if (typeof v === "boolean")
+        return v ? "true" : "false";
+    if (v === null)
+        return "null";
+    if (v === undefined)
+        return "undefined";
+    return JSON.stringify(v) ?? typeof v;
+}
 /** Human, display-safe rendering of a value a vault file requests. */
 function describeSecurityValue(key, value) {
     let text;
     if (key === "permissionMode")
-        text = PERM_LABELS[String(value)] || String(value);
+        text = PERM_LABELS[_displayText(value)] || _displayText(value);
     else if (key === "obsidianRestApiPolicy")
         text = value === "allowed" ? "allowed" : "blocked";
     else if (typeof value === "boolean")
         text = value ? "on" : "off";
     else if (Array.isArray(value))
-        text = value.length ? value.join(", ") : "none";
+        text = value.length ? value.map((v) => _displayText(v)).join(", ") : "none";
     else
         text = JSON.stringify(value);
-    return mcpApprovals.displaySafe(text);
+    return gryphon_protect_1.mcpApprovals.displaySafe(text);
 }
 function hostDisplayName(host, hostId) {
     const name = (host && host.manifest && (host.manifest.name || host.manifest.id)) || hostId || "this plugin";
-    return mcpApprovals.displaySafe(name);
+    return gryphon_protect_1.mcpApprovals.displaySafe(name);
 }
 function _hasOwn(o, k) {
     return !!o && Object.prototype.hasOwnProperty.call(o, k);
@@ -178,11 +214,11 @@ function reportCliPathRejected(rejected) {
         "too-old": "that version is too old",
     };
     const msg = `Gryphon isn't using the ${cliPathLabel(rejected.key)} location you confirmed ` +
-        `(${mcpApprovals.displaySafe(rejected.value)}): ${why[rejected.reason] || rejected.reason}. ` +
+        `(${gryphon_protect_1.mcpApprovals.displaySafe(rejected.value)}): ${why[rejected.reason] || rejected.reason}. ` +
         "It's using the one it detected instead. Set a new location in Settings → Gryphon.";
     console.warn("[gryphon]", msg);
     try {
-        new Notice(msg, 15000);
+        new obsidian_1.Notice(msg, 15000);
     }
     catch { /* headless */ }
 }
@@ -206,7 +242,7 @@ function _short(s, max = 60) {
 function _vaultName(vaultKey, segments = 1) {
     const parts = String(vaultKey || "").split(/[\\/]+/).filter(Boolean);
     const name = parts.length ? parts.slice(-segments).join("/") : String(vaultKey || "");
-    return mcpApprovals.displaySafe(_short(name));
+    return gryphon_protect_1.mcpApprovals.displaySafe(_short(name));
 }
 /** Items grouped by vault: `a, b (vault "X"); c (vault "Y")`, capped. */
 function _byVault(items) {
@@ -237,12 +273,12 @@ function reportSecurityTamperReverted(reverted, providerLabel) {
     const names = _tamperNames(reverted);
     const when = providerLabel === null
         ? "outside Gryphon"
-        : `during ${mcpApprovals.displaySafe(providerLabel)}'s reply`;
+        : `during ${gryphon_protect_1.mcpApprovals.displaySafe(providerLabel)}'s reply`;
     const msg = `Gryphon undid a change to its security settings made ${when} ` +
         `(${[...new Set(names)].join(", ")}). Only Gryphon's settings screen can change these.`;
     console.warn("[gryphon]", msg, reverted);
     try {
-        new Notice(msg, 15000);
+        new obsidian_1.Notice(msg, 15000);
     }
     catch { /* headless */ }
 }
@@ -251,27 +287,29 @@ function reportSecurityTamperReverted(reverted, providerLabel) {
  * couldn't put it back. Nothing was undone, so the user must look.
  */
 function reportSecurityTamperUndoFailed(providerLabel, e) {
+    const err = e;
     const when = providerLabel === null
         ? "made outside Gryphon"
-        : `during ${mcpApprovals.displaySafe(providerLabel)}'s reply`;
+        : `during ${gryphon_protect_1.mcpApprovals.displaySafe(providerLabel)}'s reply`;
     const using = providerLabel === null ? " Until it's fixed, Gryphon uses the settings it last saved." : "";
     const msg = `Gryphon found a change to its security settings ${when} ` +
-        `but couldn't undo it${e && e.code ? ` (${mcpApprovals.displaySafe(String(e.code))})` : ""}.${using} ` +
+        `but couldn't undo it${err && err.code ? ` (${gryphon_protect_1.mcpApprovals.displaySafe(String(err.code))})` : ""}.${using} ` +
         "Open Gryphon's Security settings to check them, and make sure the settings file can be written.";
     console.error("[gryphon]", msg, e);
     try {
-        new Notice(msg, 0);
+        new obsidian_1.Notice(msg, 0);
     }
     catch { /* headless */ }
 }
 /** The Notice + log a caller shows when a security write fails. */
 function reportSecurityWriteError(e) {
+    const err = e;
     const msg = e instanceof SecurityScopeUnavailableError
         ? "Can't save this security setting: Gryphon couldn't identify this vault/host. Protections stay on."
-        : `Couldn't save this security setting: ${(e && e.message) || e}`;
-    console.error("[gryphon]", msg, e && e.missing ? `(missing: ${e.missing})` : "");
+        : `Couldn't save this security setting: ${(err && err.message) || String(err)}`;
+    console.error("[gryphon]", msg, err && err.missing ? `(missing: ${err.missing})` : "");
     try {
-        new Notice(msg, 10000);
+        new obsidian_1.Notice(msg, 10000);
     }
     catch { /* obsidian unavailable */ }
     return msg;
@@ -284,7 +322,7 @@ function installSecurityStoreErrorNotice() {
     _storeErrorSinkInstalled = true;
     onSecurityStoreError((message) => {
         try {
-            new Notice(`Gryphon: ${mcpApprovals.displaySafe(message)}`, 15000);
+            new obsidian_1.Notice(`Gryphon: ${gryphon_protect_1.mcpApprovals.displaySafe(message)}`, 15000);
         }
         catch { /* headless */ }
     });
@@ -302,7 +340,7 @@ function installSecurityStoreErrorNotice() {
                     : "It started from the settings as they are now; open Gryphon's Security settings if anything looks wrong.");
             console.warn("[gryphon]", msg);
             try {
-                new Notice(msg, 15000);
+                new obsidian_1.Notice(msg, 15000);
             }
             catch { /* headless */ }
         }
@@ -313,26 +351,26 @@ function installSecurityStoreErrorNotice() {
     });
     // Issue #32: the same for MCP server approvals (they let a vault's server
     // start without asking). The removal holds even if it couldn't be saved.
-    mcpApprovals.onApprovalsTamper((removed, error, info) => {
+    gryphon_protect_1.mcpApprovals.onApprovalsTamper((removed, error, info) => {
         if (info === "record-started") {
-            const items = removed.map((r) => ({ vaultKey: r.vaultKey, label: mcpApprovals.displaySafe(_short(r.name)) }));
+            const items = removed.map((r) => ({ vaultKey: r.vaultKey, label: gryphon_protect_1.mcpApprovals.displaySafe(_short(r.name)) }));
             const msg = "Gryphon now keeps a record of the MCP servers you approved so it can ignore approvals added outside Gryphon. " +
                 `It started from the approvals as they are now${items.length ? ` (${_byVault(items)})` : ""}; ` +
                 "in each vault, check Approved vault MCP servers in Gryphon's settings for any server you didn't approve.";
             console.warn("[gryphon]", msg);
             try {
-                new Notice(msg, 15000);
+                new obsidian_1.Notice(msg, 15000);
             }
             catch { /* headless */ }
             return;
         }
-        const names = _capList([...new Set(removed.map((r) => mcpApprovals.displaySafe(_short(r.name))))]);
+        const names = _capList([...new Set(removed.map((r) => gryphon_protect_1.mcpApprovals.displaySafe(_short(r.name))))]);
         const msg = `Gryphon ignored MCP server approvals added outside Gryphon (${names}). ` +
             "Those servers will ask before they start." +
             (error ? " Gryphon couldn't remove them from the approvals file; make sure it can be written." : "");
         console.warn("[gryphon]", msg, error || "");
         try {
-            new Notice(msg, error ? 0 : 15000);
+            new obsidian_1.Notice(msg, error ? 0 : 15000);
         }
         catch { /* headless */ }
     });
@@ -344,16 +382,15 @@ function installSecurityStoreErrorNotice() {
  *   Keep protections on → dismissed until data.json brings a different value.
  *   Esc / close → protections stay on for this app session only.
  */
-class ConfirmVaultSecurityModal extends Modal {
+class ConfirmVaultSecurityModal extends obsidian_1.Modal {
     host;
-    scope;
     keys;
     pathKeys;
     opts;
     constructor(app, host, scope, unconfirmed, opts = {}, unconfirmedPaths = []) {
         super(app);
         this.host = host;
-        this.scope = scope;
+        this.securityScope = scope;
         this.keys = unconfirmed.filter((k) => isWeakeningKey(k));
         // Issue #30: CLI binary locations the vault's settings file names.
         this.pathKeys = unconfirmedPaths.filter((k) => isExecutableKey(k));
@@ -363,8 +400,12 @@ class ConfirmVaultSecurityModal extends Modal {
         this._render();
         super.open();
     }
+    _securityScope() {
+        return this.securityScope;
+    }
     _render() {
-        const name = hostDisplayName(this.host, this.scope && this.scope.hostId);
+        const scope = this._securityScope();
+        const name = hostDisplayName(this.host, scope && scope.hostId);
         this.titleEl.setText(`Confirm this vault's security settings for ${name}`);
         const c = this.contentEl;
         c.empty?.();
@@ -382,9 +423,9 @@ class ConfirmVaultSecurityModal extends Modal {
         // Issue #30: a CLI location is a program Gryphon would run. Show the
         // full path it resolves to, and say so plainly when it can't be used.
         for (const key of this.pathKeys) {
-            const value = this.host.settings && this.host.settings[key];
-            const v = validateCliPath(value, this.scope && this.scope.vaultKey);
-            const shown = mcpApprovals.displaySafe(v.ok ? v.real : String(value));
+            const value = (this.host.settings && this.host.settings[key]);
+            const v = validateCliPath(value, scope && scope.vaultKey);
+            const shown = gryphon_protect_1.mcpApprovals.displaySafe(v.ok ? v.real : String(value));
             let text = `${cliPathLabel(key)} program: ${shown}`;
             if (!v.ok && v.reason === "inside-vault")
                 text += " — this file is inside this vault, so Gryphon won't run it.";
@@ -392,8 +433,8 @@ class ConfirmVaultSecurityModal extends Modal {
                 text += " — Gryphon can't use this location.";
             list.createEl("li", { text });
         }
-        new Setting(c)
-            .addButton((btn) => btn.setButtonText("Use these settings on this machine").setWarning().onClick(() => {
+        new obsidian_1.Setting(c)
+            .addButton((btn) => (0, obsidian_compat_1.warningButton)(btn.setButtonText("Use these settings on this machine")).onClick(() => {
             void this.confirm();
         }))
             .addButton((btn) => btn.setButtonText("Keep protections on").setCta().onClick(() => {
@@ -406,7 +447,7 @@ class ConfirmVaultSecurityModal extends Modal {
                 await applySecuritySetting(this.host, key, this.host.settings && this.host.settings[key], this.opts);
             }
             for (const key of this.pathKeys) {
-                await applyCliPathSetting(this.host, key, this.host.settings && this.host.settings[key], this.opts);
+                await applyCliPathSetting(this.host, key, (this.host.settings && this.host.settings[key]), this.opts);
             }
             this.close();
             if (this.opts.onDone)
@@ -419,7 +460,7 @@ class ConfirmVaultSecurityModal extends Modal {
     keepProtections() {
         try {
             for (const key of [...this.keys, ...this.pathKeys]) {
-                dismissVaultSecuritySuggestion(this.scope, key, this.host.settings && this.host.settings[key]);
+                dismissVaultSecuritySuggestion(this._securityScope(), key, this.host.settings && this.host.settings[key]);
             }
             this.close();
             if (this.opts.onDone)
@@ -430,6 +471,7 @@ class ConfirmVaultSecurityModal extends Modal {
         }
     }
 }
+exports.ConfirmVaultSecurityModal = ConfirmVaultSecurityModal;
 /** One prompt per scope per app session, however many views are open. */
 const _promptedScopes = new Set();
 /**
@@ -456,25 +498,3 @@ function maybePromptVaultSecurity(app, host, opts = {}) {
 function _resetPromptedScopes() {
     _promptedScopes.clear();
 }
-module.exports = {
-    WEAKENING_KEYS,
-    SECURITY_CHANGED_EVENT,
-    SecurityScopeUnavailableError,
-    applySecuritySetting,
-    applyCliPathSetting,
-    reportCliPathRejected,
-    reportSecurityTamperReverted,
-    reportSecurityTamperUndoFailed,
-    cliPathLabel,
-    cliKindForPathKey,
-    reportSecurityWriteError,
-    installSecurityStoreErrorNotice,
-    securityScopeFor,
-    effectiveSecurityFor,
-    securityKeyLabel,
-    describeSecurityValue,
-    hostDisplayName,
-    ConfirmVaultSecurityModal,
-    maybePromptVaultSecurity,
-    _resetPromptedScopes,
-};

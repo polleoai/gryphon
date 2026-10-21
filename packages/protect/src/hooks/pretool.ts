@@ -24,16 +24,24 @@
  *   other → non-blocking error; stderr logged to CC transcript
  */
 
-const {
+import {
   readStdinJson,
   sendToGryphon,
   traceHook,
   installHookDeadline,
-} = require("./common/ipc-client");
-const {
+} from "./common/ipc-client";
+import {
   normalizeAntigravityInput,
   buildHookDecision,
-} = require("./common/dialects");
+} from "./common/dialects";
+
+// The plugin's reply to a `classify` request (permission-ipc-server).
+interface ClassifyReply {
+  resp?: string;
+  error?: string;
+  decision?: string;
+  reason?: string;
+}
 
 // Wall-clock budget for the whole hook. CC's configured PreToolUse
 // timeout is 300s; we leave a 15s gap so our own deny lands before CC
@@ -63,7 +71,7 @@ const IPC_TIMEOUT_MS = 270_000;
  * `--dangerously-skip-permissions`, which is what makes this provider
  * enforceable at all.
  */
-function buildDecision(decision: string, reason?: string) {
+function buildDecision(decision: string, reason?: string | null) {
   return buildHookDecision(process.env.GRYPHON_HOOK_DIALECT, decision, reason);
 }
 
@@ -79,10 +87,10 @@ const { emitAndExit, crashHandler } = installHookDeadline({
 });
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) {
+  } catch {
     await emitAndExit(buildDecision(
       "deny",
       "Gryphon security check could not parse the request from Claude Code.",
@@ -135,23 +143,26 @@ async function main() {
   // hook adapter at spawn time. Purely advisory: classify decisions
   // don't depend on it; it only targets the next-spawn signal.
   const provider = process.env.GRYPHON_HOOK_PROVIDER || null;
+  // `toolName` is a string here, so `input` is an object.
+  const hookInput = input as Record<string, unknown>;
 
-  let result;
+  let result: ClassifyReply | null | undefined;
   try {
-    result = await sendToGryphon({
+    result = await sendToGryphon<ClassifyReply>({
       req: "classify",
       tool: toolName,
       input: toolInput,
-      permissionMode: input.permission_mode || null,
-      cwd: input.cwd || null,
-      sessionId: input.session_id || null,
+      permissionMode: hookInput.permission_mode || null,
+      cwd: hookInput.cwd || null,
+      sessionId: hookInput.session_id || null,
       provider,
     }, { timeoutMs: IPC_TIMEOUT_MS });
   } catch (e) {
+    const err = e as Error | null | undefined;  // sendToGryphon rejects with Errors
     await emitAndExit(buildDecision(
       "deny",
       `Gryphon could not reach the plugin to approve this ${toolName} call ` +
-      `(${(e && (e as Error).message) || e}). Try again once Gryphon is loaded, or ` +
+      `(${(err && err.message) || String(err)}). Try again once Gryphon is loaded, or ` +
       `turn off "Interactive CLI protection" in Gryphon settings to fall back.`,
     ));
     return;

@@ -211,7 +211,7 @@ const GRYPHON_SDK_COMPOUND_REQUEST_RULE =
   "\"delete X\" with no other sub-task), there is no safe part — " +
   "output the deny reason alone, no preamble or epilogue.";
 
-module.exports = {
+export {
   GRYPHON_SYSTEM_PROMPT_HINT,
   GRYPHON_FALLBACK_DENY_HINT,
   GRYPHON_SDK_COMPOUND_REQUEST_RULE,

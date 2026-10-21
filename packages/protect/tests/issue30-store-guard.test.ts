@@ -2,7 +2,7 @@
  * Issue #30 acceptance (unit), G2: with Protected Mode off, codex / gemini /
  * antigravity still get a deny-only hook that refuses writes to Gryphon's
  * own trust stores. The hook is one self-contained script, embedded in
- * @gryphon/protect and materialized under the approvals dir — so it needs
+ * @polleoai/gryphon-protect and materialized under the approvals dir — so it needs
  * no IPC server, no plugin dir and no `hooks/` on disk.
  *
  * Items: A8 (rule parity), A10 (embedder-shaped embedder, unit half), A14
@@ -97,7 +97,7 @@ function materialized(): string {
   return r.path;
 }
 
-test("#30: @gryphon/protect exports the store-guard API", () => {
+test("#30: @polleoai/gryphon-protect exports the store-guard API", () => {
   for (const k of ["approvalsStoreVerdict", "ensureStoreGuardScript"]) assert.ok(protect[k], `missing export ${k}`);
 });
 
@@ -145,7 +145,7 @@ test("#30: the hook fails closed on a crash-shaped payload for antigravity", () 
 test("#30 A15: the committed bundle equals a fresh esbuild bundle of store-guard.ts", () => {
   const { bundleStoreGuard } = require("../scripts/build-store-guard");
   const fresh = bundleStoreGuard();
-  assert.equal(fresh, bundle.source, "run: npm run gen:store-guard -w @gryphon/protect");
+  assert.equal(fresh, bundle.source, "run: npm run gen:store-guard -w @polleoai/gryphon-protect");
   const sha = require("crypto").createHash("sha256").update(bundle.source).digest("hex");
   assert.equal(bundle.sha256, sha);
 });
@@ -210,8 +210,8 @@ test("#30 A14b: an unwritable approvals dir → preflight ok:false, a one-time n
 });
 
 test("#30 (consumer note 1): no node binary → the same one-time visible notice, reason named", () => {
-  const orig = utils.findNodeBinary;
-  utils.findNodeBinary = () => null;
+  const orig = utils.binaryFinders.findNodeBinary;
+  utils.binaryFinders.findNodeBinary = () => null;
   const notes: string[] = [];
   const hostAdapter = { notify: (m: string) => { notes.push(m); } };
   try {
@@ -222,7 +222,7 @@ test("#30 (consumer note 1): no node binary → the same one-time visible notice
     }
     assert.equal(notes.length, 1);
     assert.match(notes[0], /Node\.js/);
-  } finally { utils.findNodeBinary = orig; }
+  } finally { utils.binaryFinders.findNodeBinary = orig; }
 });
 
 // ── A10: embedder-shaped embedder (unit) ─────────────────────────────────

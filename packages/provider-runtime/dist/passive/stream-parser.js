@@ -25,9 +25,10 @@ class PassiveStreamParser {
         this._lastUsage = null; // from the last assistant message
     }
     // Returns a finalized response object on `result`, else null.
-    push(raw) {
-        if (!raw || typeof raw !== "object")
+    push(rawEvent) {
+        if (!rawEvent || typeof rawEvent !== "object")
             return null;
+        const raw = rawEvent;
         if (raw.type === "system" && raw.subtype === "init") {
             this.sessionId = raw.session_id || this.sessionId;
             if (raw.model)

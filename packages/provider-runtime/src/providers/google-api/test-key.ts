@@ -17,13 +17,30 @@
  * sites don't crash before Task 0.6 lands.
  */
 
+import { HeadlessHostAdapter } from "../../host-adapter";
+import { readJson } from "../../host-response";
 const GEMINI_LIST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
-async function testApiKey(apiKey: any, hostAdapter: any) {
+// Minimal surface of the host adapter this validator uses. ObsidianHostAdapter
+// returns requestUrl's response (json is a parsed-body property);
+// HeadlessHostAdapter returns a fetch Response (json is a method).
+interface KeyCheckResponse {
+  status: number;
+  json?: unknown;
+}
+
+interface KeyCheckHostAdapter {
+  fetch(url: string, opts: { method: string; throw: boolean }): Promise<KeyCheckResponse>;
+}
+
+async function testApiKey(
+  apiKey: string | null | undefined,
+  hostAdapter?: KeyCheckHostAdapter | null,
+): Promise<{ ok: boolean; message: string }> {
   // Default to HeadlessHostAdapter so callers that pre-date Task 0.6 still
   // work (they pass undefined). Task 0.6 will supply ObsidianHostAdapter.
   if (!hostAdapter) {
-    hostAdapter = new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+    hostAdapter = new HeadlessHostAdapter();
   }
 
   if (!apiKey) return { ok: false, message: "No API key provided" };
@@ -31,8 +48,8 @@ async function testApiKey(apiKey: any, hostAdapter: any) {
   try {
     // hostAdapter.fetch with throw:false — ObsidianHostAdapter passes it
     // through to requestUrl; HeadlessHostAdapter ignores unknown opts and
-    // uses globalThis.fetch (which may throw on non-2xx depending on
-    // configuration — the try/catch below catches that).
+    // uses undici's fetch (network errors throw — the try/catch below
+    // catches that).
     const res = await hostAdapter.fetch(
       `${GEMINI_LIST_MODELS_URL}?key=${encodeURIComponent(apiKey)}`,
       { method: "GET", throw: false },
@@ -50,7 +67,8 @@ async function testApiKey(apiKey: any, hostAdapter: any) {
       return { ok: false, message: "Rate limited (key may be valid; try again later)" };
     }
     // Try to surface Google's structured error message when present.
-    const errMsg = res.json && res.json.error && res.json.error.message;
+    const body = (await readJson(res)) as { error?: { message?: string } } | null | undefined;
+    const errMsg = body && body.error && body.error.message;
     return {
       ok: false,
       message: errMsg

@@ -35,15 +35,95 @@
  *
  * The Gryphon-plugin-only zone (Security / Protected-Mode / provenance /
  * diagnostics) stays in `GryphonSettingTab` — it depends on `provenanceStore`,
- * `@gryphon/protect`, and REST internals a generic host does not have.
+ * `@polleoai/gryphon-protect`, and REST internals a generic host does not have.
  */
 
-const { Setting, Notice } = require("obsidian");
-const securityUi = require("./security-settings");
-const { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, visibleProviderPrefs, resolveConnectionTimeoutMs } = require("./constants");
-const { testApiKey: testAnthropicApiKey } = require("../../provider-runtime/src/providers/anthropic-api/anthropic-api");
-const { testApiKey: testOpenAIApiKey } = require("../../provider-runtime/src/providers/openai-api/openai-api");
-const { testApiKey: testGoogleApiKey } = require("../../provider-runtime/src/providers/google-api/test-key");
+import { Setting, Notice } from "obsidian";
+import type { App } from "obsidian";
+import * as securityUi from "./security-settings";
+import { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, visibleProviderPrefs, resolveConnectionTimeoutMs } from "./constants";
+import * as runtime from "@polleoai/gryphon-provider-runtime";
+import { getActiveProviderKind, describeProviderReadiness, humanizeFailureReason, friendlyProviderLabel } from "@polleoai/gryphon-provider-runtime";
+import { renderTabbedSettings } from "./settings-tabs";
+import { renderApprovedServersSetting } from "./mcp-approval-ui";
+import { resolveCliPath as protectResolveCliPath } from "@polleoai/gryphon-protect";
+
+// The "Test key" validators are imported when the user clicks Test, not at
+// plugin start: the Anthropic and OpenAI provider modules load their SDKs on
+// first use, and nothing here should pull a provider module into startup
+// (gryphon-dev#38). Subpath exports: this tsconfig's moduleResolution (node10)
+// can't resolve `exports` subpaths, so the signatures are spelled out.
+type TestKeyResult = { ok: boolean; message: string };
+type TestKeyModule = { testApiKey: (apiKey: string) => Promise<TestKeyResult> };
+type GoogleTestKeyModule = { testApiKey: (apiKey: string, hostAdapter: unknown) => Promise<TestKeyResult> };
+
+/** The settings fields this renderer reads and writes (plus any other key). */
+interface GryphonSettingsLike {
+  [key: string]: unknown;
+  providerPreference?: string;
+  fallbackProviderPreference?: string;
+  fallbackModel?: string;
+  model?: string;
+  effort?: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  braveSearchApiKey?: string;
+  autoCompactSdk?: boolean;
+  autoRetryOnRateLimit?: boolean;
+  useExactTokenCounting?: boolean;
+  confirmOnContextOverflow?: boolean;
+  openInMainTab?: boolean;
+  connectionTimeoutMs?: number | null;
+  maxReadFileSizeMb?: number;
+}
+
+/**
+ * Host contract: `{ settings, saveSettings }` is required; everything else is
+ * optional (see the module header).
+ */
+interface SettingsHost {
+  settings: GryphonSettingsLike;
+  saveSettings: () => Promise<void> | void;
+  app?: App;
+  manifest?: { id?: string; name?: string };
+  hostAdapter?: unknown;
+  _resetActiveSessions?: () => void;
+  _announceProviderChange?: (prev: string, next: string) => void;
+}
+
+/** `{ rerenderSelf, rerenderAll }` from the tab harness. */
+interface TabCtx {
+  rerenderSelf: () => void;
+  rerenderAll: () => void;
+}
+
+interface TabDescriptor {
+  id: string;
+  label: string;
+  render: (panelEl: HTMLElement, ctx: TabCtx) => void;
+}
+
+/** Issue #29/#30 security options threaded through the panels. */
+interface SecurityRenderOpts {
+  securityOverrides?: Record<string, unknown> | null;
+  securityHostId?: string;
+  rerender?: () => void;
+}
+
+interface RenderSettingsOptions extends SecurityRenderOpts {
+  chrome?: boolean;
+  extraTabs?: TabDescriptor[];
+  initialTabId?: string;
+  onTabChange?: (id: string) => void;
+}
+
+interface ModelOption { id: string; label: string }
+
+type CliFindKey = "findClaudeBinary" | "findCodexBinary" | "findGeminiBinary" | "findAntigravityBinary";
+
+/** Element carrying the self-owned hover tooltip's state. */
+type TooltipTarget = HTMLElement & { _gryphonTip?: string; _gryphonTipBound?: boolean };
 
 /**
  * Pick a sensible default model id for the active provider when the
@@ -56,9 +136,8 @@ const { testApiKey: testGoogleApiKey } = require("../../provider-runtime/src/pro
  * Returns the new model id (or the unchanged current id when it's already
  * valid for the active provider). Caller is responsible for persisting.
  */
-function _resetModelForProvider(plugin) {
-  const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-  const settings = plugin.settings || {};
+function _resetModelForProvider(plugin: SettingsHost): string {
+  const settings: GryphonSettingsLike = plugin.settings || {};
   const current = settings.model;
   const kind = getActiveProviderKind(plugin) || settings.providerPreference;
 
@@ -68,7 +147,7 @@ function _resetModelForProvider(plugin) {
     // dropdown. Pick the right resolver + default per provider so a stale
     // persisted id (e.g. gpt-5-mini after switching from openai-api to
     // codex-cli) is corrected to a working default.
-    const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+    const openaiPricing = runtime.pricing.openai;
     const isCodex = kind === "codex-cli";
     const options = isCodex
       ? openaiPricing.getCodexCliModelDropdownOptions()
@@ -81,7 +160,7 @@ function _resetModelForProvider(plugin) {
   if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
     // All three reuse Google's pricing tables, but antigravity-cli serves
     // only the ids agy's own catalog accepts — same shape as codex-cli above.
-    const googlePricing = require("@gryphon/provider-runtime").pricing.google;
+    const googlePricing = runtime.pricing.google;
     const isAgy = kind === "antigravity-cli";
     const options = isAgy
       ? googlePricing.getAntigravityCliModelDropdownOptions()
@@ -98,8 +177,7 @@ function _resetModelForProvider(plugin) {
  * #15). Mirrors the per-vendor lists the Default-model dropdown uses, so the
  * Fallback-model picker offers exactly the models that kind can serve.
  */
-function _fallbackModelOptions(kind) {
-  const runtime = require("@gryphon/provider-runtime");
+function _fallbackModelOptions(kind: string): ModelOption[] {
   if (kind === "openai-api") {
     return runtime.pricing.openai.getModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
   }
@@ -122,8 +200,8 @@ function _fallbackModelOptions(kind) {
  * in registry order, so the first entry is the cheapest tier (Haiku) or,
  * for Codex, a model older clients reject.
  */
-function _defaultFallbackModel(kind, opts) {
-  const preferred = require("@gryphon/provider-runtime").defaultModelForKind(kind);
+function _defaultFallbackModel(kind: string, opts: ModelOption[]): string {
+  const preferred = runtime.defaultModelForKind(kind);
   if (preferred && opts.some((o) => o.id === preferred)) return preferred;
   return opts[0] ? opts[0].id : "";
 }
@@ -134,7 +212,7 @@ function _defaultFallbackModel(kind, opts) {
  * collapsed all-credentials group. The string keys map to the per-credential
  * row renderers below.
  */
-function _credentialFieldsFor(pref) {
+function _credentialFieldsFor(pref: string): string[] | null {
   switch (pref) {
     case "anthropic-api": return ["anthropicKey"];
     case "openai-api": return ["openaiKey"];
@@ -176,23 +254,33 @@ function _credentialFieldsFor(pref) {
  * @param opts.installHint  not-detected tooltip (non-Flatpak)
  * @param opts.flatpakHint  short install pointer shown in the Flatpak tooltip
  */
-function renderCliPathRow(host, panelEl, opts, sec?) {
+interface CliPathRowOpts {
+  name: string;
+  tooltip: string;
+  settingsKey: string;
+  findKey: CliFindKey;
+  defaultPlaceholder: string;
+  cliLabel: string;
+  installHint: string;
+  flatpakHint: string;
+}
+
+function renderCliPathRow(host: SettingsHost, panelEl: HTMLElement, opts: CliPathRowOpts, sec?: SecurityRenderOpts) {
   const { name, tooltip, settingsKey, findKey, defaultPlaceholder, cliLabel, installHint, flatpakHint } = opts;
   const kind = securityUi.cliKindForPathKey(settingsKey);
   const secOpts = _securityOpts(sec);
   const cliSetting = descToTooltip(new Setting(panelEl).setName(name), tooltip);
-  const cliStatusPill = cliSetting.nameEl.createEl("span", { cls: "gryphon-cli-status-pill" });
+  const cliStatusPill = cliSetting.nameEl.createSpan({ cls: "gryphon-cli-status-pill" });
   let rejectedText = "";
 
-  const resolved = () => require("@gryphon/protect").resolveCliPath(kind, {
+  const resolved = () => protectResolveCliPath(kind, {
     app: host.app, hostPlugin: host, hostId: secOpts.hostId,
-    overrides: { paths: (secOpts.overrides && secOpts.overrides.paths) || {} },
+    overrides: { paths: (secOpts.overrides && (secOpts.overrides as { paths?: unknown }).paths) || {} },
   });
 
   const renderCliStatus = () => {
     cliStatusPill.empty();
     cliStatusPill.className = "gryphon-cli-status-pill";
-    const runtime = require("@gryphon/provider-runtime");
     const flatpak = runtime.detectFlatpakSandbox();
     const r = resolved();
     if (rejectedText) {
@@ -226,12 +314,11 @@ function renderCliPathRow(host, panelEl, opts, sec?) {
 
   cliSetting
     .addText((text) => {
-      const runtime = require("@gryphon/provider-runtime");
       const detected = runtime[findKey]();
       const eff = securityUi.effectiveSecurityFor(host, secOpts);
       return text
         .setPlaceholder(detected ? runtime.displayPath(detected) : defaultPlaceholder)
-        .setValue((eff.paths && eff.paths[settingsKey]) || "")
+        .setValue((eff.paths && (eff.paths as Record<string, string | undefined>)[settingsKey]) || "")
         .onChange(async (value) => {
           try {
             await securityUi.applyCliPathSetting(host, settingsKey, value.trim() || null, secOpts);
@@ -240,7 +327,8 @@ function renderCliPathRow(host, panelEl, opts, sec?) {
             // Refused (relative, missing, inside the vault, …): nothing is
             // saved, and the row says why. Typing a path passes through
             // invalid prefixes, so this is inline rather than a Notice.
-            rejectedText = (e && e.message) || String(e);
+            const err = e as Error | null | undefined;
+            rejectedText = (err && err.message) || String(err);
           }
           host._resetActiveSessions?.();
           renderCliStatus();
@@ -251,7 +339,7 @@ function renderCliPathRow(host, panelEl, opts, sec?) {
         .setButtonText("Re-detect")
         .setTooltip("Clear the discovery cache and probe again")
         .onClick(() => {
-          require("@gryphon/provider-runtime").clearBinaryDiscoveryCache();
+          runtime.clearBinaryDiscoveryCache();
           // Re-detect may resolve a DIFFERENT binary (e.g. a freshly-installed
           // newer version) than the live session is bound to. Retire active
           // sessions so the next message rebinds — same teardown the path-field
@@ -263,7 +351,7 @@ function renderCliPathRow(host, panelEl, opts, sec?) {
   renderCliStatus();
 }
 
-function renderClaudePathRow(host, panelEl, sec?) {
+function renderClaudePathRow(host: SettingsHost, panelEl: HTMLElement, sec?: SecurityRenderOpts) {
   renderCliPathRow(host, panelEl, {
     name: "Claude Code path",
     tooltip:
@@ -282,8 +370,8 @@ function renderClaudePathRow(host, panelEl, sec?) {
   }, sec);
 }
 
-function renderAnthropicKeyRow(host, panelEl, refreshChip) {
-  let keyStatusEl = null;
+function renderAnthropicKeyRow(host: SettingsHost, panelEl: HTMLElement, refreshChip: () => void) {
+  let keyStatusEl: HTMLElement | null = null;
   descToTooltip(
     new Setting(panelEl).setName("Anthropic API key"),
     "Required for Anthropic API mode. Paste your key here — stored in plugin " +
@@ -314,7 +402,8 @@ function renderAnthropicKeyRow(host, panelEl, refreshChip) {
             (host.settings.anthropicApiKey || "").trim() ||
             process.env.ANTHROPIC_API_KEY ||
             "";
-          const { ok, message } = await testAnthropicApiKey(key);
+          const { testApiKey } = (await import("@polleoai/gryphon-provider-runtime/providers/anthropic-api/anthropic-api")) as TestKeyModule;
+          const { ok, message } = await testApiKey(key);
           btn.setDisabled(false).setButtonText("Test key");
           if (keyStatusEl) {
             keyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
@@ -329,8 +418,8 @@ function renderAnthropicKeyRow(host, panelEl, refreshChip) {
     });
 }
 
-function renderOpenAIKeyRow(host, panelEl, refreshChip) {
-  let openaiKeyStatusEl = null;
+function renderOpenAIKeyRow(host: SettingsHost, panelEl: HTMLElement, refreshChip: () => void) {
+  let openaiKeyStatusEl: HTMLElement | null = null;
   descToTooltip(
     new Setting(panelEl).setName("OpenAI API key"),
     "Required for OpenAI API mode (v1.2.0). Paste your key here — " +
@@ -360,7 +449,8 @@ function renderOpenAIKeyRow(host, panelEl, refreshChip) {
             (host.settings.openaiApiKey || "").trim() ||
             process.env.OPENAI_API_KEY ||
             "";
-          const { ok, message } = await testOpenAIApiKey(key);
+          const { testApiKey } = (await import("@polleoai/gryphon-provider-runtime/providers/openai-api/openai-api")) as TestKeyModule;
+          const { ok, message } = await testApiKey(key);
           btn.setDisabled(false).setButtonText("Test key");
           if (openaiKeyStatusEl) {
             openaiKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
@@ -375,8 +465,8 @@ function renderOpenAIKeyRow(host, panelEl, refreshChip) {
     });
 }
 
-function renderGoogleKeyRow(host, panelEl, refreshChip) {
-  let googleKeyStatusEl = null;
+function renderGoogleKeyRow(host: SettingsHost, panelEl: HTMLElement, refreshChip: () => void) {
+  let googleKeyStatusEl: HTMLElement | null = null;
   descToTooltip(
     new Setting(panelEl).setName("Google API key"),
     "Required for Google Gemini API mode (v1.2.0). Paste your key " +
@@ -407,7 +497,8 @@ function renderGoogleKeyRow(host, panelEl, refreshChip) {
             (host.settings.googleApiKey || "").trim() ||
             process.env.GOOGLE_API_KEY ||
             "";
-          const { ok, message } = await testGoogleApiKey(key, host.hostAdapter);
+          const { testApiKey } = (await import("@polleoai/gryphon-provider-runtime/providers/google-api/test-key")) as GoogleTestKeyModule;
+          const { ok, message } = await testApiKey(key, host.hostAdapter);
           btn.setDisabled(false).setButtonText("Test key");
           if (googleKeyStatusEl) {
             googleKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
@@ -422,7 +513,7 @@ function renderGoogleKeyRow(host, panelEl, refreshChip) {
     });
 }
 
-function renderCodexPathRow(host, panelEl, sec?) {
+function renderCodexPathRow(host: SettingsHost, panelEl: HTMLElement, sec?: SecurityRenderOpts) {
   renderCliPathRow(host, panelEl, {
     name: "Codex CLI path",
     tooltip:
@@ -443,7 +534,7 @@ function renderCodexPathRow(host, panelEl, sec?) {
   }, sec);
 }
 
-function renderGeminiPathRow(host, panelEl, sec?) {
+function renderGeminiPathRow(host: SettingsHost, panelEl: HTMLElement, sec?: SecurityRenderOpts) {
   renderCliPathRow(host, panelEl, {
     name: "Gemini CLI path",
     tooltip:
@@ -464,7 +555,7 @@ function renderGeminiPathRow(host, panelEl, sec?) {
   }, sec);
 }
 
-function renderAntigravityPathRow(host, panelEl, sec?) {
+function renderAntigravityPathRow(host: SettingsHost, panelEl: HTMLElement, sec?: SecurityRenderOpts) {
   renderCliPathRow(host, panelEl, {
     name: "Antigravity CLI path",
     tooltip:
@@ -494,7 +585,7 @@ function renderAntigravityPathRow(host, panelEl, sec?) {
 }
 
 // credential-key -> renderer. Key rows take refreshChip; path rows ignore it.
-function _renderCredentialRow(key, host, panelEl, refreshChip, sec?) {
+function _renderCredentialRow(key: string, host: SettingsHost, panelEl: HTMLElement, refreshChip: () => void, sec?: SecurityRenderOpts) {
   switch (key) {
     case "anthropicKey": return renderAnthropicKeyRow(host, panelEl, refreshChip);
     case "openaiKey":    return renderOpenAIKeyRow(host, panelEl, refreshChip);
@@ -523,7 +614,7 @@ const ALL_CREDENTIAL_KEYS = [
  * @param sec         issue #29/#30 `{ securityOverrides, securityHostId }` —
  *                    CLI-path rows write under that host's scope.
  */
-function renderSetupPanel(hostPlugin, panelEl, ctx, sec?) {
+function renderSetupPanel(hostPlugin: SettingsHost, panelEl: HTMLElement, ctx: TabCtx, sec?: SecurityRenderOpts) {
   // No "Provider" section heading — the tab is already labelled "Models" and
   // the Provider dropdown immediately follows, so a heading would just repeat
   // the word "Provider".
@@ -531,10 +622,9 @@ function renderSetupPanel(hostPlugin, panelEl, ctx, sec?) {
   // Proactive provider readiness (issue #16). When the selected provider can't
   // run, the Provider dropdown itself goes red-bordered and reveals the reason
   // on hover — no separate warning icon needed.
-  let providerSelectEl = null;
+  let providerSelectEl: (HTMLSelectElement & TooltipTarget) | null = null;
   const updateProviderReadiness = () => {
     if (!providerSelectEl) return;
-    const { describeProviderReadiness, humanizeFailureReason } = require("@gryphon/provider-runtime");
     const { ready, reason } = describeProviderReadiness(hostPlugin);
     const bad = !ready && !!reason;
     if (typeof providerSelectEl.toggleClass === "function") {
@@ -607,7 +697,7 @@ function renderSetupPanel(hostPlugin, panelEl, ctx, sec?) {
  * Fallback-provider change re-renders the whole Models panel (`ctx.rerenderSelf`)
  * so the conditional Fallback-model row appears/updates.
  */
-function renderFallbackRows(hostPlugin, panelEl, ctx) {
+function renderFallbackRows(hostPlugin: SettingsHost, panelEl: HTMLElement, ctx: TabCtx) {
   descToTooltip(
     new Setting(panelEl).setName("Fallback provider"),
     "When the active provider can't serve a request — no key/CLI, invalid " +
@@ -641,7 +731,7 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
     const fbModels = _fallbackModelOptions(fbPref);
     if (fbModels.length && !fbModels.some((o) => o.id === hostPlugin.settings.fallbackModel)) {
       hostPlugin.settings.fallbackModel = _defaultFallbackModel(fbPref, fbModels);
-      hostPlugin.saveSettings();
+      void hostPlugin.saveSettings();
     }
     new Setting(panelEl)
       .setName("Fallback model")
@@ -662,9 +752,9 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
 // app-wide), so we own the whole thing: a single body-appended, position-fixed
 // element shown on mouseenter. Immune to Obsidian's tooltip system, native
 // suppression, and settings-container clipping.
-let _hoverTipEl: any = null;
-function _hoverTip() {
-  const doc = (typeof activeDocument !== "undefined" ? activeDocument : document) as any;
+let _hoverTipEl: HTMLElement | null = null;
+function _hoverTip(): HTMLElement {
+  const doc: Document = typeof activeDocument !== "undefined" ? activeDocument : document;
   if (!_hoverTipEl || !(doc.body && doc.body.contains(_hoverTipEl))) {
     // Visibility is class-driven (.is-visible); position is set dynamically
     // via setCssStyles — both keep `element.style.* =` out of the code per the
@@ -683,7 +773,7 @@ function disposeHoverTooltip() {
   _hoverTipEl = null;
 }
 
-function attachHoverTooltip(el, text) {
+function attachHoverTooltip(el: TooltipTarget | null, text: string) {
   if (!el || !text || typeof el.addEventListener !== "function") return;
   // Idempotent: store the (possibly updated) text and bind listeners once, so
   // callers that re-render the same element (e.g. the CLI status pill) don't
@@ -704,7 +794,7 @@ function attachHoverTooltip(el, text) {
     tip.setText(el._gryphonTip);
     tip.addClass("is-visible");
     const r = el.getBoundingClientRect();
-    const win = (typeof activeWindow !== "undefined" ? activeWindow : window) as any;
+    const win: Window = typeof activeWindow !== "undefined" ? activeWindow : window;
     const tipW = tip.offsetWidth || 0;
     let left = r.left;
     const max = (win.innerWidth || 0) - tipW - 8;
@@ -713,8 +803,8 @@ function attachHoverTooltip(el, text) {
   };
   const hide = () => { if (_hoverTipEl) _hoverTipEl.removeClass("is-visible"); };
   el.addEventListener("mouseover", show);
-  el.addEventListener("mouseout", (e: any) => {
-    if (e && e.relatedTarget && el.contains && el.contains(e.relatedTarget)) return;
+  el.addEventListener("mouseout", (e: MouseEvent) => {
+    if (e && e.relatedTarget && el.contains && el.contains(e.relatedTarget as Node)) return;
     hide();
   });
 }
@@ -725,14 +815,14 @@ function attachHoverTooltip(el, text) {
  * (via delegation) by GryphonSettingTab's Gryphon-only zone so the info-icon
  * affordance is consistent across the whole settings tab.
  */
-function descToTooltip(setting, tooltipText) {
-  if (!setting || !tooltipText) return setting;
+function descToTooltip(setting: Setting, tooltipText: string): Setting {
+  if (setting == null || !tooltipText) return setting;
   setting.setDesc("");
-  const info = setting.nameEl.createEl("span", {
+  const info = setting.nameEl.createSpan({
     cls: "gryphon-info-icon gryphon-info-icon-inline",
     attr: { tabindex: "0" },
   });
-  info.createEl("span", { text: "i", cls: "gryphon-info-icon-glyph" });
+  info.createSpan({ text: "i", cls: "gryphon-info-icon-glyph" });
   attachHoverTooltip(info, tooltipText);
   return setting;
 }
@@ -745,18 +835,22 @@ function descToTooltip(setting, tooltipText) {
  * is why this helper takes `plugin` explicitly (the renderer's portable zone
  * only ever uses the no-toggle form).
  */
-function renderSectionHeading(parentEl, opts, plugin) {
+function renderSectionHeading(
+  parentEl: HTMLElement,
+  opts: { title: string; tooltip?: string; toggleKey?: string; onToggle?: (value: boolean) => void },
+  plugin: SettingsHost,
+): HTMLElement | Setting {
   const { title, tooltip, toggleKey, onToggle } = opts;
 
   if (!toggleKey) {
-    const wrap = parentEl.createEl("div", { cls: "gryphon-section-heading" });
-    wrap.createEl("div", { text: title, cls: "gryphon-section-heading-label" });
+    const wrap = parentEl.createDiv({ cls: "gryphon-section-heading" });
+    wrap.createDiv({ text: title, cls: "gryphon-section-heading-label" });
     if (tooltip) {
-      const info = wrap.createEl("span", {
+      const info = wrap.createSpan({
         cls: "gryphon-info-icon",
         attr: { tabindex: "0" },
       });
-      info.createEl("span", { text: "i", cls: "gryphon-info-icon-glyph" });
+      info.createSpan({ text: "i", cls: "gryphon-info-icon-glyph" });
       attachHoverTooltip(info, tooltip);
     }
     return wrap;
@@ -771,7 +865,7 @@ function renderSectionHeading(parentEl, opts, plugin) {
   else setting.setDesc("");
   // Issue #29: a weakening key (Protected Mode) shows the effective value
   // and writes the machine store; any other key is a plain data.json toggle.
-  const isSecurity = securityUi.WEAKENING_KEYS.includes(toggleKey);
+  const isSecurity = (securityUi.WEAKENING_KEYS as readonly string[]).includes(toggleKey);
   setting.addToggle((toggle) => {
     const current = isSecurity
       ? securityUi.effectiveSecurityFor(plugin)[toggleKey] !== false
@@ -800,7 +894,7 @@ function renderSectionHeading(parentEl, opts, plugin) {
  * `securityOverrides` / `securityHostId`, in the shape applySecuritySetting
  * and effectiveSecurityFor take.
  */
-function _securityOpts(sec) {
+function _securityOpts(sec: SecurityRenderOpts | null | undefined): { overrides: Record<string, unknown> | null; hostId: string | undefined } {
   return { overrides: (sec && sec.securityOverrides) || null, hostId: sec && sec.securityHostId };
 }
 
@@ -808,7 +902,7 @@ function _securityOpts(sec) {
  * Issue #29: write a security key from a Settings control. Returns true on
  * success; on failure shows the Notice and returns false.
  */
-async function _writeSecurity(hostPlugin, key, value, sec) {
+async function _writeSecurity(hostPlugin: SettingsHost, key: string, value: unknown, sec: SecurityRenderOpts | undefined): Promise<boolean> {
   try {
     await securityUi.applySecuritySetting(hostPlugin, key, value, _securityOpts(sec));
     return true;
@@ -827,7 +921,7 @@ async function _writeSecurity(hostPlugin, key, value, sec) {
  *     machine — Confirm…", which opens the same prompt the chat view hosts.
  * Returns the row's Setting, or null when nothing needs explaining.
  */
-function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
+function renderUnconfirmedSecurityRow(panelEl: HTMLElement, hostPlugin: SettingsHost, key: string, sec: SecurityRenderOpts | undefined): Setting | null {
   const opts = _securityOpts(sec);
   const { scope } = securityUi.securityScopeFor(hostPlugin, opts);
   const eff = securityUi.effectiveSecurityFor(hostPlugin, opts);
@@ -837,7 +931,7 @@ function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
   if (!scope) {
     return new Setting(panelEl).setDesc("⚠ Protections forced on: Gryphon couldn't identify this vault/host, so this can't be changed here.");
   }
-  if (!eff.unconfirmed.includes(key)) return null;
+  if (!(eff.unconfirmed as readonly string[]).includes(key)) return null;
   const requested = securityUi.describeSecurityValue(key, hostPlugin.settings && hostPlugin.settings[key]);
   const row = new Setting(panelEl).setDesc(
     `⚠ Vault file requests ${requested}, not confirmed on this machine for ` +
@@ -869,14 +963,13 @@ function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
  *                      the same values the host passes its chat view, so
  *                      both show the same effective security settings.
  */
-function renderGryphonSettings(hostPlugin, containerEl, options) {
+function renderGryphonSettings(hostPlugin: SettingsHost, containerEl: HTMLElement, options?: RenderSettingsOptions | null) {
   options = options || {};
-  const sec = { securityOverrides: options.securityOverrides, securityHostId: options.securityHostId };
-  const { renderTabbedSettings } = require("./settings-tabs");
+  const sec: SecurityRenderOpts = { securityOverrides: options.securityOverrides, securityHostId: options.securityHostId };
 
   const extraTabs = Array.isArray(options.extraTabs) ? options.extraTabs : [];
 
-  const tabs = [
+  const tabs: TabDescriptor[] = [
     // "Models" combines provider selection + scoped credentials + fallback
     // (Setup) with the per-session default model / effort / permissions
     // (Defaults) — they're all "which model am I talking to, and how" — into
@@ -914,7 +1007,7 @@ function renderGryphonSettings(hostPlugin, containerEl, options) {
  * Advanced tab: optional Brave key + tuning toggles + connection timeout +
  * max file size. Niche knobs kept out of the primary Setup path.
  */
-function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
+function renderAdvancedPanel(hostPlugin: SettingsHost, panelEl: HTMLElement, ctx: TabCtx, sec?: SecurityRenderOpts) {
   const secEff = securityUi.effectiveSecurityFor(hostPlugin, _securityOpts(sec));
   // Copy verbatim (originals remain in the flat renderGryphonSettings until
   // Task 6 deletes them), rendering into `panelEl` instead of `containerEl`.
@@ -969,7 +1062,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
 
   // Issue #25 rev 2: vault .mcp.json servers run only once approved, and
   // the approvals live outside the vault. List + revoke for this vault.
-  require("./mcp-approval-ui").renderApprovedServersSetting(hostPlugin, panelEl, descToTooltip);
+  renderApprovedServersSetting(hostPlugin, panelEl, descToTooltip);
 
   descToTooltip(
     new Setting(panelEl).setName("Auto-compact at 95% (SDK mode)"),
@@ -1094,8 +1187,8 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
   // — out of range, user probably meant ms) shows the validation
   // error AND the effective fallback, so the input never silently
   // disappears into the void.
-  let timeoutStatusEl = null;
-  const updateTimeoutStatus = (rawInput) => {
+  let timeoutStatusEl: HTMLElement | null = null;
+  const updateTimeoutStatus = (rawInput: string) => {
     if (!timeoutStatusEl) return;
     const trimmed = (rawInput || "").trim();
     const effectiveMs = resolveConnectionTimeoutMs({
@@ -1104,7 +1197,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
     });
     const effectiveSec = Math.round(effectiveMs / 1000);
     // Validation feedback for the current input value:
-    let prefix;
+    let prefix: string;
     let color = "";
     if (!trimmed) {
       prefix = `Using model-adaptive default: ${effectiveSec}s`;
@@ -1196,7 +1289,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec?) {
  * permissions + Open-in-main-tab. (Per-session defaults, also reachable from
  * the chat toolbar.)
  */
-function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
+function renderDefaultsPanel(hostPlugin: SettingsHost, panelEl: HTMLElement, _ctx: TabCtx | null, sec?: SecurityRenderOpts) {
   // Per-provider Default model + Default effort. When an adapter is
   // shipped, dropdowns read its native model list (with effort options
   // where applicable). When the adapter is still pending (google-api in
@@ -1204,7 +1297,6 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
   // Use the resolved active provider (auto-fallthrough), not the literal
   // preference — so an Auto user with only an OpenAI key sees OpenAI's
   // model list here, matching what the chat-view toolbar shows.
-  const { getActiveProviderKind } = require("@gryphon/provider-runtime");
   const activePref = getActiveProviderKind(hostPlugin) ||
                      hostPlugin.settings.providerPreference || "auto";
 
@@ -1218,7 +1310,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
       getModelDropdownOptions: getGeminiOptions,
       resolveModel: resolveGeminiModel,
       DEFAULT_MODEL: GEMINI_DEFAULT_MODEL,
-    } = require("@gryphon/provider-runtime").pricing.google;
+    } = runtime.pricing.google;
     const geminiModels = getGeminiOptions();
 
     const isKnown = geminiModels.some((o) => o.id === hostPlugin.settings.model);
@@ -1228,7 +1320,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
       const persistTarget = fitsDropdown ? resolved : GEMINI_DEFAULT_MODEL;
       if (hostPlugin.settings.model !== persistTarget) {
         hostPlugin.settings.model = persistTarget;
-        hostPlugin.saveSettings();
+        void hostPlugin.saveSettings();
       }
     }
 
@@ -1268,7 +1360,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
     // 400 at request time. Filter the dropdown + use the codex-specific
     // resolver/default so users on codex-cli see only the empirically-
     // supported subset (see CODEX_CLI_SUPPORTED_MODELS).
-    const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+    const openaiPricing = runtime.pricing.openai;
     const isCodex = activePref === "codex-cli";
     const openaiModels = isCodex
       ? openaiPricing.getCodexCliModelDropdownOptions()
@@ -1300,7 +1392,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
         hostPlugin.settings.model = persistTarget;
         // fire-and-forget save during render is safe — saveSettings is
         // idempotent + the UI re-renders below with the new value.
-        hostPlugin.saveSettings();
+        void hostPlugin.saveSettings();
       }
     }
 
@@ -1392,9 +1484,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec?) {
  * network, no Notice — so it's unit-testable; the caller (`GryphonSettingTab.
  * hide()`) wraps it in `new Notice(...)`.
  */
-function buildProviderUnreadyNotice(plugin) {
-  const { describeProviderReadiness, humanizeFailureReason, friendlyProviderLabel } =
-    require("@gryphon/provider-runtime");
+function buildProviderUnreadyNotice(plugin: SettingsHost | null | undefined): string | null {
   const { ready, reason } = describeProviderReadiness(plugin);
   if (ready || !reason) return null;
   const pref = (plugin && plugin.settings && plugin.settings.providerPreference) || "auto";
@@ -1407,7 +1497,7 @@ function buildProviderUnreadyNotice(plugin) {
     `requests. Open Settings → Gryphon to fix it or pick another provider.`;
 }
 
-module.exports = {
+export {
   renderGryphonSettings,
   buildProviderUnreadyNotice,
   disposeHoverTooltip,

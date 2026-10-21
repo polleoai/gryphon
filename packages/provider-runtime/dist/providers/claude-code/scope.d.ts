@@ -18,7 +18,7 @@
  *
  * MCP trust (#25 Design rev 2). An entry in `<cwd>/.mcp.json` is a command
  * line. A vault server runs only when an approval stored OUTSIDE the vault
- * (`@gryphon/protect` mcpApprovals, injected here as `ctx.approvals`)
+ * (`@polleoai/gryphon-protect` mcpApprovals, injected here as `ctx.approvals`)
  * matches its exact spec hash. Everything else is left out and returned in
  * `pendingApprovals` for the host to offer. Approval files inside the vault
  * (`.claude/settings*.json`, `enabledMcpjsonServers`, Gryphon's own
@@ -71,10 +71,12 @@
  * the last value, so one set of rules would vanish silently — that's a
  * contract error and the resolver throws.
  */
+/** A `name → server spec` map (specs are opaque JSON from .mcp.json / consumers). */
+type McpServerMap = Record<string, unknown>;
 interface ClaudeCodeScopeOptions {
     inheritUserConfig?: boolean;
     settingSources?: string[];
-    mcpServers?: "project" | "inherit" | Record<string, any>;
+    mcpServers?: "project" | "inherit" | McpServerMap;
     includeProjectMcp?: boolean;
     autoMemory?: boolean;
     pluginDirs?: string[];
@@ -87,7 +89,7 @@ interface McpApprovalsReader {
 interface PendingApproval {
     name: string;
     /** The raw `.mcp.json` entry, for the review modal. May hold secrets in env/headers. */
-    spec: any;
+    spec: unknown;
     specHash: string;
     reason: "new" | "changed";
 }
@@ -95,9 +97,9 @@ interface ResolvedScope {
     /** Args Gryphon adds to the CLI argv (excluding --mcp-config, whose path the caller supplies). */
     args: string[];
     /** Servers for the --mcp-config temp file; null = emit no --mcp-config. */
-    mcpServers: Record<string, any> | null;
+    mcpServers: McpServerMap | null;
     /** Keys merged into the --settings flag object; empty = nothing to add. */
-    settingsKeys: Record<string, any>;
+    settingsKeys: Record<string, unknown>;
     /** Problems that cost the session its vault MCP servers (malformed .mcp.json). */
     warnings: string[];
     /** Vault servers left out because nothing outside the vault approved their exact spec. */
@@ -125,7 +127,7 @@ interface ResolvedScope {
  * Unreadable / malformed → `{ servers: {}, error }`.
  */
 declare function readProjectMcpServers(cwd: string): {
-    servers: Record<string, any>;
+    servers: McpServerMap;
     error?: string;
 };
 /**
@@ -137,8 +139,8 @@ declare function readProjectMcpServers(cwd: string): {
  * it costs the personal servers only, never the spawn.
  */
 declare function readUserMcpServers(file: string, cwd: string): {
-    user: Record<string, any>;
-    local: Record<string, any>;
+    user: McpServerMap;
+    local: McpServerMap;
     error?: string;
 };
 declare function resolveClaudeCodeScope(scope: ClaudeCodeScopeOptions | null | undefined, ctx: {

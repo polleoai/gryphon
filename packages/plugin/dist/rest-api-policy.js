@@ -27,7 +27,11 @@
  * loopback freely).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.RestApiTurnCounter = exports.LOOPBACK_HOSTNAMES = exports.OBSIDIAN_REST_API_DEFAULT_PORT = void 0;
+exports.isObsidianRestApiUrl = isObsidianRestApiUrl;
+exports.buildRestApiDenyReason = buildRestApiDenyReason;
 const OBSIDIAN_REST_API_DEFAULT_PORT = 27124;
+exports.OBSIDIAN_REST_API_DEFAULT_PORT = OBSIDIAN_REST_API_DEFAULT_PORT;
 const LOOPBACK_HOSTNAMES = new Set([
     "127.0.0.1",
     "localhost",
@@ -35,6 +39,7 @@ const LOOPBACK_HOSTNAMES = new Set([
     "[::1]",
     "0.0.0.0",
 ]);
+exports.LOOPBACK_HOSTNAMES = LOOPBACK_HOSTNAMES;
 /**
  * Recognize a URL targeting the obsidian-local-rest-api plugin.
  *
@@ -125,10 +130,4 @@ class RestApiTurnCounter {
         this._warned = false;
     }
 }
-module.exports = {
-    OBSIDIAN_REST_API_DEFAULT_PORT,
-    LOOPBACK_HOSTNAMES,
-    isObsidianRestApiUrl,
-    buildRestApiDenyReason,
-    RestApiTurnCounter,
-};
+exports.RestApiTurnCounter = RestApiTurnCounter;

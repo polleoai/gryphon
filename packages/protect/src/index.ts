@@ -1,6 +1,6 @@
 // TypeScript module marker.
 
-// Public API for @gryphon/protect.
+// Public API for @polleoai/gryphon-protect.
 //
 // summariseArgs — module-level pure helper used by the S3 audit sink.
 // Produces a short human-readable string from a tool args object.
@@ -17,7 +17,7 @@ const REDACTED_FIELD_NAMES = new Set([
 
 function summariseArgs(args: unknown): string {
   if (!args || typeof args !== "object") return "";
-  const out = [];
+  const out: string[] = [];
   try {
     for (const [key, val] of Object.entries(args)) {
       if (REDACTED_FIELD_NAMES.has(key)) {
@@ -37,7 +37,7 @@ function summariseArgs(args: unknown): string {
         out.push(`${key}=[${Array.isArray(val) ? "array" : typeof val}]`);
       }
     }
-  } catch (_) {
+  } catch {
     // Hostile or unusual args — return whatever we built so far.
   }
   return out.join(" ");
@@ -46,12 +46,12 @@ function summariseArgs(args: unknown): string {
 
 //
 // Consumers (the plugin shell, future non-Obsidian hosts) should only
-// import from this entry. Deep imports like `@gryphon/protect/src/X`
+// import from this entry. Deep imports like `@polleoai/gryphon-protect/src/X`
 // will not work once this package ships as a dist-only npm tarball.
 //
 // Three shapes of export are offered, deliberately:
 //   1. Namespace exports: each internal module is reachable as a top-level
-//      property — `const { attackDetector } = require("@gryphon/protect")`.
+//      property — `const { attackDetector } = require("@polleoai/gryphon-protect")`.
 //      Lets consumers use the whole module when they need many of its
 //      named exports (e.g. tools/bash.js uses several attackDetector helpers).
 //   2. Promoted named exports: the most frequently-used named bindings
@@ -63,27 +63,31 @@ function summariseArgs(args: unknown): string {
 //      contract a non-Obsidian consumer (CLI host, web app, custom plugin)
 //      uses to inject protection without reaching for individual modules.
 
-const attackDetector = require("./attack-detector");
-const denyCopy = require("./deny-copy");
-const permissionIpcServer = require("./permission-ipc-server");
-const provenanceStore = require("./provenance-store");
-const tmpfileSweeper = require("./tmpfile-sweeper");
-const winSpawn = require("./win-spawn");
-const hookDispatcher = require("./hook-dispatcher");
-const ccDisallowTranslator = require("./cc-disallow-translator");
-const systemPromptHints = require("./system-prompt-hints");
-const injectionPatterns = require("./injection-patterns");
-const untrustedFraming = require("./untrusted-framing");
-const hookAdapters = require("./hook-adapters");
-const pathUtils = require("./path-utils");
-const permissionGate = require("./permission-gate");
-const constants = require("./constants");
-const mcpApprovals = require("./mcp-approvals");
-const securitySettings = require("./security-settings-store");
-const storeGuard = require("./store-guard");
+import * as attackDetector from "./attack-detector";
+import * as denyCopy from "./deny-copy";
+import * as permissionIpcServer from "./permission-ipc-server";
+import * as provenanceStore from "./provenance-store";
+import * as tmpfileSweeper from "./tmpfile-sweeper";
+import * as winSpawn from "./win-spawn";
+import * as hookDispatcher from "./hook-dispatcher";
+import * as ccDisallowTranslator from "./cc-disallow-translator";
+import * as systemPromptHints from "./system-prompt-hints";
+import * as injectionPatterns from "./injection-patterns";
+import * as untrustedFraming from "./untrusted-framing";
+import * as hookAdapters from "./hook-adapters";
+import * as pathUtils from "./path-utils";
+import * as permissionGate from "./permission-gate";
+import * as constants from "./constants";
+import * as mcpApprovals from "./mcp-approvals";
+import * as storeGuard from "./store-guard";
+import { patchTargets } from "./tool-aliases";
+import * as securitySettings from "./security-settings-store";
+export type { SecurityScope, EffectiveSecurity, SecurityValueTypes, SecurityValues, StoreSnapshot, WeakeningKey, ExecutableKey } from "./security-settings-store";
+import { buildTrustOnlyOverlay } from "./hook-adapters/codex-cli";
+import { HeadlessHostAdapter } from "./host-adapter";
 
-module.exports = {
-  // Namespace exports — whole modules
+// Namespace exports — whole modules
+export {
   attackDetector,
   denyCopy,
   permissionIpcServer,
@@ -102,69 +106,70 @@ module.exports = {
   mcpApprovals,
   securitySettings,
   storeGuard,
-
-  // Promoted named exports — frequent destructure targets
-  classify: attackDetector.classify,
-  normalizeToolName: attackDetector.normalizeToolName,
-  buildDenyReason: denyCopy.buildDenyReason,
-  PermissionIPCServer: permissionIpcServer.PermissionIPCServer,
-  defaultSocketPath: permissionIpcServer.defaultSocketPath,
-  ProvenanceStore: provenanceStore.ProvenanceStore,
-  sweepGryphonOrphans: tmpfileSweeper.sweepGryphonOrphans,
-  buildDisallowedTools: ccDisallowTranslator.buildDisallowedTools,
-  buildApprovalsStoreDenyGlobs: ccDisallowTranslator.buildApprovalsStoreDenyGlobs,
-
-  // Promoted from path-utils — heavily used by SDK tools (bash/edit/etc.)
-  resolveVaultPath: pathUtils.resolveVaultPath,
-  PathOutsideVaultError: pathUtils.PathOutsideVaultError,
-  resolveActivePatterns: pathUtils.resolveActivePatterns,
-
-  // Promoted from permission-gate
-  checkPermission: permissionGate.checkPermission,
-
-  // Issue #29: machine-local security settings (store, scope, accessor).
-  WEAKENING_KEYS: securitySettings.WEAKENING_KEYS,
-  SecurityScopeUnavailableError: securitySettings.SecurityScopeUnavailableError,
-  resolveSecurityScope: securitySettings.resolveSecurityScope,
-  readMachineSecuritySettings: securitySettings.readMachineSecuritySettings,
-  setMachineSecuritySetting: securitySettings.setMachineSecuritySetting,
-  dismissVaultSecuritySuggestion: securitySettings.dismissVaultSecuritySuggestion,
-  isWeakening: securitySettings.isWeakening,
-  effectiveSecuritySettings: securitySettings.effectiveSecuritySettings,
-  securityInputsOf: securitySettings.securityInputsOf,
-
-  // Issue #30: machine-scoped CLI binary paths — the one resolver every
-  // spawn and probe uses (sync, never throws, returns the realpath to
-  // spawn), and its write API.
-  EXECUTABLE_KEYS: securitySettings.EXECUTABLE_KEYS,
-  resolveCliPath: securitySettings.resolveCliPath,
-  setMachineCliPath: securitySettings.setMachineCliPath,
-  CliPathRejectedError: securitySettings.CliPathRejectedError,
-  // Issue #30: the store guard (Protected Mode off) and the turn-end check.
-  approvalsStoreVerdict: mcpApprovals.approvalsStoreVerdict,
-  // R43-3: the files a Codex apply_patch names (for prompts and checks).
-  patchTargets: require("./tool-aliases").patchTargets,
-  // R3-1: a CODEX_HOME that only marks the vault untrusted (hooks down).
-  codexTrustOnlyOverlay: require("./hook-adapters/codex-cli").buildTrustOnlyOverlay,
-  ensureStoreGuardScript: storeGuard.ensureStoreGuardScript,
-  snapshotSecurityStore: securitySettings.snapshotSecurityStore,
-  checkSecurityStoreTamper: securitySettings.checkSecurityStoreTamper,
-  onSecurityStoreTamper: securitySettings.onSecurityStoreTamper,
-
-  // Promoted from constants — protected-pattern catalog data
-  DEFAULT_PROTECTED_PATHS: constants.DEFAULT_PROTECTED_PATHS,
-  DEFAULT_PROTECTED_COMMANDS: constants.DEFAULT_PROTECTED_COMMANDS,
-  PROTECTED_CATEGORIES: constants.PROTECTED_CATEGORIES,
-
-  // System-prompt hint constants — these are pure data, frequently
-  // imported by name, so spread to top level alongside the namespace.
-  ...systemPromptHints,
-
   // The unified consumer factory — build a protection context for a host
   // application. Keeps the wiring (which dispatcher, which IPC server,
   // which classifier) opaque from the runtime layer's perspective.
   createProtectionContext,
 };
+
+// Promoted named exports — frequent destructure targets
+export const classify = attackDetector.classify;
+export const normalizeToolName = attackDetector.normalizeToolName;
+export const buildDenyReason = denyCopy.buildDenyReason;
+export const PermissionIPCServer = permissionIpcServer.PermissionIPCServer;
+export const defaultSocketPath = permissionIpcServer.defaultSocketPath;
+export const ProvenanceStore = provenanceStore.ProvenanceStore;
+export const sweepGryphonOrphans = tmpfileSweeper.sweepGryphonOrphans;
+export const buildDisallowedTools = ccDisallowTranslator.buildDisallowedTools;
+export const buildApprovalsStoreDenyGlobs = ccDisallowTranslator.buildApprovalsStoreDenyGlobs;
+
+// Promoted from path-utils — heavily used by SDK tools (bash/edit/etc.)
+export const resolveVaultPath = pathUtils.resolveVaultPath;
+export const PathOutsideVaultError = pathUtils.PathOutsideVaultError;
+export const resolveActivePatterns = pathUtils.resolveActivePatterns;
+
+// Promoted from permission-gate
+export const checkPermission = permissionGate.checkPermission;
+export const setActiveProviderKindResolver = permissionGate.setActiveProviderKindResolver;
+export const setPermissionModalUi = permissionGate.setPermissionModalUi;
+
+// Issue #29: machine-local security settings (store, scope, accessor).
+export const WEAKENING_KEYS = securitySettings.WEAKENING_KEYS;
+export const SecurityScopeUnavailableError = securitySettings.SecurityScopeUnavailableError;
+export const resolveSecurityScope = securitySettings.resolveSecurityScope;
+export const readMachineSecuritySettings = securitySettings.readMachineSecuritySettings;
+export const setMachineSecuritySetting = securitySettings.setMachineSecuritySetting;
+export const dismissVaultSecuritySuggestion = securitySettings.dismissVaultSecuritySuggestion;
+export const isWeakening = securitySettings.isWeakening;
+export const effectiveSecuritySettings = securitySettings.effectiveSecuritySettings;
+export const securityInputsOf = securitySettings.securityInputsOf;
+
+// Issue #30: machine-scoped CLI binary paths — the one resolver every
+// spawn and probe uses (sync, never throws, returns the realpath to
+// spawn), and its write API.
+export const EXECUTABLE_KEYS = securitySettings.EXECUTABLE_KEYS;
+export const resolveCliPath = securitySettings.resolveCliPath;
+export const setMachineCliPath = securitySettings.setMachineCliPath;
+export const CliPathRejectedError = securitySettings.CliPathRejectedError;
+// Issue #30: the store guard (Protected Mode off) and the turn-end check.
+export const approvalsStoreVerdict = mcpApprovals.approvalsStoreVerdict;
+// R43-3: the files a Codex apply_patch names (for prompts and checks).
+export { patchTargets };
+// R3-1: a CODEX_HOME that only marks the vault untrusted (hooks down).
+export const codexTrustOnlyOverlay = buildTrustOnlyOverlay;
+export const ensureStoreGuardScript = storeGuard.ensureStoreGuardScript;
+export const snapshotSecurityStore = securitySettings.snapshotSecurityStore;
+export const checkSecurityStoreTamper = securitySettings.checkSecurityStoreTamper;
+export const onSecurityStoreTamper = securitySettings.onSecurityStoreTamper;
+
+// Promoted from constants — protected-pattern catalog data
+export const DEFAULT_PROTECTED_PATHS = constants.DEFAULT_PROTECTED_PATHS;
+export const DEFAULT_PROTECTED_COMMANDS = constants.DEFAULT_PROTECTED_COMMANDS;
+export const PROTECTED_CATEGORIES = constants.PROTECTED_CATEGORIES;
+
+// System-prompt hint constants — these are pure data, frequently
+// imported by name, so spread to top level alongside the namespace.
+export * from "./system-prompt-hints";
 
 /**
  * Build a protection context — the opaque contract the runtime layer
@@ -214,6 +219,21 @@ module.exports = {
  * synchronously (microtask) since the no-modal fallback path in
  * checkPermission is a plain synchronous return.
  */
+// The parts of a host plugin createProtectionContext reads.
+interface ProtectionHostPlugin {
+  settings?: unknown;
+  ipcServer?: { isListening?: () => boolean } | null;
+}
+
+/** One audit-sink record (S3). */
+interface DecisionAuditEntry {
+  ts: number;
+  tool: string;
+  args_summary: string;
+  decision: string;
+  reason: string | null;
+}
+
 function createProtectionContext({
   plugin,
   settings,
@@ -222,18 +242,24 @@ function createProtectionContext({
   onDecision,
   security,
 }: {
-  plugin?: any;
-  settings?: any;
-  security?: any;
-  config?: any;
-  hostAdapter?: any;
-  onDecision?: ((...args: any[]) => any) | null;
+  plugin?: unknown;
+  settings?: unknown;
+  security?: unknown;
+  config?: unknown;
+  hostAdapter?: unknown;
+  onDecision?: ((entry: DecisionAuditEntry) => unknown) | null;
 } = {}) {
-  const _settings = config || settings || (plugin && plugin.settings) || {};
-  const _hostAdapter = hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
+  const host = plugin as ProtectionHostPlugin | null | undefined;
+  const _settings = config || settings || (host && host.settings) || {};
+  const _hostAdapter = (hostAdapter ||
+    new HeadlessHostAdapter()) as {
+    notify?: (message: string, opts?: { level?: string }) => void;
+  };
   // Issue #30 (G4): the security input is the snapshot, else an explicit
   // config/settings from the caller's code — never `plugin.settings` (the
   // host's data.json). With neither, securityInputsOf returns the defaults.
+  // (securitySettings is CommonJS, called through its module object so test
+  // stubs apply; its result is typed here.)
   const _security = securitySettings.securityInputsOf({ security, settings: config || settings || undefined, plugin });
 
   return {
@@ -243,7 +269,7 @@ function createProtectionContext({
       const merged = { ...providerOptions, cwd, ...(security ? { security } : {}) };
       return hookDispatcher.prepareSpawn({
         kind,
-        plugin,
+        plugin: plugin as Record<string, unknown> | null | undefined,
         options: merged,
       });
     },
@@ -269,9 +295,9 @@ function createProtectionContext({
       // an IPC server we can register with. The host plugin exposes
       // `ipcServer` after onload completes.
       if (_security.protectedMode === false) return false;
-      if (!plugin || !plugin.ipcServer) return false;
+      if (!host || !host.ipcServer) return false;
       try {
-        return plugin.ipcServer.isListening && plugin.ipcServer.isListening();
+        return host.ipcServer.isListening && host.ipcServer.isListening();
       } catch (e) {
         // isListening() should not throw under any documented
         // condition. If it does, that's a setup-level bug a non-
@@ -342,7 +368,7 @@ function createProtectionContext({
             if (_hostAdapter && _hostAdapter.notify) {
               try {
                 _hostAdapter.notify(`audit sink threw: ${(e as Error).message}`, { level: "warn" });
-              } catch (_) { /* notify must not block either */ }
+              } catch { /* notify must not block either */ }
             }
           }
         }
@@ -362,7 +388,7 @@ function createProtectionContext({
       const action = isBash ? "run" : "write";
       const target = isBash
         ? (args && typeof args.command === "string" ? args.command : String(tool))
-        : (args && (args.file_path || args.path) ? (args.file_path || args.path) : String(tool));
+        : (args && (args.file_path || args.path) ? (args.file_path || args.path) as string : String(tool));
 
       const headlessCtx = {
         permissionMode: effectiveMode,
@@ -395,7 +421,7 @@ function createProtectionContext({
               decision: errorResult.decision,
               reason: errorResult.reason,
             });
-          } catch (_) { /* sink err */ }
+          } catch { /* sink err */ }
         }
         return errorResult;
       }
@@ -424,7 +450,7 @@ function createProtectionContext({
           if (_hostAdapter && _hostAdapter.notify) {
             try {
               _hostAdapter.notify(`audit sink threw: ${(e as Error).message}`, { level: "warn" });
-            } catch (_) { /* notify must not block either */ }
+            } catch { /* notify must not block either */ }
           }
         }
       }

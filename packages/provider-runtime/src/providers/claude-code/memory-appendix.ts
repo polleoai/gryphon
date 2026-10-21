@@ -21,10 +21,10 @@
  * problems; the provider writes the temp file and surfaces the problems.
  */
 
-const crypto = require("crypto") as typeof import("crypto");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const path = require("path") as typeof import("path");
+import * as crypto from "crypto";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
 
 const MAX_IMPORT_DEPTH = 5;
 /**
@@ -90,11 +90,11 @@ function resolveWithin(root: string, abs: string): { path: string | null; why?: 
     }
     const next = path.join(cur, comp);
     let st: import("fs").Stats;
-    try { st = fs.lstatSync(next); } catch (_) { return { path: null }; } // missing → plain "@word"
+    try { st = fs.lstatSync(next); } catch { return { path: null }; } // missing → plain "@word"
     if (!st.isSymbolicLink()) { cur = next; continue; }
     if (++hops > MAX_LINK_HOPS) return { path: null, why: "too many symlinks" };
     let link: string;
-    try { link = fs.readlinkSync(next); } catch (_) { return { path: null }; }
+    try { link = fs.readlinkSync(next); } catch { return { path: null }; }
     // Order matters: `\\?\UNC\host` is network; `\\?\C:\...` is a local
     // long-path target — strip that prefix before the UNC test, or a
     // legitimate in-vault junction would be rejected as "network".
@@ -148,7 +148,7 @@ function buildMemoryAppendix(files: string[]): MemoryAppendix {
       }
       body = fs.readFileSync(real, "utf8");
     } catch (e) {
-      warnings.push(`couldn't read memory import ${real} (${(e && (e as Error).message) || e})`);
+      warnings.push(`couldn't read memory import ${real} (${((e && (e as Error).message) || e) as string})`);
       return;
     }
     parts.push(`<!-- memory: ${path.relative(root, real).split(path.sep).join("/")} -->\n${body}`);
@@ -174,7 +174,7 @@ function buildMemoryAppendix(files: string[]): MemoryAppendix {
       const targetReal: string = r.path;
       try {
         if (!fs.statSync(targetReal).isFile()) continue;
-      } catch (_) {
+      } catch {
         continue;
       }
       if (!isUnder(targetReal, root)) {
@@ -209,7 +209,7 @@ function buildMemoryAppendix(files: string[]): MemoryAppendix {
       }
       real = r.path;
       if (!fs.statSync(real).isFile()) throw new Error("not a file");
-    } catch (_) {
+    } catch {
       missing.push(f);
       continue;
     }

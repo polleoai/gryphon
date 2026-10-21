@@ -37,11 +37,11 @@
  * sidesteps the whole handoff.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
-const { hookCommandLine } = require("../../shell-quote");
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import * as crypto from "crypto";
+import { hookCommandLine } from "../../shell-quote";
 
 const DEFAULT_HOOK_TIMEOUTS = {
   PreToolUse: 300,       // user may read the modal for a while before deciding
@@ -51,6 +51,15 @@ const DEFAULT_HOOK_TIMEOUTS = {
   UserPromptSubmit: 10,  // regex scan
   Notification: 2,       // fire-and-forget notice forwarding
 };
+
+type HookEvent = keyof typeof DEFAULT_HOOK_TIMEOUTS;
+
+interface HookSettingsParams {
+  pluginDir: string;
+  socketPath: string;
+  nodePath?: string;
+  timeouts?: Partial<Record<HookEvent, number>>;
+}
 
 const HOOK_FILES: Record<string, string> = {
   PreToolUse: "pretool.js",
@@ -83,7 +92,7 @@ const POSTTOOL_MATCHER = "WebFetch|WebSearch|Bash|Read|Glob|Grep|Write";
  * @param {string} [params.nodePath] — node binary; defaults to the current process's node
  * @param {object} [params.timeouts] — per-hook timeout overrides (seconds)
  */
-function buildHookSettings(params: any) {
+function buildHookSettings(params: HookSettingsParams) {
   if (!params || typeof params !== "object") {
     throw new TypeError("buildHookSettings(params): params required");
   }
@@ -128,7 +137,7 @@ function buildHookSettings(params: any) {
   //
   //   The `&` (call operator) lets us invoke a quoted path containing
   //   spaces (e.g. "C:\Program Files\nodejs\...").
-  const makeCommand = (scriptName: any) => {
+  const makeCommand = (scriptName: string): { command: string; shell?: string } => {
     const scriptPath = path.join(hooksDir, scriptName);
     // R43-1: real shell quoting — the script path is under the vault folder,
     // whose name the vault's author chose.
@@ -143,9 +152,9 @@ function buildHookSettings(params: any) {
     };
   };
 
-  const makeEntry = (hookEvent: any, matcher: any) => {
+  const makeEntry = (hookEvent: HookEvent, matcher: string) => {
     const cmd = makeCommand(HOOK_FILES[hookEvent]);
-    const hookRecord: Record<string, any> = {
+    const hookRecord: Record<string, string | number> = {
       type: "command",
       command: cmd.command,
       timeout: timeouts[hookEvent],
@@ -193,9 +202,9 @@ function buildHookSettings(params: any) {
  * the shim). Moving the list into the settings JSON drops argv length
  * to near-zero regardless of rule count.
  */
-function buildPermissionsOnlySettings(denyRules: any) {
+function buildPermissionsOnlySettings(denyRules: unknown) {
   const rules = Array.isArray(denyRules)
-    ? denyRules.filter((r) => typeof r === "string" && r.length > 0)
+    ? (denyRules as unknown[]).filter((r): r is string => typeof r === "string" && r.length > 0)
     : [];
   return { permissions: { deny: rules } };
 }
@@ -209,7 +218,7 @@ function buildPermissionsOnlySettings(denyRules: any) {
  * writer and a partial file just means CC fails to parse and the
  * spawn aborts, which is visible and recoverable.
  */
-function writeHookSettingsFile(settings: any) {
+function writeHookSettingsFile(settings: unknown) {
   // pid + timestamp + random 4-byte hex. The hex suffix disambiguates
   // calls that land in the same millisecond (common in tests and
   // plausible on first-spawn during a chat open). 4 bytes (32 bits)

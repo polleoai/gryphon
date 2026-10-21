@@ -145,7 +145,7 @@ function scopeView({ consumerScope = null, inherit = false, fileOnly = false } =
   const fs = require("fs");
   const os = require("os");
   const path = require("path");
-  const { securitySettings } = require("@gryphon/protect");
+  const { securitySettings } = require("@polleoai/gryphon-protect");
   process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "g25-scope-cfg-"));
   const vault = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "g25-scope-vault-")));
   const view = Object.create(GryphonChatView.prototype);

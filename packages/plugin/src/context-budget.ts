@@ -26,9 +26,33 @@
  * (Stage D) sharpens this over time.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const os = require("os") as typeof import("os");
+import * as fs from "fs";
+import * as path from "path";
+import * as os from "os";
+
+interface ContextSourcesSnapshot {
+  ccSystemPromptTokens: number;
+  toolSchemaTokens: number;
+  userClaudeMdTokens: number;
+  homeClaudeMdTokens: number;
+  vaultClaudeMdTokens: number;
+  vaultAgentsMdTokens: number;
+  memoryMdTokens: number;
+  memoryDirTokens: number;
+  memoryFileCount: number;
+}
+
+interface ContextProjection {
+  totalTokens: number;
+  pct: number;
+  rawPct: number;
+  bySource: Omit<ContextSourcesSnapshot, "memoryFileCount"> & {
+    chatHistoryTokens: number;
+    userInputTokens: number;
+  };
+  likelyOverflow: boolean;
+  windowSize: number;
+}
 
 // 1 token ≈ 4 chars is the rough rule-of-thumb for English text against
 // the Claude tokenizer. Code and JSON are more dense (~3 chars/token);
@@ -43,7 +67,6 @@ const CHARS_PER_TOKEN = 0.25;
 // (Stage D) layers a per-vault delta on top.
 const CC_SYSTEM_PROMPT_TOKENS_BASELINE = 1500;   // CC's built-in system prompt
 const CC_TOOL_SCHEMAS_TOKENS_BASELINE = 2500;    // CC's built-in tool definitions
-const MCP_SERVER_TOKENS_BASELINE = 1500;         // per registered MCP server
 
 // SDK-mode (anthropic-api) has a different baseline because Gryphon
 // owns the system prompt + tool list, not CC.
@@ -54,7 +77,7 @@ const SDK_TOOL_SCHEMAS_TOKENS_BASELINE = 800;    // smaller tool set than CC
  * Approximate token count of a UTF-8 string using the chars/4 heuristic.
  * Centralized so calibration can slot a multiplier in one place later.
  */
-function estimateTokensFromChars(text) {
+function estimateTokensFromChars(text: unknown): number {
   if (typeof text !== "string") return 0;
   return Math.ceil(text.length * CHARS_PER_TOKEN);
 }
@@ -63,7 +86,7 @@ function estimateTokensFromChars(text) {
  * Approximate token count from a byte size (assumes UTF-8, ~1 byte per
  * char for ASCII-dominated content like CLAUDE.md / source files).
  */
-function estimateTokensFromBytes(bytes) {
+function estimateTokensFromBytes(bytes: unknown): number {
   // Explicit `Number.isFinite` check is required because `NaN <= 0` is
   // false — without it, `Math.ceil(NaN * 0.25)` falls through and returns
   // NaN, which then poisons every downstream sum.
@@ -77,13 +100,13 @@ function estimateTokensFromBytes(bytes) {
  * error (ENOENT, EACCES, EISDIR) and returns 0 — the estimator should
  * never throw, just under-report.
  */
-function safeStatBytes(p) {
+function safeStatBytes(p: string): number {
   try {
     const st = fs.statSync(p);
     if (st.isFile()) return st.size;
     if (st.isDirectory()) return 0;  // caller handles dirs explicitly
     return 0;
-  } catch (_) {
+  } catch {
     return 0;
   }
 }
@@ -99,7 +122,7 @@ function safeStatBytes(p) {
  * turn. We report this as worst-case in the breakdown so the user
  * understands the upper bound.
  */
-function sumDirMarkdownBytes(dirPath) {
+function sumDirMarkdownBytes(dirPath: string): number {
   try {
     const entries = fs.readdirSync(dirPath, { withFileTypes: true });
     let total = 0;
@@ -109,7 +132,7 @@ function sumDirMarkdownBytes(dirPath) {
       total += safeStatBytes(path.join(dirPath, entry.name));
     }
     return total;
-  } catch (_) {
+  } catch {
     return 0;
   }
 }
@@ -126,7 +149,7 @@ function sumDirMarkdownBytes(dirPath) {
  * (`C:\\Users\\foo\\vault`). CC normalizes Windows paths to forward
  * slashes before escaping, so we do the same here.
  */
-function escapeVaultPath(absVaultPath) {
+function escapeVaultPath(absVaultPath: unknown): string {
   if (typeof absVaultPath !== "string" || !absVaultPath) return "";
   // Normalize Windows separators to forward slashes, then replace all `/`.
   // The Windows drive letter becomes part of the dir name as-is.
@@ -156,10 +179,11 @@ function escapeVaultPath(absVaultPath) {
  * @property {number} memoryDirTokens        — sum of *.md in memory dir (worst case)
  * @property {number} memoryFileCount        — # of `.md` files in memory dir (for UI)
  */
-async function collectContextSources({ kind, vaultPath, homeDir, settings }) {
+async function collectContextSources(
+  { kind, vaultPath, homeDir }: { kind?: string; vaultPath?: string | null; homeDir?: string | null; settings?: unknown },
+): Promise<ContextSourcesSnapshot> {
   const home = homeDir || os.homedir() || "";
   const isClaudeCode = kind === "claude-code";
-  const isSdk = kind === "anthropic-api" || kind === "openai-api" || kind === "google-api";
 
   // System-prompt + tool-schema baselines depend on whether CC owns the
   // prompt (CLI mode) or Gryphon does (SDK mode). Codex-CLI / Gemini-CLI
@@ -210,7 +234,7 @@ async function collectContextSources({ kind, vaultPath, homeDir, settings }) {
     try {
       memoryFileCount = fs.readdirSync(memoryDir)
         .filter((f) => f.endsWith(".md") && f !== "MEMORY.md").length;
-    } catch (_) { /* dir missing — count stays 0 */ }
+    } catch { /* dir missing — count stays 0 */ }
   }
 
   return {
@@ -248,8 +272,17 @@ async function collectContextSources({ kind, vaultPath, homeDir, settings }) {
  * @property {Object} bySource           — same keys as ContextSourcesSnapshot, plus chatHistory + userInput
  * @property {boolean} likelyOverflow    — totalTokens > windowSize * 0.95
  */
-function summarizeContext({ sources, messages, userInput, windowSize, measuredHistoryTokens, calibrationDelta }) {
-  const safeSources = sources || {};
+function summarizeContext(
+  { sources, messages, userInput, windowSize, measuredHistoryTokens, calibrationDelta }: {
+    sources?: Partial<ContextSourcesSnapshot> | null;
+    messages?: Array<{ text?: unknown } | null | undefined> | null;
+    userInput?: unknown;
+    windowSize?: unknown;
+    measuredHistoryTokens?: unknown;
+    calibrationDelta?: unknown;
+  },
+): ContextProjection {
+  const safeSources: Partial<ContextSourcesSnapshot> = sources || {};
   // Use the measured-from-LLM number if we have it; otherwise estimate
   // from message text. SDK mode tracks history client-side so messages
   // is reliable; CLI mode learns the number post-turn and we plug it in
@@ -291,7 +324,7 @@ function summarizeContext({ sources, messages, userInput, windowSize, measuredHi
   };
 }
 
-module.exports = {
+export {
   collectContextSources,
   summarizeContext,
   // Exported for tests + the breakdown popover's labels.

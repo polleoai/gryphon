@@ -23,6 +23,8 @@
  * — see `src/providers/factory.js` for the merge logic.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ALL_PROVIDER_FLAGS = exports.PROVIDER_FLAGS = void 0;
+exports.filterExtraArgs = filterExtraArgs;
 // Flags specific to each provider's CLI. Inclusion criterion: this flag
 // is known to be unique to one CLI and would break a different one if
 // forwarded. Routine flags (e.g. `--model`, `--debug`) are NOT listed
@@ -68,9 +70,11 @@ const PROVIDER_FLAGS = {
         "--dangerously-skip-permissions",
     ]),
 };
+exports.PROVIDER_FLAGS = PROVIDER_FLAGS;
 // Union of all provider-specific flags. A flag in this set is "owned" by
 // some provider; if the active provider doesn't own it, drop it.
 const ALL_PROVIDER_FLAGS = new Set();
+exports.ALL_PROVIDER_FLAGS = ALL_PROVIDER_FLAGS;
 for (const set of Object.values(PROVIDER_FLAGS)) {
     for (const f of set)
         ALL_PROVIDER_FLAGS.add(f);
@@ -160,8 +164,3 @@ function filterExtraArgs(extraArgs, providerKind) {
     }
     return { filtered, dropped };
 }
-module.exports = {
-    filterExtraArgs,
-    PROVIDER_FLAGS,
-    ALL_PROVIDER_FLAGS,
-};

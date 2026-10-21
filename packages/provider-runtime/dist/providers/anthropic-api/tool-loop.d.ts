@@ -18,6 +18,30 @@
  *   - The activeStream reference is passed through so abort() works at
  *     any iteration boundary
  */
+import type Anthropic from "@anthropic-ai/sdk";
+import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
+interface ToolLoopUsage {
+    input_tokens?: number | null;
+    output_tokens?: number | null;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+}
+type ToolLoopContext = {
+    coercionTool?: Anthropic.Tool | null;
+    toolChoice?: Anthropic.ToolChoice | null;
+    maxUsdBudget?: number | null;
+    computeIterationCost?: ((usage: ToolLoopUsage) => number) | null;
+    priorCumulativeCost?: number;
+    _loopCost?: number;
+    [key: string]: unknown;
+};
+type AnthropicMessageStream = MessageStream;
+interface ToolLoopCallbacks {
+    onMessage?: (text: string, type: string) => void;
+    onTool?: (name: string) => void;
+    onError?: (text: string) => void;
+    onStream?: (stream: AnthropicMessageStream) => void;
+}
 declare const MAX_ITERATIONS = 25;
 declare const GRYPHON_SDK_SYSTEM_PROMPT: string;
 /**
@@ -43,14 +67,14 @@ declare const GRYPHON_SDK_SYSTEM_PROMPT: string;
  *   from the caller and let the caller own all history mutations.
  */
 declare function runToolLoop({ client, model, history, ctx, callbacks }: {
-    client: any;
-    model: any;
-    history: any;
-    ctx: any;
-    callbacks: any;
+    client: Anthropic;
+    model: string;
+    history: Anthropic.MessageParam[];
+    ctx: ToolLoopContext;
+    callbacks: ToolLoopCallbacks;
 }): Promise<{
     turnText: string;
-    finalMessage: any;
+    finalMessage: Anthropic.Messages.Message | null;
     totalUsage: {
         input_tokens: number;
         output_tokens: number;
@@ -63,6 +87,6 @@ declare function runToolLoop({ client, model, history, ctx, callbacks }: {
         cache_read_input_tokens: number;
     };
     iterations: number;
-    thinkingBlocks: any[];
+    thinkingBlocks: string[];
 }>;
 export { runToolLoop, MAX_ITERATIONS, GRYPHON_SDK_SYSTEM_PROMPT };

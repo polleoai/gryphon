@@ -4,6 +4,28 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.0] — 2026-10-15
+
+Ready for Obsidian's community plugin review: Gryphon now passes every check of the review's code scan. Along the way it starts faster, gains settings search, and fixes a dialog.
+
+### New
+
+- **Find Gryphon's settings from Obsidian's settings search** (Obsidian 1.13 or newer). Search for a setting such as "Protected Mode", "Default model" or "API key" and Obsidian takes you to Gryphon's settings.
+
+### Faster
+
+- **Gryphon starts faster and is smaller.** The Anthropic, OpenAI and Google libraries now load the first time you use that provider (sending a message, or testing a key), instead of every time Obsidian starts. If you only use a command-line assistant such as Claude Code, they never load at all. The plugin download is about 120 KB smaller.
+
+### Fixes
+
+- **Keyboard shortcuts work in the vault-security confirmation dialog.** The dialog that asks you to confirm a vault's security settings no longer interferes with Obsidian's own keys for that dialog (such as Esc to close it).
+- **Confirmation dialogs show a vault's requested values in full.** A value that isn't plain text (for example a list of objects in a vault's settings file or MCP server config) now shows its content instead of "[object Object]".
+
+### Things to know
+
+- **Gryphon needs Obsidian 1.4.4 or newer.** Gryphon has used features added in Obsidian 1.4.4 since before 1.0, but said it supported Obsidian 1.0.0, so older Obsidian versions were offered releases that don't work there. It now states the real minimum for this and every earlier release. If you're on an older Obsidian, update Obsidian to keep getting Gryphon updates.
+- Everything else in this release is code cleanup for the review, with no change in behaviour.
+
 ## [2.11.5] — 2026-10-10
 
 A small security follow-up to 2.11.4.

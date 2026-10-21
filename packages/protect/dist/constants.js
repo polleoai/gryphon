@@ -1,6 +1,7 @@
 "use strict";
 // TypeScript module marker.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PACKAGE_INSTALL_COMMAND_PATTERNS = exports.PROTECTED_CATEGORIES = exports.DEFAULT_PROTECTED_COMMANDS = exports.DEFAULT_PROTECTED_PATHS = void 0;
 // Default protected-path prefixes. Matched against the vault-relative
 // path of every Write/Edit target — if the target path starts with one
 // of these (or matches the exact string for non-trailing-slash entries),
@@ -93,6 +94,7 @@ const DEFAULT_PROTECTED_PATHS = [
         explanation: "VS Code debug launch configurations. A modified `preLaunchTask` or `postDebugTask` runs on every debug session.",
     },
 ];
+exports.DEFAULT_PROTECTED_PATHS = DEFAULT_PROTECTED_PATHS;
 // Default dangerous command patterns. Each line is a JS regex pattern
 // (no surrounding slashes/flags — compiled case-insensitive). A Bash
 // command matching any pattern gets the same warning modal as a
@@ -746,9 +748,11 @@ const DEFAULT_PROTECTED_COMMANDS = [
         explanation: "brew install.",
     },
 ];
+exports.DEFAULT_PROTECTED_COMMANDS = DEFAULT_PROTECTED_COMMANDS;
 const PACKAGE_INSTALL_COMMAND_PATTERNS = DEFAULT_PROTECTED_COMMANDS
     .filter((c) => c.category === "package-install")
     .map((c) => c.pattern);
+exports.PACKAGE_INSTALL_COMMAND_PATTERNS = PACKAGE_INSTALL_COMMAND_PATTERNS;
 // Human-readable title shown at the top of the protected-operation modal
 // for each category key used by the default pattern lists above. Keep the
 // key set in sync with the `category:` values in DEFAULT_PROTECTED_PATHS
@@ -767,9 +771,4 @@ const PROTECTED_CATEGORIES = {
     "package-install": "⚠ Installs software / packages",
     "user-custom": "⚠ Matches a pattern you added",
 };
-module.exports = {
-    DEFAULT_PROTECTED_PATHS,
-    DEFAULT_PROTECTED_COMMANDS,
-    PROTECTED_CATEGORIES,
-    PACKAGE_INSTALL_COMMAND_PATTERNS,
-};
+exports.PROTECTED_CATEGORIES = PROTECTED_CATEGORIES;

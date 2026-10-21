@@ -35,13 +35,14 @@
  * plugin (approve / revoke from the modal and settings) share it.
  */
 
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const path = require("path") as typeof import("path");
-const crypto = require("crypto") as typeof import("crypto");
-const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
-const { fileIdCached, isWithinIds } = require("./path-identity");
-const { readRegularFile, clearNonFile } = require("./safe-read");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import * as crypto from "crypto";
+import { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } from "./tool-aliases";
+import { fileIdCached, isWithinIds } from "./path-identity";
+import { readRegularFile, clearNonFile } from "./safe-read";
+import { fileURLToPath } from "url";
 
 const STORE_VERSION = 1;
 const FILE_NAME = "mcp-approvals.json";
@@ -126,13 +127,13 @@ function hashSpec(spec: unknown): string {
  * vault shares approvals while a clone or a moved copy needs its own.
  */
 function vaultKey(cwd: string): string {
-  try { return fs.realpathSync(cwd); } catch (_) { return path.resolve(cwd); }
+  try { return fs.realpathSync(cwd); } catch { return path.resolve(cwd); }
 }
 
 function emptyStore(): ApprovalStore {
   // Prototype-free maps: a vault key comes from the file (review: a
   // "__proto__" key polluted Object.prototype for every plugin).
-  return { version: STORE_VERSION, vaults: Object.create(null) };
+  return { version: STORE_VERSION, vaults: Object.create(null) as ApprovalStore["vaults"] };
 }
 
 /** A vault key as Gryphon writes it: an absolute path, never a reserved name. */
@@ -190,8 +191,8 @@ function _loadUnverified(file: string, rawOut?: { raw: string | null; absent?: b
 }
 
 function _parseApprovals(raw: string, file: string): ApprovalStore {
-  let parsed: any;
-  try { parsed = JSON.parse(raw); } catch (e) {
+  let parsed: { vaults?: unknown } | null;
+  try { parsed = JSON.parse(raw) as { vaults?: unknown } | null; } catch {
     console.error(`[gryphon/mcp-approvals] ${file} is not valid JSON; treating as empty`);
     return emptyStore();
   }
@@ -200,12 +201,13 @@ function _parseApprovals(raw: string, file: string): ApprovalStore {
     return emptyStore();
   }
   // Keep only well-formed entries; a malformed one is simply not approved.
-  const vaults: ApprovalStore["vaults"] = Object.create(null);
+  const vaults = Object.create(null) as ApprovalStore["vaults"];
   for (const [vk, servers] of Object.entries(parsed.vaults)) {
     if (!_validVaultKey(vk)) continue;
     if (!servers || typeof servers !== "object" || Array.isArray(servers)) continue;
-    for (const [name, entry] of Object.entries(servers as Record<string, any>)) {
+    for (const [name, rawEntry] of Object.entries(servers as Record<string, unknown>)) {
       if (!isApprovableName(name)) continue;
+      const entry = rawEntry as { sha256?: unknown; approvedAt?: unknown } | null | undefined;
       if (!entry || typeof entry !== "object" || typeof entry.sha256 !== "string" || !HASH_RE.test(entry.sha256)) continue;
       (vaults[vk] = vaults[vk] || Object.create(null))[name] = {
         sha256: entry.sha256,
@@ -237,7 +239,7 @@ function _save(store: ApprovalStore, file: string) {
   const dir = path.dirname(file);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   // mkdirSync's mode is masked by umask and ignored for an existing dir.
-  if (process.platform !== "win32") { try { fs.chmodSync(dir, 0o700); } catch (_) {} }
+  if (process.platform !== "win32") { try { fs.chmodSync(dir, 0o700); } catch { /* ignore */ } }
   const tmp = path.join(dir, `.${FILE_NAME}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
   const raw = JSON.stringify(store, null, 2) + "\n";
   // Issue #32: remembered before the rename in this process, so no reader
@@ -249,7 +251,7 @@ function _save(store: ApprovalStore, file: string) {
     try {
       fs.renameSync(tmp, file);
     } catch (e) {
-      try { fs.unlinkSync(tmp); } catch (_) {}
+      try { fs.unlinkSync(tmp); } catch { /* ignore */ }
       throw e;
     }
   } catch (e) {
@@ -283,12 +285,17 @@ const OWN_WRITE_KEY = Symbol.for("gryphon.mcpApprovalsWrites");
 // `raw`: Gryphon's latest write here. `accepted`: the last content accepted
 // as Gryphon's, per file — it backs the on-disk copy (deleting the copy
 // mid-session gains nothing).
-function _ownWrite(): { raw: string | null; accepted: Map<string, string> } {
-  const g = process as any;
-  if (!g[OWN_WRITE_KEY] || !(g[OWN_WRITE_KEY].accepted instanceof Map)) {
+// Per-process slots on `process`, keyed by Symbol.for(), so every bundled
+// copy of this module in the process shares them.
+type ProcessSlots = NodeJS.Process & Record<symbol, unknown>;
+type OwnWrite = { raw: string | null; accepted: Map<string, string> };
+
+function _ownWrite(): OwnWrite {
+  const g = process as ProcessSlots;
+  if (!g[OWN_WRITE_KEY] || !((g[OWN_WRITE_KEY] as { accepted?: unknown }).accepted instanceof Map)) {
     Object.defineProperty(g, OWN_WRITE_KEY, { value: { raw: null, accepted: new Map() }, configurable: true, enumerable: false, writable: true });
   }
-  return g[OWN_WRITE_KEY];
+  return g[OWN_WRITE_KEY] as OwnWrite;
 }
 
 function _trustedPath(file: string): string {
@@ -305,7 +312,7 @@ function _readTrustedCopy(file: string): string | null {
   try {
     const s2 = fs.statSync(file);
     if (s2.ino === r.st.ino && s2.dev === r.st.dev) return null;
-  } catch (_) { /* no store: nothing to alias */ }
+  } catch { /* no store: nothing to alias */ }
   return r.raw;
 }
 
@@ -329,9 +336,9 @@ function _initEmptyRecord(file: string, empty: string): void {
 /** Files whose last record write failed in this process (see the settings store). */
 const RECORD_FAILED_KEY = Symbol.for("gryphon.mcpApprovalsRecordWriteFailed");
 function _recordFailed(): Set<string> {
-  const g = process as any;
+  const g = process as ProcessSlots;
   if (!(g[RECORD_FAILED_KEY] instanceof Set)) Object.defineProperty(g, RECORD_FAILED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
-  return g[RECORD_FAILED_KEY];
+  return g[RECORD_FAILED_KEY] as Set<string>;
 }
 
 function _writeTrusted(file: string, raw: string): void {
@@ -345,7 +352,7 @@ function _writeTrusted(file: string, raw: string): void {
     clearNonFile(t);
     const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
     fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
-    try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+    try { fs.renameSync(tmp, t); } catch (e) { try { fs.unlinkSync(tmp); } catch { /* ignore */ } throw e; }
     _recordFailed().delete(file);
   } catch (e) {
     console.warn(`[gryphon/mcp-approvals] couldn't record the trusted copy of the approvals: ${(e as Error).message}`);
@@ -372,9 +379,9 @@ function onApprovalsTamper(fn: ApprovalsTamperSink): () => void {
  */
 const SERVED_KEY = Symbol.for("gryphon.mcpApprovalsServedVaults");
 function _served(): Set<string> {
-  const g = process as any;
+  const g = process as ProcessSlots;
   if (!(g[SERVED_KEY] instanceof Set)) Object.defineProperty(g, SERVED_KEY, { value: new Set(), configurable: true, enumerable: false, writable: true });
-  return g[SERVED_KEY];
+  return g[SERVED_KEY] as Set<string>;
 }
 
 /** Mark a vault as served here before reading its approvals. */
@@ -437,7 +444,7 @@ function _withoutForeignApprovals(file: string, store: ApprovalStore, raw: strin
     if (Object.keys(store.vaults).length) {
       const approved = Object.entries(store.vaults).flatMap(([vk, servers]) => Object.keys(servers).map((name) => ({ vaultKey: vk, name })));
       for (const fn of _approvalsTamperSinks) {
-        try { fn(approved, null, "record-started"); } catch (_) { /* a sink must not break reads */ }
+        try { fn(approved, null, "record-started"); } catch { /* a sink must not break reads */ }
       }
     }
     return store;
@@ -467,7 +474,7 @@ function _withoutForeignApprovals(file: string, store: ApprovalStore, raw: strin
       removed.map((r) => displaySafe(r.name)).join(", ") + (error ? ` (couldn't save the fix: ${(error as Error).message})` : ""),
     );
     for (const fn of _approvalsTamperSinks) {
-      try { fn(removed, error); } catch (_) { /* a sink must not break reads */ }
+      try { fn(removed, error); } catch { /* a sink must not break reads */ }
     }
   }
   return store;
@@ -518,7 +525,7 @@ function _realish(p: string): string {
   let cur = p;
   const tail: string[] = [];
   for (let i = 0; i < 64; i++) {
-    try { return path.join(fs.realpathSync(cur), ...tail.reverse()); } catch (_) {}
+    try { return path.join(fs.realpathSync(cur), ...tail.reverse()); } catch { /* not there yet: try the parent */ }
     const parent = path.dirname(cur);
     if (parent === cur) break;
     tail.push(path.basename(cur));
@@ -711,7 +718,8 @@ function _argStrings(input: Record<string, unknown>, maxDepth: number, maxString
  */
 function _resolveArgPaths(value: string, bases: string[]): string[] {
   if (/^file:/i.test(value)) {
-    try { return [require("url").fileURLToPath(value)]; } catch (_) { return []; }
+    // Lazy, as before: only `file:` arguments need the url module.
+    try { return [fileURLToPath(value)]; } catch { return []; }
   }
   if (/^~(?=$|[\\/])/.test(value)) return [path.join(os.homedir(), value.slice(1))];
   if (path.isAbsolute(value)) return [value];
@@ -721,11 +729,11 @@ function _resolveArgPaths(value: string, bases: string[]): string[] {
 // Normalize command strings before regex matching. NFKC collapses
 // Unicode compatibility characters (fullwidth `ｒｍ` → ASCII `rm`),
 // and the second pass strips zero-width characters that would otherwise
-// break `\brm\b` style boundaries ("r​m" with a ZWSP in the middle).
+// break `\brm\b` style boundaries ("r<U+200B>m" with a ZWSP in the middle).
 function normalizeForMatch(s: unknown): string {
   return String(s)
     .normalize("NFKC")
-    .replace(/[​-‍﻿⁠]/g, "");
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, "");
 }
 
 function _fileToolVerdict(input: Record<string, unknown>, cwd: string | null, opts: GuardOpts): string | null {
@@ -821,7 +829,7 @@ function approvalsStoreVerdict(
   return what ? { tool: canonical, what } : null;
 }
 
-module.exports = {
+export {
   onApprovalsTamper,
   serveVault,
   approvalsDir,

@@ -9,6 +9,13 @@
  * For complex patterns we'd want picomatch, but the common cases
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
+interface GlobInput {
+    pattern?: string;
+    path?: string;
+}
+interface GlobToolContext {
+    vaultRoot: string;
+}
 declare const SCHEMA: {
     name: string;
     description: string;
@@ -27,10 +34,10 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<{
+declare function execute(input: GlobInput, ctx: GlobToolContext): Promise<{
     content: {
         type: string;
-        text: any;
+        text: string;
     }[];
     isError: boolean;
 }>;
@@ -40,6 +47,6 @@ declare function execute(input: any, ctx: any): Promise<{
  *
  * Anchored to full-string match.
  */
-declare function _globToRegex(glob: any): RegExp;
-declare function _expandBraces(glob: any): string[];
+declare function _globToRegex(glob: string): RegExp;
+declare function _expandBraces(glob: string): string[];
 export { SCHEMA, execute, _globToRegex, _expandBraces };

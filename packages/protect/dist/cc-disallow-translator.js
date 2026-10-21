@@ -1,6 +1,45 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.CC_GLOBS_FOR_COMMAND_PATTERN = void 0;
+exports.buildDisallowedTools = buildDisallowedTools;
+exports.buildApprovalsStoreDenyGlobs = buildApprovalsStoreDenyGlobs;
+exports._globsForPath = _globsForPath;
+exports._globsForCommand = _globsForCommand;
+exports._extractKeyword = _extractKeyword;
 /**
  * Translator: Gryphon protected-pattern entries → Claude Code CLI
  * `--disallowedTools` glob rules (v0.5.6).
@@ -39,10 +78,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *     whose regex has no literal keyword gets no CLI-mode protection
  *     for that entry — documented as a known gap.
  */
-const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PACKAGE_INSTALL_COMMAND_PATTERNS, } = require("./constants");
-const { resolveActivePatterns } = require("./path-utils");
-const { approvalsDir } = require("./mcp-approvals");
-const os = require("os");
+const constants_1 = require("./constants");
+const path_utils_1 = require("./path-utils");
+const mcp_approvals_1 = require("./mcp-approvals");
+const os = __importStar(require("os"));
 // Default Obsidian config-folder name. Held as a const (not an inline literal)
 // so the deny-glob below reads as the intentional pattern it is — this is a
 // shell-redirect denylist matched against command strings, not Vault path
@@ -384,6 +423,7 @@ const CC_GLOBS_FOR_COMMAND_PATTERN = new Map([
         ]],
     ["\\bbrew\\s+install\\b", ["Bash(brew install*)", "Bash(*brew install*)"]],
 ]);
+exports.CC_GLOBS_FOR_COMMAND_PATTERN = CC_GLOBS_FOR_COMMAND_PATTERN;
 /**
  * Translate one protected PATH entry (plain string or { pattern, ... }
  * object) into CC glob rules for the Write and Edit tools.
@@ -422,8 +462,8 @@ function _extractKeyword(regex) {
     const stripped = regex
         .replace(/\\[bBsSwWdD]/g, " ") // word/whitespace metachars
         .replace(/\\\s/g, " ")
-        .replace(/[(){}\[\]^$+*?|.\\]/g, " ");
-    const match = stripped.match(/[A-Za-z0-9\-\/][A-Za-z0-9\-\/\.]{1,}/);
+        .replace(/[(){}[\]^$+*?|.\\]/g, " ");
+    const match = stripped.match(/[A-Za-z0-9\-/][A-Za-z0-9\-/.]{1,}/);
     return match ? match[0] : "";
 }
 function _globsForCommand(entry) {
@@ -459,7 +499,7 @@ function _globsForCommand(entry) {
  */
 const _caseVariants = (seg) => [...new Set([seg.toLowerCase(), seg.replace(/(^|[^A-Za-z])([a-z])/g, (_m, p, c) => p + c.toUpperCase()), seg.toUpperCase()])];
 function buildApprovalsStoreDenyGlobs() {
-    const dir = approvalsDir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`);
+    const dir = (0, mcp_approvals_1.approvalsDir)().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`);
     const home = os.homedir().replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_m, d) => `/${d.toLowerCase()}`);
     const forms = [`/${dir}`];
     if (dir.toLowerCase().startsWith(home.toLowerCase() + "/"))
@@ -485,13 +525,13 @@ function buildApprovalsStoreDenyGlobs() {
 function buildDisallowedTools(security) {
     if (!security)
         return [];
-    const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
-    const activeCommands = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
+    const activePaths = (0, path_utils_1.resolveActivePatterns)(constants_1.DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
+    const activeCommands = (0, path_utils_1.resolveActivePatterns)(constants_1.DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
     const out = [];
     for (const p of activePaths)
         out.push(..._globsForPath(p));
     const muteInstall = security.blockPackageInstall === false;
-    const installSet = new Set(PACKAGE_INSTALL_COMMAND_PATTERNS);
+    const installSet = new Set(constants_1.PACKAGE_INSTALL_COMMAND_PATTERNS);
     const cmds = muteInstall
         ? activeCommands.filter((c) => !installSet.has(c))
         : activeCommands;
@@ -502,12 +542,3 @@ function buildDisallowedTools(security) {
     // line stays readable without them).
     return [...new Set(out)];
 }
-module.exports = {
-    buildDisallowedTools,
-    buildApprovalsStoreDenyGlobs,
-    // Exported for unit tests only:
-    _globsForPath,
-    _globsForCommand,
-    _extractKeyword,
-    CC_GLOBS_FOR_COMMAND_PATTERN,
-};

@@ -17,8 +17,49 @@
  * across SKUs. Once formalized, switch the cost calculator to apply the
  * cached_input rate without changing the table shape.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const registry = require("../registry");
+exports.CODEX_CLI_DEFAULT_MODEL = exports.CODEX_CLI_SUPPORTED_MODELS = exports.DEFAULT_MODEL = exports.MODEL_ALIAS = exports.MODEL_PRICES = void 0;
+exports.resolveModel = resolveModel;
+exports.coerceToVendorModel = coerceToVendorModel;
+exports.priceFor = priceFor;
+exports.computeCost = computeCost;
+exports.getModelDropdownOptions = getModelDropdownOptions;
+exports.getCodexCliModelDropdownOptions = getCodexCliModelDropdownOptions;
+exports.coerceToCodexCliModel = coerceToCodexCliModel;
+const registry = __importStar(require("../registry"));
 // Guard against NaN / Infinity token counts (see anthropic.js for rationale).
 function _finite(n) {
     return (typeof n === "number" && Number.isFinite(n)) ? n : 0;
@@ -32,6 +73,7 @@ const MODEL_PRICES = (() => {
     out._default = registry.VENDOR_FALLBACK_PRICING.openai;
     return out;
 })();
+exports.MODEL_PRICES = MODEL_PRICES;
 // Derive cross-vendor + native-passthrough alias map.
 // Cross-vendor: haiku/sonnet/opus/opus[1m] → concrete OpenAI ids.
 // Native passthrough: concrete id → itself (so resolveModel is a no-op
@@ -53,7 +95,9 @@ const MODEL_ALIAS = (() => {
     }
     return out;
 })();
+exports.MODEL_ALIAS = MODEL_ALIAS;
 const DEFAULT_MODEL = registry.defaultModelFor("openai");
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 /**
  * Resolve an alias or concrete model id to a concrete model id for this vendor.
  *
@@ -92,6 +136,7 @@ function coerceToVendorModel(alias) {
 // CODEX_CLI_SUPPORTED_MODELS — derived from registry's codexCliSupported flag.
 // See registry.js for empirical verdict + rationale.
 const CODEX_CLI_SUPPORTED_MODELS = registry.codexCliSupportedModels();
+exports.CODEX_CLI_SUPPORTED_MODELS = CODEX_CLI_SUPPORTED_MODELS;
 function priceFor(modelId) {
     return MODEL_PRICES[modelId] || MODEL_PRICES._default;
 }
@@ -147,6 +192,7 @@ function getCodexCliModelDropdownOptions() {
 // gpt-5.6-terra, not the API default gpt-6.1-sol: ChatGPT-account Codex
 // rejects every GPT-6 id on older clients (see registry.ts OpenAI header).
 const CODEX_CLI_DEFAULT_MODEL = "gpt-5.6-terra";
+exports.CODEX_CLI_DEFAULT_MODEL = CODEX_CLI_DEFAULT_MODEL;
 /**
  * Codex-CLI-specific resolver — like `coerceToVendorModel` but further
  * restricts to the ChatGPT-account-supported subset. Cross-vendor stale
@@ -160,18 +206,3 @@ function coerceToCodexCliModel(alias) {
         return resolved;
     return CODEX_CLI_DEFAULT_MODEL;
 }
-module.exports = {
-    MODEL_PRICES,
-    MODEL_ALIAS,
-    DEFAULT_MODEL,
-    resolveModel,
-    coerceToVendorModel,
-    priceFor,
-    computeCost,
-    getModelDropdownOptions,
-    // Codex-CLI-specific surface (ChatGPT-account auth path)
-    CODEX_CLI_SUPPORTED_MODELS,
-    CODEX_CLI_DEFAULT_MODEL,
-    getCodexCliModelDropdownOptions,
-    coerceToCodexCliModel,
-};

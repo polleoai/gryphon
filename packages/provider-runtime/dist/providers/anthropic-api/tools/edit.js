@@ -15,13 +15,46 @@
  *
  * Permission-gated like Write.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SCHEMA = void 0;
 exports.execute = execute;
-const fs = require("fs");
-const path = require("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
-const { attackDetector } = require("@gryphon/protect");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const gryphon_protect_2 = require("@polleoai/gryphon-protect");
 // See write.js for the platform rationale.
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 // Matches Read's cap. `fs.readFileSync` on a 500 MB file allocates the
@@ -33,7 +66,7 @@ const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024;
 function _maxFileSize(ctx) {
     const mb = ctx && ctx.plugin && ctx.plugin.settings &&
         Number(ctx.plugin.settings.maxReadFileSizeMb);
-    if (Number.isFinite(mb) && mb > 0)
+    if (typeof mb === "number" && Number.isFinite(mb) && mb > 0)
         return Math.floor(mb * 1024 * 1024);
     return DEFAULT_MAX_FILE_SIZE;
 }
@@ -102,10 +135,10 @@ async function execute(input, ctx) {
     }
     let resolved;
     try {
-        resolved = resolveVaultPath(filePath, ctx.vaultRoot);
+        resolved = (0, gryphon_protect_1.resolveVaultPath)(filePath, ctx.vaultRoot);
     }
     catch (e) {
-        if (e instanceof PathOutsideVaultError) {
+        if (e instanceof gryphon_protect_1.PathOutsideVaultError) {
             return _error(`Path is outside the vault: ${filePath}.`);
         }
         return _error(String(e.message || e));
@@ -114,7 +147,7 @@ async function execute(input, ctx) {
     try {
         stat = fs.statSync(resolved);
     }
-    catch (e) {
+    catch {
         return _error(`File not found: ${filePath}. Use Write to create new files.`);
     }
     if (stat.isDirectory()) {
@@ -163,14 +196,14 @@ async function execute(input, ctx) {
     const updated = replaceAll
         ? original.split(oldString).join(newString)
         : original.replace(oldString, newString);
-    const classification = attackDetector.classify("Edit", { file_path: filePath, old_string: oldString, new_string: newString }, ctx);
-    const perm = await attackDetector.gate(classification, {
+    const classification = gryphon_protect_2.attackDetector.classify("Edit", { file_path: filePath, old_string: oldString, new_string: newString }, ctx);
+    const perm = (await gryphon_protect_2.attackDetector.gate(classification, {
         ctx,
         action: replaceAll ? `edit (${occurrences}x)` : "edit",
         target: filePath,
         detail: _buildDiffPreview(oldString, newString),
         kind: "fileEdit",
-    });
+    }));
     if (!perm.allow)
         return _error(perm.reason);
     // TOCTOU guard: re-read the file between approval and write. If it
@@ -208,7 +241,7 @@ async function execute(input, ctx) {
             try {
                 fs.closeSync(fd);
             }
-            catch { }
+            catch { /* best-effort close */ }
         }
     }
     return _ok(`Edited ${filePath}: replaced ${replaceAll ? `${occurrences} occurrences` : "1 occurrence"} ` +

@@ -100,7 +100,8 @@ function validate(value, schema, path) {
             errors.push(`${path} expected array, got ${typeof value}`);
         }
         else if (schema.items) {
-            value.forEach((v, i) => errors.push(...validate(v, schema.items, `${path}/${i}`)));
+            const items = schema.items;
+            value.forEach((v, i) => errors.push(...validate(v, items, `${path}/${i}`)));
         }
     }
     return errors;

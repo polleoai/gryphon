@@ -23,8 +23,8 @@
  * CLI kind with no binary → "construct-null").
  */
 
-const { getActiveProviderKind } = require("./factory");
-const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
+import { getActiveProviderKind } from "./factory";
+import { DEFAULT_PROVIDER_PREFERENCE } from "@polleoai/gryphon-provider-config";
 
 import type { ProviderKind } from "./types";
 
@@ -34,9 +34,14 @@ import type { ProviderKind } from "./types";
 // `humanizeFailureReason` still maps them so the chat attribution surface
 // shares one humanizer.
 type ReadinessReason = "no-api-key" | "construct-null" | null;
-type FailureReason =
-  | "no-api-key" | "auth" | "insufficient-credit"
-  | "quota" | "rate-limit" | "construct-null" | null;
+
+/** The settings fields readiness reads (host settings carry many more). */
+interface ReadinessSettings {
+  providerPreference?: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+}
 
 interface ProviderReadiness {
   ready: boolean;
@@ -60,8 +65,11 @@ interface ProviderReadiness {
  * ready here (we can't know it's bad without a call); that case is caught
  * reactively by #15's failover `auth` classification.
  */
-function describeProviderReadiness(plugin: any, preference?: string): ProviderReadiness {
-  const settings = (plugin && plugin.settings) || {};
+function describeProviderReadiness(
+  plugin: { settings?: ReadinessSettings } | null | undefined,
+  preference?: string,
+): ProviderReadiness {
+  const settings: ReadinessSettings = (plugin && plugin.settings) || {};
   const pref = preference || settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
 
   // Built on getActiveProviderKind so the verdict can never diverge from
@@ -84,7 +92,7 @@ function describeProviderReadiness(plugin: any, preference?: string): ProviderRe
  * API kind with no key reads as "no-api-key"; a CLI kind with no binary (and
  * "auto" with nothing resolvable) reads as the generic "construct-null".
  */
-function _readinessReason(pref: string, settings: any): ReadinessReason {
+function _readinessReason(pref: string, settings: ReadinessSettings): ReadinessReason {
   if (pref === "anthropic-api") return (settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY) ? "construct-null" : "no-api-key";
   if (pref === "openai-api")    return (settings.openaiApiKey    || process.env.OPENAI_API_KEY)    ? "construct-null" : "no-api-key";
   if (pref === "google-api")    return (settings.googleApiKey    || process.env.GOOGLE_API_KEY)    ? "construct-null" : "no-api-key";
@@ -98,7 +106,9 @@ function _readinessReason(pref: string, settings: any): ReadinessReason {
  * Shared by the Settings chip and the chat fallback attribution so both
  * surfaces speak identically.
  */
-function humanizeFailureReason(reason: FailureReason | string): string {
+// Takes any failover reason ("no-api-key" | "auth" | "insufficient-credit" |
+// "quota" | "rate-limit" | "construct-null") or null; unknown → "unavailable".
+function humanizeFailureReason(reason: string | null): string {
   switch (reason) {
     case "no-api-key":          return "no API key";
     case "auth":                return "invalid API key";
@@ -115,7 +125,7 @@ function humanizeFailureReason(reason: FailureReason | string): string {
  * chat-view's local `_providerLabelFor` map so both surfaces share one
  * mapping; chat-view's becomes a thin delegate.
  */
-function friendlyProviderLabel(kind: ProviderKind | string): string {
+function friendlyProviderLabel(kind: string): string {
   switch (kind) {
     case "anthropic-api": return "Anthropic API";
     case "claude-code":   return "Claude Code CLI";
@@ -124,11 +134,11 @@ function friendlyProviderLabel(kind: ProviderKind | string): string {
     case "codex-cli":     return "Codex CLI";
     case "gemini-cli":    return "Gemini CLI";
     case "antigravity-cli": return "Antigravity CLI";
-    default:              return (kind as string) || "the provider";
+    default:              return kind || "the provider";
   }
 }
 
-module.exports = {
+export {
   describeProviderReadiness,
   humanizeFailureReason,
   friendlyProviderLabel,

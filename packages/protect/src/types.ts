@@ -1,5 +1,5 @@
 /**
- * Shared domain types for @gryphon/protect.
+ * Shared domain types for @polleoai/gryphon-protect.
  *
  * G1 — The `ProtectCategory` union is the discriminant for `ClassifyVerdict`.
  *       Adding a new category must fail to compile until every switch
@@ -28,6 +28,12 @@ export type ProtectCategory =
   | "network-fetch"
   | "user-custom";
 
+// A known category OR any other string (forward-compat user-custom
+// strings). `string & Record<never, never>` is still any string; the
+// intersection only stops the union collapsing to plain `string`, so the
+// known literals stay visible to editors.
+export type ProtectCategoryOrCustom = ProtectCategory | (string & Record<never, never>);
+
 // ── classify() return shape ───────────────────────────────────────────────
 // null  → no protected pattern matched; gate() treats the call as ordinary.
 // object → one of the user's flagged patterns matched; gate() fires the
@@ -38,7 +44,7 @@ export type ProtectCategory =
 export type ClassifyVerdict = {
   tool: string;
   matchedPattern: string;
-  category: ProtectCategory | string; // |string for forward-compat user-custom strings
+  category: ProtectCategoryOrCustom;
   title: string;
   userRisk: string;
   technicalDetail: string;
@@ -58,7 +64,7 @@ export function assertNever(x: never): never {
 
 export interface ProtectedCommand {
   pattern: string;
-  category: ProtectCategory | string;
+  category: ProtectCategoryOrCustom;
   userRisk: string;
   explanation: string;
   platforms?: string[];
@@ -69,7 +75,7 @@ export interface ProtectedCommand {
 
 export interface ProtectedPath {
   pattern: string;
-  category: ProtectCategory | string;
+  category: ProtectCategoryOrCustom;
   userRisk: string;
   explanation: string;
 }

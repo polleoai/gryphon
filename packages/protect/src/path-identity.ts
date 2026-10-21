@@ -14,8 +14,8 @@
  * Node builtins only: this module is bundled into the store-guard hook.
  * Callers keep their string checks too; this only ever adds a refusal.
  */
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
+import * as fs from "fs";
+import * as path from "path";
 
 const MAX_WALK = 128;
 
@@ -27,7 +27,7 @@ function fileId(p: string): string | null {
     // usable identity — comparing it would match unrelated files.
     if (st.ino === BigInt(0)) return null;
     return `${st.dev}:${st.ino}`;
-  } catch (_) {
+  } catch {
     return null;
   }
 }
@@ -97,4 +97,4 @@ function isWithinIds(candidate: string, ids: Set<string>, cache?: Map<string, st
   return false;
 }
 
-module.exports = { fileId, fileIdCached, isWithinByIdentity, isWithinIds, sameFileAs, rebaseOntoRoot };
+export { fileId, fileIdCached, isWithinByIdentity, isWithinIds, sameFileAs, rebaseOntoRoot };

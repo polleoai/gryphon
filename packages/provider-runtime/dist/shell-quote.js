@@ -1,6 +1,9 @@
 "use strict";
 // TypeScript module marker.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.shQuote = shQuote;
+exports.psQuote = psQuote;
+exports.hookCommandLine = hookCommandLine;
 /**
  * Quoting for hook commands that a CLI hands to a shell (R43-1).
  *
@@ -33,4 +36,3 @@ function hookCommandLine(nodePath, scriptPath, platform = process.platform) {
         return `& ${psQuote(nodePath)} ${psQuote(scriptPath)}`;
     return `${shQuote(nodePath)} ${shQuote(scriptPath)}`;
 }
-module.exports = { shQuote, psQuote, hookCommandLine };

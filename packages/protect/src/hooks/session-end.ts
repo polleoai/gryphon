@@ -13,21 +13,21 @@
  * CC stdout: always `{}` — observe-only.
  */
 
-const {
+import {
   readStdinJson,
   writeStdoutJson,
   sendToGryphon,
   traceHook,
   SOCKET_ENV_VAR,
-} = require("./common/ipc-client");
+} from "./common/ipc-client";
 
 const SESSION_END_TIMEOUT_MS = 2000;
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) { /* tolerate */ }
+  } catch { /* tolerate */ }
   traceHook("SessionEnd", input);
 
   const sessionId = input && input.session_id;
@@ -37,7 +37,7 @@ async function main() {
         { req: "session_end", sessionId },
         { timeoutMs: SESSION_END_TIMEOUT_MS },
       );
-    } catch (_) { /* fire-and-forget */ }
+    } catch { /* fire-and-forget */ }
   }
 
   await writeStdoutJson({});
@@ -45,6 +45,6 @@ async function main() {
 }
 
 main().catch(async () => {
-  try { await writeStdoutJson({}); } catch (_) { /* ignore */ }
+  try { await writeStdoutJson({}); } catch { /* ignore */ }
   process.exit(0);
 });

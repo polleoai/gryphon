@@ -1,6 +1,45 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_ALIASES = void 0;
+exports.classify = classify;
+exports.gate = gate;
+exports.normalizeToolName = normalizeToolName;
+exports._activePatternDefs = _activePatternDefs;
+exports._categoryTitle = _categoryTitle;
 /**
  * Attack detector — single enforcement point for Gryphon's
  * protected-pattern defense. Both SDK tools and (later) the CLI
@@ -12,16 +51,19 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * appear in the active protected-paths / protected-commands lists.
  * It does NOT scan content, track provenance, or make decisions
  * beyond "is this tool_use one of the user's flagged patterns."
- * Anything more is out of Gryphon's scope and is documented as
- * tool calls only; downstream threat intel is a separate concern.
+ * Anything more is out of Gryphon's scope — Gryphon focuses on gating
+ * pre-emission tool calls only; downstream threat intel is a separate concern.
  */
-const path = require("path");
-const fs = require("fs");
-const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS, PROTECTED_CATEGORIES, } = require("./constants");
-const { matchProtectedPath, resolveVaultPath, PathOutsideVaultError, } = require("./path-utils");
-const { checkPermission } = require("./permission-gate");
-const { approvalsStoreVerdict, normalizeForMatch } = require("./mcp-approvals");
-const { securityInputsOf } = require("./security-settings-store");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const constants_1 = require("./constants");
+const path_utils_1 = require("./path-utils");
+const permission_gate_1 = require("./permission-gate");
+const mcp_approvals_1 = require("./mcp-approvals");
+const tool_aliases_1 = require("./tool-aliases");
+Object.defineProperty(exports, "TOOL_ALIASES", { enumerable: true, get: function () { return tool_aliases_1.TOOL_ALIASES; } });
+const path_identity_1 = require("./path-identity");
+const security_settings_store_1 = require("./security-settings-store");
 /**
  * Per-pattern de-duplication so a user with one broken regex doesn't
  * get a Notice / console warning on every classify call. First time
@@ -41,13 +83,14 @@ function _warnInvalidPatternOnce(pattern, err, hostAdapter) {
     if (_warnedBadPatterns.has(pattern))
         return;
     _warnedBadPatterns.add(pattern);
+    const compileError = err; // new RegExp throws SyntaxError
     const msg = `Gryphon: custom protected pattern "${pattern}" is not a valid regex ` +
-        `(${(err && err.message) || err}). That rule is NOT enforcing — ` +
+        `(${(compileError && compileError.message) || String(compileError)}). That rule is NOT enforcing — ` +
         `fix it in Settings → Gryphon → Protected commands or Protected file paths.`;
     try {
         console.error("[gryphon/classifier]", msg);
     }
-    catch (_) { }
+    catch { /* console unavailable */ }
     if (hostAdapter && typeof hostAdapter.notify === "function") {
         hostAdapter.notify(msg, { level: "warn", timeoutMs: 15000 });
     }
@@ -72,7 +115,7 @@ function _activePatternDefs(defaults, disabled, custom) {
             return d;
         return null;
     })
-        .filter((d) => d && !off.has(d.pattern));
+        .filter((d) => !!d && !off.has(d.pattern));
     const custs = Array.isArray(custom)
         ? custom
             .filter((p) => typeof p === "string" && p.length > 0)
@@ -87,7 +130,7 @@ function _activePatternDefs(defaults, disabled, custom) {
     return [...normalizedDefs, ...custs];
 }
 function _categoryTitle(category) {
-    return PROTECTED_CATEGORIES[category] || "⚠ Matches a protected pattern";
+    return constants_1.PROTECTED_CATEGORIES[category] || "⚠ Matches a protected pattern";
 }
 /**
  * Classify a proposed tool invocation against the user's active
@@ -100,12 +143,9 @@ function _categoryTitle(category) {
  *   null if no protected pattern matched; otherwise:
  *   { tool, matchedPattern, category, title, userRisk, technicalDetail }
  */
-/**
- * Cross-CLI tool-name aliases (issue #30: their own module, so the bundled
- * store-guard hook canonicalises tool names exactly as classify does).
- */
-const { TOOL_ALIASES, patchTargetsInfo, shellCdDirs } = require("./tool-aliases");
-const { rebaseOntoRoot } = require("./path-identity");
+// Cross-CLI tool-name aliases (TOOL_ALIASES, imported above) live in their
+// own module (issue #30), so the bundled store-guard hook canonicalises tool
+// names exactly as classify does.
 /**
  * One time budget for the whole tool call (security check of 98980f6: a
  * budget per command argument, checked only between paths, let a crafted
@@ -131,11 +171,11 @@ function _classify(tool, input, ctx) {
     // one, the caller's own settings (ctx.settings, then ctx.plugin.settings)
     // are used — the headless-library form. Gryphon's own callers always pass
     // a snapshot, so a vault's data.json is never an input here.
-    const security = securityInputsOf(ctx);
+    const security = (0, security_settings_store_1.securityInputsOf)(ctx);
     // Normalize provider-specific tool names to the Claude-Code vocabulary
     // the per-tool branches below understand. Unknown names pass through
     // and hit the "not currently gated" branch (correct default).
-    const canonical = TOOL_ALIASES[tool] || tool;
+    const canonical = tool_aliases_1.TOOL_ALIASES[tool] || tool;
     // NotebookEdit names its target `notebook_path`; the file branch reads
     // `file_path`.
     if (typeof input.file_path !== "string" && typeof input.notebook_path === "string") {
@@ -148,7 +188,7 @@ function _classify(tool, input, ctx) {
     // both checked, nested ones included (issue #28).
     // Issue #30: one rule, shared with the store-guard hook (approvalsStoreVerdict).
     const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
-    const store = approvalsStoreVerdict(tool, input, { cwd: vaultRoot });
+    const store = (0, mcp_approvals_1.approvalsStoreVerdict)(tool, input, { cwd: vaultRoot });
     if (store)
         return _approvalsStoreVerdict(canonical, store.what);
     if (canonical === "Write" || canonical === "Edit") {
@@ -280,7 +320,6 @@ function _readOnlyToolName(tool) {
 const LOCATOR_WORDS = new Set(["path", "paths", "file", "files", "filepath", "filepaths", "filename", "filenames", "uri", "uris", "url", "urls", "dir", "dirs", "directory", "directories", "dirpath", "dirname", "folder", "folders", "name", "relative", "absolute", "abs", "rel", "full",
     // Where a read or search starts (review of 81283ca): `cwd`, `root_path`, `search_path`, `SearchDirectory`.
     "cwd", "workdir", "working", "root", "base", "search", "start", "source", "src", "from", "in", "scope"]);
-const DEST_WORDS = new Set(["dest", "dst", "destination", "destinations", "output", "out", "outfile", "outdir", "target", "targets", "to", "local", "save", "into"]);
 const CONTENT_WORDS = new Set(["content", "contents", "text", "body", "data", "bytes", "blob", "snippet", "patch", "diff", "description", "message"]);
 const NOT_PATH_WORDS = new Set(["profile", "profiles"]);
 /**
@@ -291,14 +330,13 @@ const NOT_PATH_WORDS = new Set(["profile", "profiles"]);
  * path keys (`destinations`, `targetpath`, `workdir`).
  */
 function _isPathKey(key) {
-    const { PATH_ARG_RE } = require("./mcp-approvals");
-    if (!PATH_ARG_RE.test(key))
+    if (!mcp_approvals_1.PATH_ARG_RE.test(key))
         return false;
     const words = _words(key);
     if (words.length && CONTENT_WORDS.has(words[words.length - 1]))
         return false;
     const rest = words.filter((w) => !NOT_PATH_WORDS.has(w));
-    return rest.some((w) => PATH_ARG_RE.test(w)) || PATH_ARG_RE.test(rest.join(""));
+    return rest.some((w) => mcp_approvals_1.PATH_ARG_RE.test(w)) || mcp_approvals_1.PATH_ARG_RE.test(rest.join(""));
 }
 /**
  * Command-line strings among a tool's arguments (keys like cmd / command /
@@ -317,18 +355,17 @@ function _withoutCodeIdioms(code) {
     // `del notes\\a.md`; `.unlink(` only on a variable, not a quoted path
     // (review of 81283ca).
     return code
-        .replace(/(^|[\n;:])([ \t]*)del[ \t]+(?=[A-Za-z_][\w.]*[ \t]*(?:$|[\[,;#)\r\n]))/gm, "$1$2")
+        .replace(/(^|[\n;:])([ \t]*)del[ \t]+(?=[A-Za-z_][\w.]*[ \t]*(?:$|[[,;#)\r\n]))/gm, "$1$2")
         .replace(/\.unlink\s*\((?!\s*['"`])/g, ".(");
 }
 const SHELL_KEY_WORDS = new Set(["command", "cmd", "cmdline", "commandline", "argv", "shell"]);
 function _commandArgs(input) {
-    const { _argStrings, _isCommandKey } = require("./mcp-approvals");
-    const walked = _argStrings(input, 64, 2048);
+    const walked = (0, mcp_approvals_1._argStrings)(input, 64, 2048);
     if (walked.truncated)
         return null;
     const out = new Map();
     for (const [key, value] of walked.pairs) {
-        if (!_isCommandKey(key))
+        if (!(0, mcp_approvals_1._isCommandKey)(key))
             continue;
         // Review of f22cabc: every command-like argument is checked; whether it
         // is a SHELL key decides how strictly (see classify).
@@ -735,21 +772,19 @@ function _shellPathVerdicts(tool, command, ctx, security, baseArgs = {}) {
         if (distinct.size > MAX_SHELL_TARGETS || targets.length > 16 * MAX_SHELL_TARGETS)
             return _tooLargeVerdict(tool, "a command naming too many paths to inspect");
     }
-    const { _resolveArgPaths, BASE_ARG_RE } = require("./mcp-approvals");
-    const { shellCdDirs } = require("./tool-aliases");
     // Review of 83183e6: the call's own working folder (agy `Cwd`, gemini
     // `dir_path`/`directory`, an MCP `cwd`) is a base too, like a `cd`.
-    const argDirs = Object.entries(baseArgs || {}).filter(([k, v]) => typeof v === "string" && v && BASE_ARG_RE.test(k)).map(([, v]) => v);
-    const cdDirs = shellCdDirs(command);
+    const argDirs = Object.entries(baseArgs || {}).filter(([k, v]) => typeof v === "string" && v && mcp_approvals_1.BASE_ARG_RE.test(k)).map(([, v]) => v);
+    const cdDirs = (0, tool_aliases_1.shellCdDirs)(command);
     // Every folder (post-push review of 2.11.4: a silent cap of 8 let the 9th
     // `cd` lead into the plugin folder); the work is bounded just below.
-    if (argDirs.length + cdDirs.length > require("./tool-aliases").MAX_CD_DIRS)
+    if (argDirs.length + cdDirs.length > tool_aliases_1.MAX_CD_DIRS)
         return _tooLargeVerdict(tool, "a command changing folders too many times to inspect");
     const hookCwd = _hookCwd(ctx);
     // The CLI's folder and the tool's own folder come first; a `cd` resolves
     // from any of them (security review of 85d6eb4: `cd ../.claude` from notes/).
-    const primary = [vaultRoot, ...(hookCwd ? [hookCwd] : []), ...argDirs.flatMap((d) => _resolveArgPaths(d, [vaultRoot, ...(hookCwd ? [hookCwd] : [])]))];
-    const bases = [...new Set([...primary, ...cdDirs.flatMap((d) => _resolveArgPaths(d, primary))])];
+    const primary = [vaultRoot, ...(hookCwd ? [hookCwd] : []), ...argDirs.flatMap((d) => (0, mcp_approvals_1._resolveArgPaths)(d, [vaultRoot, ...(hookCwd ? [hookCwd] : [])]))];
+    const bases = [...new Set([...primary, ...cdDirs.flatMap((d) => (0, mcp_approvals_1._resolveArgPaths)(d, primary))])];
     // Distinct paths × folders (QA of 85d6eb4: counting repeats made scripts
     // with ~40 `cd`s "too large"), plus a time budget — resolving deep paths
     // outside the vault is slow, and classify runs on Obsidian's main thread
@@ -759,7 +794,7 @@ function _shellPathVerdicts(tool, command, ctx, security, baseArgs = {}) {
     }
     const out = [];
     for (const t of distinct) {
-        for (const abs of _resolveArgPaths(t, bases)) {
+        for (const abs of (0, mcp_approvals_1._resolveArgPaths)(t, bases)) {
             if (_outOfTime())
                 return _tooLargeVerdict(tool, "a command taking too long to inspect");
             // An unresolvable token (most aren't paths) is skipped; the command
@@ -768,7 +803,7 @@ function _shellPathVerdicts(tool, command, ctx, security, baseArgs = {}) {
             try {
                 v = _classifyFilePath(tool, { file_path: abs }, ctx, security);
             }
-            catch (_) {
+            catch {
                 continue;
             }
             if (v)
@@ -782,20 +817,19 @@ const CD_TEXT_RE = /(?:^|[^\w.-])(?:cd|pushd|chdir|set-location|push-location|sl
 const UNGATED_TOOLS = new Set(["Read", "Glob", "Grep", "WebFetch", "WebSearch"]);
 const MAX_UNKNOWN_TOOL_PATHS = 2048;
 function _pathArgVerdicts(tool, input, ctx, security, keyFilter) {
-    const { _argStrings, _resolveArgPaths, BASE_ARG_RE } = require("./mcp-approvals");
     const vaultRoot = ctx && typeof ctx.vaultRoot === "string" ? ctx.vaultRoot : null;
     if (!vaultRoot)
         return [];
     // Same walker and resolver as the store guard (dc9cc5d review): paths are
     // resolved from the vault AND from the call's own folder arguments, with
     // `~` and file: URLs expanded — never a narrower reading than the tool's.
-    const walked = _argStrings(input, 64, MAX_UNKNOWN_TOOL_PATHS);
+    const walked = (0, mcp_approvals_1._argStrings)(input, 64, MAX_UNKNOWN_TOOL_PATHS);
     const bases = new Set([vaultRoot]);
     for (const [key, value] of walked.pairs) {
-        if (!BASE_ARG_RE.test(key))
+        if (!mcp_approvals_1.BASE_ARG_RE.test(key))
             continue;
         for (const v of Array.isArray(value) ? value : [value])
-            for (const b of _resolveArgPaths(v, [vaultRoot]))
+            for (const b of (0, mcp_approvals_1._resolveArgPaths)(v, [vaultRoot]))
                 bases.add(b);
     }
     const tooLarge = () => [{
@@ -821,7 +855,7 @@ function _pathArgVerdicts(tool, input, ctx, security, keyFilter) {
             // into the vault), and a real URL never resolves to a protected file.
             if (typeof v !== "string" || !v)
                 continue;
-            for (const abs of _resolveArgPaths(v, [...bases])) {
+            for (const abs of (0, mcp_approvals_1._resolveArgPaths)(v, [...bases])) {
                 if (++checked > MAX_UNKNOWN_TOOL_PATHS * 4)
                     return tooLarge();
                 const verdict = _classifyFilePath(tool, { file_path: abs }, ctx, security);
@@ -886,7 +920,7 @@ function _approvalsStoreVerdict(tool, what) {
  */
 const MAX_PATCH_RESOLUTIONS = 4000;
 function _patchVerdicts(tool, input, ctx, security, baseArgs = input) {
-    const info = patchTargetsInfo(input);
+    const info = (0, tool_aliases_1.patchTargetsInfo)(input);
     if (info.truncated) {
         return [{
                 tool,
@@ -905,11 +939,11 @@ function _patchVerdicts(tool, input, ctx, security, baseArgs = input) {
     const bases = new Set([vaultRoot]);
     const extra = [];
     for (const [k, v] of Object.entries(baseArgs)) {
-        if (typeof v === "string" && require("./mcp-approvals").BASE_ARG_RE.test(k))
+        if (typeof v === "string" && mcp_approvals_1.BASE_ARG_RE.test(k))
             extra.push(v);
     }
-    const cds = shellCdDirs(input.command);
-    if (cds.length > require("./tool-aliases").MAX_CD_DIRS) {
+    const cds = (0, tool_aliases_1.shellCdDirs)(input.command);
+    if (cds.length > tool_aliases_1.MAX_CD_DIRS) {
         return [{
                 tool,
                 matchedPattern: "patch too large to inspect",
@@ -962,7 +996,7 @@ const SEVERITY_ORDER = [
 ];
 /** The most severe verdict; the others are listed in its detail (R43-3 consent). */
 function _mostSevere(verdicts) {
-    const list = verdicts.filter(Boolean);
+    const list = verdicts.filter((v) => Boolean(v));
     if (!list.length)
         return null;
     const rank = (v) => (v.fixedInvariant ? -1 : (SEVERITY_ORDER.indexOf(v.category) + 1 || SEVERITY_ORDER.length + 1));
@@ -981,7 +1015,7 @@ function _realishPath(p) {
         try {
             return path.join(fs.realpathSync(cur), ...tail.reverse());
         }
-        catch (_) { /* walk up */ }
+        catch { /* walk up */ }
         const parent = path.dirname(cur);
         if (parent === cur)
             break;
@@ -991,7 +1025,8 @@ function _realishPath(p) {
     return p;
 }
 function _classifyFilePath(tool, input, ctx, security) {
-    const vaultRoot = ctx && ctx.vaultRoot;
+    // A string in practice (callers pass ctx.vaultRoot through unchecked).
+    const vaultRoot = (ctx && ctx.vaultRoot);
     if (!vaultRoot)
         return null;
     const filePath = input.file_path;
@@ -1003,7 +1038,7 @@ function _classifyFilePath(tool, input, ctx, security) {
         return _tooLargeVerdict(tool, "a path too long to inspect")[0];
     let resolved;
     try {
-        resolved = resolveVaultPath(filePath, vaultRoot);
+        resolved = (0, path_utils_1.resolveVaultPath)(filePath, vaultRoot);
     }
     catch (e) {
         // PathOutsideVaultError is legitimate — the SDK tool's own
@@ -1015,24 +1050,24 @@ function _classifyFilePath(tool, input, ctx, security) {
         // re-throwing so _handleClassifyRequest's outer catch returns
         // `{decision:"deny"}` with a visible reason, rather than
         // silently allowing an unclassifiable path.
-        if (!(e instanceof PathOutsideVaultError))
+        if (!(e instanceof path_utils_1.PathOutsideVaultError))
             throw e;
         // R43-6: another NAME for a place inside the vault (symlinked vault
         // folder, macOS firmlink, Windows UNC/8.3 spelling) is still inside it.
         // R2-1: try `..`-collapsed and on-disk spellings too.
         let rebased = null;
         for (const spelling of [String(filePath), path.resolve(String(filePath)), _realishPath(String(filePath))]) {
-            rebased = rebaseOntoRoot(spelling, String(vaultRoot));
+            rebased = (0, path_identity_1.rebaseOntoRoot)(spelling, String(vaultRoot));
             if (rebased)
                 break;
         }
         if (!rebased)
             return null;
         try {
-            resolved = resolveVaultPath(rebased, vaultRoot);
+            resolved = (0, path_utils_1.resolveVaultPath)(rebased, vaultRoot);
         }
         catch (e2) {
-            if (e2 instanceof PathOutsideVaultError)
+            if (e2 instanceof path_utils_1.PathOutsideVaultError)
                 return null;
             throw e2;
         }
@@ -1041,9 +1076,9 @@ function _classifyFilePath(tool, input, ctx, security) {
     // Same normalization as command-path matching: NFKC + zero-width strip.
     // Closes naïve Unicode obfuscation on file paths if CC ever emits one.
     const rel = _normalizeForMatch(rawRel);
-    const defs = _activePatternDefs(DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
+    const defs = _activePatternDefs(constants_1.DEFAULT_PROTECTED_PATHS, security.protectedPathsDisabled, security.protectedPathsCustom);
     for (const def of defs) {
-        if (matchProtectedPath(rel, [def.pattern])) {
+        if ((0, path_utils_1.matchProtectedPath)(rel, [def.pattern])) {
             return {
                 tool,
                 matchedPattern: def.pattern,
@@ -1086,13 +1121,13 @@ function _classifyFilePath(tool, input, ctx, security) {
 // (`рm`) use distinct codepoints — a confusables fold table could close
 // that gap, but the threat profile doesn't justify the table's bundle-size
 // cost. See docs/adr/0001.
-const _normalizeForMatch = normalizeForMatch;
+const _normalizeForMatch = mcp_approvals_1.normalizeForMatch;
 function _classifyCommand(tool, input, ctx, security, onlyCategories = null) {
     const rawCommand = input && typeof input.command === "string" ? input.command : "";
     if (!rawCommand)
         return null;
     const command = _normalizeForMatch(rawCommand);
-    const defs = _activePatternDefs(DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
+    const defs = _activePatternDefs(constants_1.DEFAULT_PROTECTED_COMMANDS, security.protectedCommandsDisabled, security.protectedCommandsCustom);
     const muteInstall = security.blockPackageInstall === false;
     const activeDefs = (muteInstall ? defs.filter((d) => d.category !== "package-install") : defs)
         .filter((d) => !onlyCategories || !d.category || d.category === "user-custom" || onlyCategories.has(d.category));
@@ -1126,27 +1161,13 @@ function _classifyCommand(tool, input, ctx, security, onlyCategories = null) {
     }
     return null;
 }
-/**
- * Decide whether to allow a tool call.
- *
- * If classification is non-null, we fire the protected-operation modal
- * (it overrides Safe/YOLO). Otherwise we fall through to the standard
- * permission-gate flow for the caller's mode policy.
- *
- * @param {object|null} classification — classify() result
- * @param {object} opts
- *   ctx, action, target, detail — same as checkPermission
- *   kind — "fileEdit" or "exec"
- *   cacheable — same as checkPermission (only applied when unprotected)
- * @returns {Promise<{allow, reason}>}
- */
 async function gate(classification, opts) {
-    const { ctx, action, target, detail, kind = "fileEdit", cacheable = true, } = opts || {};
+    const { ctx, action, target, detail, kind = "fileEdit", cacheable = true, } = (opts || {});
     if (classification) {
         const protectedKind = kind === "exec" ? "protected-exec" : "protected";
         const combinedDetail = classification.technicalDetail
             + (detail ? `\n\n--- details ---\n${detail}` : "");
-        return await checkPermission({
+        return await (0, permission_gate_1.checkPermission)({
             ctx,
             action,
             target,
@@ -1159,7 +1180,7 @@ async function gate(classification, opts) {
             fixedInvariant: "fixedInvariant" in classification && classification.fixedInvariant === true,
         });
     }
-    return await checkPermission({
+    return await (0, permission_gate_1.checkPermission)({
         ctx,
         action,
         target,
@@ -1180,14 +1201,5 @@ async function gate(classification, opts) {
  * ("(destructive operation)"). User report 2026-05-03.
  */
 function normalizeToolName(tool) {
-    return TOOL_ALIASES[tool] || tool;
+    return tool_aliases_1.TOOL_ALIASES[tool] || tool;
 }
-module.exports = {
-    classify,
-    gate,
-    normalizeToolName,
-    // Exported for unit tests only:
-    _activePatternDefs,
-    _categoryTitle,
-    TOOL_ALIASES,
-};

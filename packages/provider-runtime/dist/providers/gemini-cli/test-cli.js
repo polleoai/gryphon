@@ -34,9 +34,9 @@ const setTimeoutFn = setTimeout;
 // timer name that resolves to a local binding, and window.clearTimeout
 // would throw in the headless paths these probes run in.
 const clearTimeoutFn = clearTimeout;
-const { spawn } = require("child_process");
-const { buildEnhancedPath } = require("../../utils");
-const { killProcessTree } = require("../../subprocess-registry");
+const child_process_1 = require("child_process");
+const utils_1 = require("../../utils");
+const subprocess_registry_1 = require("../../subprocess-registry");
 const _LIVENESS_TIMEOUT_MS = 30000;
 const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
 function testCli(geminiPath) {
@@ -48,7 +48,7 @@ function testCli(geminiPath) {
         const isWindowsShim = process.platform === "win32" &&
             /\.(cmd|bat)$/i.test(geminiPath);
         const opts = {
-            env: { ...process.env, PATH: buildEnhancedPath() },
+            env: { ...process.env, PATH: (0, utils_1.buildEnhancedPath)() },
             // Close stdin so a CLI that misinterprets missing flags as
             // "wait for interactive input" fails fast instead of hanging.
             stdio: ["ignore", "pipe", "pipe"],
@@ -57,7 +57,7 @@ function testCli(geminiPath) {
             opts.shell = true;
         let proc;
         try {
-            proc = spawn(geminiPath, ["-p", _LIVENESS_PROMPT, "-o", "stream-json", "--skip-trust", "--approval-mode", "default"], opts);
+            proc = (0, child_process_1.spawn)(geminiPath, ["-p", _LIVENESS_PROMPT, "-o", "stream-json", "--skip-trust", "--approval-mode", "default"], opts);
         }
         catch (err) {
             resolve({ ok: false, message: `Could not spawn Gemini CLI: ${err.message}` });
@@ -86,13 +86,13 @@ function testCli(geminiPath) {
                 try {
                     clearTimeoutFn(timer);
                 }
-                catch { }
+                catch { /* best-effort */ }
                 timer = null;
             }
             try {
-                killProcessTree(proc, "SIGTERM");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGTERM");
             }
-            catch { }
+            catch { /* already exited */ }
             resolve(result);
         };
         proc.stdout.on("data", (d) => { out += d.toString(); });

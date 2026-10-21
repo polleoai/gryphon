@@ -25,4 +25,45 @@
  * specific to claude-code mode (CC's built-in WebFetch reaches
  * loopback freely).
  */
-export {};
+declare const OBSIDIAN_REST_API_DEFAULT_PORT = 27124;
+declare const LOOPBACK_HOSTNAMES: Set<string>;
+/**
+ * Recognize a URL targeting the obsidian-local-rest-api plugin.
+ *
+ * Matches the default port (27124) on any loopback hostname. The
+ * default REST plugin uses 27124 for HTTPS and 27123 for HTTP; we
+ * match both — the LLM has been seen using either.
+ *
+ * @param {string} url
+ * @returns {boolean}
+ */
+declare function isObsidianRestApiUrl(url: unknown): boolean;
+/**
+ * User-facing reason string for a deny. Speaks plain English about the
+ * cost-multiplier the policy exists to prevent, and points the model at
+ * the recovery path (vault-native search or `kb`-style tooling).
+ */
+declare function buildRestApiDenyReason(): string;
+/**
+ * Per-turn GET counter. The plugin owns one instance; `note(url)` is
+ * called on every classified WebFetch that hit a REST API URL with the
+ * policy in "allowed" mode. When the count crosses `threshold`, the
+ * onWarn callback fires exactly once per turn — the user gets a single
+ * toast no matter how many additional GETs follow.
+ *
+ * `reset()` is called on every user send (so each new turn starts at
+ * zero) and on /new / /clear.
+ */
+declare class RestApiTurnCounter {
+    threshold: number;
+    onWarn: ((count: number) => void) | null;
+    count: number;
+    _warned: boolean;
+    constructor({ threshold, onWarn }?: {
+        threshold?: number;
+        onWarn?: ((count: number) => void) | null;
+    });
+    note(): number;
+    reset(): void;
+}
+export { OBSIDIAN_REST_API_DEFAULT_PORT, LOOPBACK_HOSTNAMES, isObsidianRestApiUrl, buildRestApiDenyReason, RestApiTurnCounter, };

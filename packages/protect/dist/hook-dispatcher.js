@@ -1,6 +1,43 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.prepareSpawn = prepareSpawn;
+exports.preparePermissionsFallback = preparePermissionsFallback;
+exports._preflight = _preflight;
+exports._verifyHookScripts = _verifyHookScripts;
 /**
  * HookDispatcher — central orchestrator for pre/post-tool-use hooks
  * across every CLI provider Gryphon integrates with.
@@ -43,18 +80,18 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *                      so it works in an embedder that ships main.js only.
  *                      claude-code keeps its permissions.deny globs instead.
  */
-const path = require("path");
-const fs = require("fs");
-const runtimeUtils = require("../../provider-runtime/dist/utils");
-const { getAdapter, listSupportedKinds } = require("./hook-adapters");
-const { securityInputsOf } = require("./security-settings-store");
-const { ensureStoreGuardScript } = require("./store-guard");
-const { approvalsDir } = require("./mcp-approvals");
-const { HOOK_FILES } = require("../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const hook_adapters_1 = require("./hook-adapters");
+const store_guard_1 = require("./store-guard");
+const mcp_approvals_1 = require("./mcp-approvals");
+const runtimeUtils = __importStar(require("@polleoai/gryphon-provider-runtime/utils"));
+const security_settings_store_1 = require("./security-settings-store");
+const hook_settings_builder_1 = require("@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder");
 function _protectedModeOn(plugin, security) {
     // The spawn's security snapshot. Without one, securityInputsOf returns the
     // protected defaults — never the vault's data.json (issue #30, G4).
-    return securityInputsOf({ security, plugin }).protectedMode !== false;
+    return (0, security_settings_store_1.securityInputsOf)({ security, plugin }).protectedMode !== false;
 }
 /**
  * Run pre-flight diagnostics. Returns `{ ok, mode, reason, details,
@@ -76,7 +113,7 @@ function _preflight(plugin, security) {
         if (!hasNodeBinary) {
             return { ok: false, mode, reason: "no node binary found", details, nodePath };
         }
-        const sg = ensureStoreGuardScript();
+        const sg = (0, store_guard_1.ensureStoreGuardScript)();
         details.storeGuardOk = sg.ok;
         if (!sg.ok) {
             details.storeGuardError = sg.reason;
@@ -125,7 +162,7 @@ function _notify(options, key, msg) {
     try {
         ha?.notify?.(msg, { level: "warn", timeoutMs: 15000 });
     }
-    catch (_) { /* a notice must not break a spawn */ }
+    catch { /* a notice must not break a spawn */ }
 }
 function _noticeStoreGuardDegraded(kind, reason, options) {
     // Review: Antigravity refuses to start without this check (except when
@@ -137,11 +174,11 @@ function _noticeStoreGuardDegraded(kind, reason, options) {
     }
     const label = _cliLabel(kind);
     // QA (2.11.2): a launcher refusal names its own cause and fix here too.
-    const refusal = launcherRefusalText(reason);
+    const refusal = (0, launcher_refusal_text_1.launcherRefusalText)(reason);
     const why = refusal ? `Gryphon couldn't set up its check for ${label} (${refusal.cause})` : reason === "no node binary found"
         ? "Gryphon couldn't find Node.js on this computer"
         : reason === "store-guard script unavailable"
-            ? `Gryphon couldn't write to its settings folder (${approvalsDir()})`
+            ? `Gryphon couldn't write to its settings folder (${(0, mcp_approvals_1.approvalsDir)()})`
             : `Gryphon couldn't install its check for ${label}`;
     const msg = `${why}, so it can't stop ${label} from changing Gryphon's own security settings. ` +
         "Gryphon still undoes such changes when each reply ends. " +
@@ -163,13 +200,13 @@ function _refusalOf(adapter) {
         const r = adapter && typeof adapter.lastRefusal === "function" ? adapter.lastRefusal() : null;
         return r ? ` (refused: ${r})` : "";
     }
-    catch (_) {
+    catch {
         return "";
     }
 }
-const { launcherRefusalText } = require("../../provider-runtime/dist/launcher-refusal-text");
+const launcher_refusal_text_1 = require("@polleoai/gryphon-provider-runtime/launcher-refusal-text");
 function _plainCause(reason) {
-    const refusal = launcherRefusalText(reason);
+    const refusal = (0, launcher_refusal_text_1.launcherRefusalText)(reason);
     if (refusal)
         return refusal.cause;
     if (/ipc server/i.test(reason))
@@ -182,7 +219,7 @@ function _plainCause(reason) {
 }
 /** QA P2-2: the fix that matches the cause (a restart doesn't fix them all). */
 function _restoreHint(reason) {
-    const refusal = launcherRefusalText(reason);
+    const refusal = (0, launcher_refusal_text_1.launcherRefusalText)(reason);
     if (refusal)
         return refusal.fix;
     if (/plugin dir|hook scripts missing/i.test(reason))
@@ -209,12 +246,12 @@ function _noticeFullDegraded(kind, reason, fallbackOk, options) {
 function _storeGuardExtras(kind, adapter, nodePath, options) {
     if (!nodePath)
         return { ok: false, reason: "no node binary found" };
-    const sg = ensureStoreGuardScript();
+    const sg = (0, store_guard_1.ensureStoreGuardScript)();
     if (!sg.ok)
         return { ok: false, reason: "store-guard script unavailable" };
     let extras;
     try {
-        extras = adapter.buildSpawnExtras({ nodePath, options, storeGuardOnly: { scriptPath: sg.path, approvalsDir: approvalsDir() } });
+        extras = adapter.buildSpawnExtras({ nodePath, options, storeGuardOnly: { scriptPath: sg.path, approvalsDir: (0, mcp_approvals_1.approvalsDir)() } });
     }
     catch (e) {
         return { ok: false, reason: `adapter.buildSpawnExtras threw: ${e.message}` };
@@ -234,7 +271,7 @@ function _storeGuardExtras(kind, adapter, nodePath, options) {
 function _verifyHookScripts(pluginDir) {
     const hookDir = path.join(pluginDir, "hooks");
     const missing = [];
-    for (const scriptName of Object.values(HOOK_FILES)) {
+    for (const scriptName of Object.values(hook_settings_builder_1.HOOK_FILES)) {
         const p = path.join(hookDir, String(scriptName));
         if (!fs.existsSync(p))
             missing.push(p);
@@ -267,11 +304,11 @@ function prepareSpawn({ kind, plugin, options = {} }) {
     // Empty result shape — providers can always merge env/args even when
     // we couldn't wire hooks (just nothing to merge).
     const empty = { ok: false, env: {}, args: [], cleanup: () => { }, details: {}, missing: [] };
-    const adapter = getAdapter(kind);
+    const adapter = (0, hook_adapters_1.getAdapter)(kind);
     if (!adapter) {
         return {
             ...empty,
-            degradationReason: `no hook adapter for kind="${kind}" (supported: ${listSupportedKinds().join(", ")})`,
+            degradationReason: `no hook adapter for kind="${kind}" (supported: ${(0, hook_adapters_1.listSupportedKinds)().join(", ")})`,
         };
     }
     const security = options && options.security;
@@ -392,10 +429,12 @@ function prepareSpawn({ kind, plugin, options = {} }) {
 function preparePermissionsFallback({ kind, plugin, denyGlobs }) {
     if (kind !== "claude-code")
         return null;
-    const adapter = getAdapter(kind);
+    const adapter = (0, hook_adapters_1.getAdapter)(kind);
     if (!adapter)
         return null;
     try {
+        // Not null-checked, as before: a null return throws on `.env` below and
+        // lands in the catch.
         const extras = adapter.buildSpawnExtras({
             pluginDir: plugin.absolutePluginDir(),
             ipcSocketPath: "",
@@ -414,9 +453,3 @@ function preparePermissionsFallback({ kind, plugin, denyGlobs }) {
         return { ok: false, error: e };
     }
 }
-module.exports = {
-    prepareSpawn,
-    preparePermissionsFallback,
-    _preflight, // exported for tests
-    _verifyHookScripts, // exported for tests
-};

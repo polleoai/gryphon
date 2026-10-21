@@ -570,7 +570,7 @@ current process env. Either close and reopen PowerShell, or set it
 ephemerally for the session:
 
 \`\`\`
-\$env:ANTHROPIC_API_KEY = "sk-ant-..."
+$env:ANTHROPIC_API_KEY = "sk-ant-..."
 \`\`\`
 
 Gryphon (running inside Obsidian) picks up env vars from Obsidian's
@@ -592,6 +592,7 @@ Privacy reminder: when filing bugs, never paste your API key or vault
 content you'd prefer to keep private. A short reproducible example is
 more useful than full logs anyway.
 `;
-module.exports = {
+const BUNDLED_DOCS = {
     "MANUAL.md": MANUAL,
 };
+exports.default = BUNDLED_DOCS;

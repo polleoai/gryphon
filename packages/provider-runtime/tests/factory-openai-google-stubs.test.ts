@@ -29,20 +29,20 @@ Module._resolveFilename = function (request, ...args) {
 // the Stage 1 routing assertions we care about. Forcing the stub
 // isolates the new branches under test from the host environment.
 const utils = require("../src/utils");
-const _origFindClaudeBinary = utils.findClaudeBinary;
-utils.findClaudeBinary = () => null;
+const _origFindClaudeBinary = utils.binaryFinders.findClaudeBinary;
+utils.binaryFinders.findClaudeBinary = () => null;
 
 // After the dist-vendoring task the package.json `main` points at
-// dist/index.js, so `require("@gryphon/provider-runtime")` (used by
+// dist/index.js, so `require("@polleoai/gryphon-provider-runtime")` (used by
 // chat-view.ts tests below) resolves to a different module instance
 // than `../src/*`.  Stub the dist copy too so binary-detection cannot
 // leak back through the compiled path.
 try {
   const distUtils = require("../dist/utils");
-  if (distUtils && typeof distUtils.findClaudeBinary === "function") {
-    const _origDistFindClaudeBinary = distUtils.findClaudeBinary;
-    distUtils.findClaudeBinary = () => null;
-    process.on("exit", () => { distUtils.findClaudeBinary = _origDistFindClaudeBinary; });
+  if (distUtils && distUtils.binaryFinders && typeof distUtils.binaryFinders.findClaudeBinary === "function") {
+    const _origDistFindClaudeBinary = distUtils.binaryFinders.findClaudeBinary;
+    distUtils.binaryFinders.findClaudeBinary = () => null;
+    process.on("exit", () => { distUtils.binaryFinders.findClaudeBinary = _origDistFindClaudeBinary; });
   }
 } catch (_) {
   // dist/ not yet built; ignore — no-op stub not needed if dist absent
@@ -53,7 +53,7 @@ const factory = require("../src/factory");
 // Restore the real binary lookup once the test module finishes — be a
 // good citizen so other test modules running in the same node process
 // see the unmocked value.
-process.on("exit", () => { utils.findClaudeBinary = _origFindClaudeBinary; });
+process.on("exit", () => { utils.binaryFinders.findClaudeBinary = _origFindClaudeBinary; });
 
 // Build a minimal plugin shim — only the shape the factory reads.
 function makePlugin(settingsOverride = {}) {
@@ -331,7 +331,7 @@ test("DEFAULT_SETTINGS includes openaiApiKey and googleApiKey as empty strings",
 // ──────────────────────────────────────────────────────────────────────
 
 test("F20 fix — DEFAULT_PROVIDER_PREFERENCE is exported and equals 'auto'", () => {
-  const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
+  const { DEFAULT_PROVIDER_PREFERENCE } = require("@polleoai/gryphon-provider-config");
   // Both createProvider and explainUnavailable consult this single
   // source of truth, so changing the default in one place updates both.
   assert.equal(DEFAULT_PROVIDER_PREFERENCE, "auto");
@@ -483,7 +483,7 @@ test("F23-1 — cross-provider switch: toolbar label, dropdown selection, and re
   const {
     getModelDropdownOptions,
     resolveModel: resolveOpenAIModel,
-  } = require("@gryphon/provider-config").pricing.openai;
+  } = require("@polleoai/gryphon-provider-config").pricing.openai;
 
   // Scenario: user previously on anthropic-api with model="sonnet", switches
   // to openai-api. Settings.model is still "sonnet" until either Settings tab
@@ -509,7 +509,7 @@ test("F23-1 — when persisted model is already an OpenAI id, all three surfaces
   const {
     getModelDropdownOptions,
     resolveModel: resolveOpenAIModel,
-  } = require("@gryphon/provider-config").pricing.openai;
+  } = require("@polleoai/gryphon-provider-config").pricing.openai;
 
   const settings = { providerPreference: "openai-api", model: "gpt-6-luna" };
 
@@ -529,7 +529,7 @@ test("F23-1 successor (Gemini, issue #27) — cross-vendor model id leak coerces
   const {
     getModelDropdownOptions,
     coerceToVendorModel: coerceGeminiModel,
-  } = require("@gryphon/provider-config").pricing.google;
+  } = require("@polleoai/gryphon-provider-config").pricing.google;
 
   // Scenario: user previously on openai-api with model="gpt-4o-mini",
   // settings.providerPreference flipped to "google-api" via a path that
@@ -557,7 +557,7 @@ test("F23-1 successor (Gemini, issue #27) — cross-vendor model id leak coerces
 test("F23-1 successor (Gemini) — anthropic alias 'sonnet' resolves to gemini-3.7-flash and surfaces consistently", () => {
   const {
     resolveModel: resolveGeminiModel,
-  } = require("@gryphon/provider-config").pricing.google;
+  } = require("@polleoai/gryphon-provider-config").pricing.google;
 
   const settings = { providerPreference: "google-api", model: "sonnet" };
 
@@ -575,7 +575,7 @@ test("F23-1 successor (Gemini) — when persisted model is already a Gemini id, 
   const {
     getModelDropdownOptions,
     resolveModel: resolveGeminiModel,
-  } = require("@gryphon/provider-config").pricing.google;
+  } = require("@polleoai/gryphon-provider-config").pricing.google;
 
   const settings = { providerPreference: "google-api", model: "gemini-3.8-flash" };
 
@@ -632,7 +632,7 @@ test("F22 fix — auto with both OpenAI AND Anthropic keys set: Anthropic wins (
 // setting; this covers an id set afterwards (consumer code, hand-edited
 // data.json). Checked for every vendor.
 test("F23-1 (hidden ids) — hidden model runs untouched and the toolbar names it", () => {
-  const pc = require("@gryphon/provider-config").pricing;
+  const pc = require("@polleoai/gryphon-provider-config").pricing;
   const { MODELS } = require("../../plugin/src/constants");
   const cases = [
     { pref: "openai-api",  model: "gpt-4o-mini",      want: "gpt-4o-mini",

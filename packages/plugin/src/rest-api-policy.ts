@@ -46,9 +46,9 @@ const LOOPBACK_HOSTNAMES = new Set([
  * @param {string} url
  * @returns {boolean}
  */
-function isObsidianRestApiUrl(url) {
+function isObsidianRestApiUrl(url: unknown): boolean {
   if (typeof url !== "string" || !url) return false;
-  let parsed;
+  let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
@@ -128,7 +128,7 @@ class RestApiTurnCounter {
   }
 }
 
-module.exports = {
+export {
   OBSIDIAN_REST_API_DEFAULT_PORT,
   LOOPBACK_HOSTNAMES,
   isObsidianRestApiUrl,

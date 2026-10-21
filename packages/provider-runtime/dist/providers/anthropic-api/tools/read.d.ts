@@ -6,6 +6,19 @@
  * (line-numbered with `cat -n` style) — the model has been trained on
  * this format, so reproducing it gives better tool-use behavior.
  */
+interface ReadInput {
+    file_path: string;
+    offset?: number | string;
+    limit?: number | string;
+}
+interface ReadToolContext {
+    vaultRoot: string;
+    plugin?: {
+        settings?: {
+            maxReadFileSizeMb?: unknown;
+        };
+    } | null;
+}
 declare const SCHEMA: {
     name: string;
     description: string;
@@ -28,10 +41,10 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<{
+declare function execute(input: ReadInput, ctx: ReadToolContext): Promise<{
     content: {
         type: string;
-        text: any;
+        text: string;
     }[];
     isError: boolean;
 }>;

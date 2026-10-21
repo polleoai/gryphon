@@ -47,7 +47,7 @@ const VAULT_WEAK = {
 
 // ── exports + closed key set ────────────────────────────────────────────
 
-test("#29: @gryphon/protect exports the store API", () => {
+test("#29: @polleoai/gryphon-protect exports the store API", () => {
   for (const k of ["WEAKENING_KEYS", "SecurityScopeUnavailableError", "resolveSecurityScope", "readMachineSecuritySettings",
     "setMachineSecuritySetting", "dismissVaultSecuritySuggestion", "isWeakening", "effectiveSecuritySettings"]) {
     assert.ok(protect[k], `missing export ${k}`);

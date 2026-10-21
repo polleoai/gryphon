@@ -4,9 +4,10 @@
 // `node <shimEntry>`; it receives the declared tools + the gryphon-side bridge
 // socket path via env. See design spec §6 + §12.
 
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const path = require("path") as typeof import("path");
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import type { DeclaredTool } from "./types";
 
 // MCP exposes tools to the model namespaced as mcp__<server>__<tool>.
 const MCP_SERVER_NAME = "gryphon-passive";
@@ -26,7 +27,7 @@ function uniqueTmp(prefix: string, ext: string): string {
 // `0600` keeps server commands + env (which may carry tokens) owner-only.
 // Shared by the passive backend and the claude-code provider's scoped
 // launch (issue #25). The caller owns unlinking the file.
-function writeMcpConfigFile(mcpServers: Record<string, any>, prefix = "gryphon-mcp"): string {
+function writeMcpConfigFile(mcpServers: Record<string, unknown>, prefix = "gryphon-mcp"): string {
   const jsonPath = uniqueTmp(prefix, ".json");
   fs.writeFileSync(jsonPath, JSON.stringify({ mcpServers }), { encoding: "utf8", flag: "wx", mode: 0o600 });
   return jsonPath;
@@ -34,7 +35,10 @@ function writeMcpConfigFile(mcpServers: Record<string, any>, prefix = "gryphon-m
 
 // declaredTools: Array<{name, description, input_schema}>
 // opts: { shimEntry: string, socketPath: string }
-function buildMcpConfig(declaredTools: any[], opts: any): any {
+function buildMcpConfig(
+  declaredTools: DeclaredTool[],
+  opts: { shimEntry: string; socketPath: string },
+) {
   const json = {
     mcpServers: {
       [MCP_SERVER_NAME]: {

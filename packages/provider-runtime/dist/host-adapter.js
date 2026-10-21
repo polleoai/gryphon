@@ -17,20 +17,27 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.HeadlessHostAdapter = void 0;
+const node_fetch_1 = require("./node-fetch");
 class HeadlessHostAdapter {
+    _fetchImpl;
+    /** `fetchImpl` replaces the default fetch (embedders with their own client, tests). */
+    constructor(options = {}) {
+        this._fetchImpl = options.fetchImpl || null;
+    }
     notify(message, opts) {
         opts = opts || {};
         const level = opts.level || "info";
-        const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
+        // Info goes to console.debug — the same stdout line under node, and
+        // Obsidian's quiet-console rule inside the app.
+        const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.debug;
         fn(`[gryphon] ${message}`);
     }
     async fetch(url, opts) {
         opts = opts || {};
-        // Bare global `fetch` (Node 18+ and the renderer both provide it). This
-        // HeadlessHostAdapter runs in a Node subprocess (hooks/IPC) where there is
-        // no window/activeWindow, so the obsidianmd window-global guidance doesn't
-        // apply. The unqualified call resolves to the global, not this method.
-        return fetch(url, opts);
+        if (this._fetchImpl)
+            return this._fetchImpl(url, opts);
+        // node's own http/https (see node-fetch.ts for why not the global fetch).
+        return (0, node_fetch_1.nodeFetch)(url, opts);
     }
 }
 exports.HeadlessHostAdapter = HeadlessHostAdapter;

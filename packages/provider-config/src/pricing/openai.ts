@@ -17,7 +17,15 @@
  * cached_input rate without changing the table shape.
  */
 
-const registry = require("../registry");
+import * as registry from "../registry";
+
+// Per-model USD-per-million-token rates (registry `pricing` shape).
+interface ModelPricing {
+  input: number;
+  output: number;
+  cached_input?: number;
+  [rate: string]: number | undefined;
+}
 
 // Guard against NaN / Infinity token counts (see anthropic.js for rationale).
 function _finite(n: unknown): number {
@@ -26,10 +34,10 @@ function _finite(n: unknown): number {
 
 // Derive MODEL_PRICES object keyed by model id (back-compat shape).
 // Includes `_default` fallback for unknown model ids.
-const MODEL_PRICES: Record<string, any> = (() => {
-  const out: Record<string, any> = {};
+const MODEL_PRICES: Record<string, ModelPricing> = (() => {
+  const out: Record<string, ModelPricing> = {};
   for (const m of registry.modelsByVendor("openai")) out[m.id] = m.pricing;
-  out._default = registry.VENDOR_FALLBACK_PRICING.openai;
+  out._default = registry.VENDOR_FALLBACK_PRICING.openai as ModelPricing;
   return out;
 })();
 
@@ -40,7 +48,7 @@ const MODEL_PRICES: Record<string, any> = (() => {
 const MODEL_ALIAS: Record<string, string> = (() => {
   const out: Record<string, string> = {};
   for (const [alias, perVendor] of Object.entries(registry.CROSS_VENDOR_ALIASES)) {
-    const pv = perVendor as Record<string, string>;
+    const pv = perVendor;
     if (pv.openai) out[alias] = pv.openai;
   }
   for (const m of registry.modelsByVendor("openai")) {
@@ -56,7 +64,7 @@ const MODEL_ALIAS: Record<string, string> = (() => {
   return out;
 })();
 
-const DEFAULT_MODEL = registry.defaultModelFor("openai");
+const DEFAULT_MODEL = registry.defaultModelFor("openai") as string;
 
 /**
  * Resolve an alias or concrete model id to a concrete model id for this vendor.
@@ -96,7 +104,7 @@ function coerceToVendorModel(alias: string | null | undefined): string {
 // See registry.js for empirical verdict + rationale.
 const CODEX_CLI_SUPPORTED_MODELS = registry.codexCliSupportedModels();
 
-function priceFor(modelId: string): Record<string, number> {
+function priceFor(modelId: string): ModelPricing {
   return MODEL_PRICES[modelId] || MODEL_PRICES._default;
 }
 
@@ -172,7 +180,7 @@ function coerceToCodexCliModel(alias: string | null | undefined): string {
   return CODEX_CLI_DEFAULT_MODEL;
 }
 
-module.exports = {
+export {
   MODEL_PRICES,
   MODEL_ALIAS,
   DEFAULT_MODEL,

@@ -9,27 +9,51 @@
  * permissionMode in their execute() before performing the side effect.
  */
 
-const Read = require("./read");
-const Glob = require("./glob");
-const Grep = require("./grep");
-const Write = require("./write");
-const Edit = require("./edit");
-const WebFetch = require("./web-fetch");
-const WebSearch = require("./web-search");
-const Bash = require("./bash");
+import * as Read from "./read";
+import * as Glob from "./glob";
+import * as Grep from "./grep";
+import * as Write from "./write";
+import * as Edit from "./edit";
+import * as WebFetch from "./web-fetch";
+import * as WebSearch from "./web-search";
+import * as Bash from "./bash";
+
+// tool_result-shaped value every tool's execute() resolves to.
+interface ToolResult {
+  content: string | Array<{ type: string; text: string }>;
+  isError?: boolean;
+}
+
+// Anthropic-shape tool schema ({ name, description, input_schema }).
+interface ToolSchema {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+interface ToolModule {
+  SCHEMA: ToolSchema;
+  execute(input: unknown, ctx: unknown): Promise<ToolResult>;
+}
+
+interface ToolPhaseOpts {
+  allowWrite?: boolean;
+  allowWeb?: boolean;
+  allowBash?: boolean;
+}
 
 // Tool sets, grouped by phase. Each phase gates additional capabilities
 // in the tool-loop so we can experiment with subsets if needed.
-const READ_ONLY_TOOLS = [Read, Glob, Grep];
-const WRITE_TOOLS = [Write, Edit];
-const WEB_BASH_TOOLS = [WebFetch, WebSearch, Bash];
+const READ_ONLY_TOOLS: ToolModule[] = [Read, Glob, Grep];
+const WRITE_TOOLS: ToolModule[] = [Write, Edit];
+const WEB_BASH_TOOLS: ToolModule[] = [WebFetch, WebSearch, Bash];
 
 /**
  * Returns the active tool set based on which phases are enabled.
  * @param {object} opts — { allowWrite, allowWeb, allowBash }
  * @returns {Array<{SCHEMA, execute}>}
  */
-function getActiveTools(opts: Record<string, any> = {}) {
+function getActiveTools(opts: ToolPhaseOpts = {}): ToolModule[] {
   const tools = [...READ_ONLY_TOOLS];
   if (opts.allowWrite) tools.push(...WRITE_TOOLS);
   if (opts.allowWeb || opts.allowBash) tools.push(...WEB_BASH_TOOLS);
@@ -39,7 +63,7 @@ function getActiveTools(opts: Record<string, any> = {}) {
 /**
  * Returns the schema array shipped to the Anthropic API.
  */
-function getToolSchemas(opts: Record<string, any> = {}) {
+function getToolSchemas(opts: ToolPhaseOpts = {}): ToolSchema[] {
   return getActiveTools(opts).map((t) => t.SCHEMA);
 }
 
@@ -59,7 +83,7 @@ function getToolSchemas(opts: Record<string, any> = {}) {
  * @param {object} ctx    — { vaultRoot, permissionMode, plugin, ... }
  * @returns {Promise<{content, isError}>}
  */
-async function executeTool(name: any, input: any, ctx: any) {
+async function executeTool(name: string, input: unknown, ctx: unknown): Promise<ToolResult> {
   // Look up against the full registry — this dispatcher does NOT re-check
   // phase; the shipped schemas already did (see doc comment above).
   const allTools = getActiveTools({ allowWrite: true, allowWeb: true, allowBash: true });

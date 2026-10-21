@@ -112,7 +112,7 @@ function buildDenyReason({ action, target, category, kind }: { action: string; t
   );
 }
 
-module.exports = {
+export {
   CANONICAL_OPENING,
   describeOperation,
   settingsPathForKind,

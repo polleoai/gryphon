@@ -30,8 +30,8 @@ exports.execute = execute;
 // the headless paths.
 const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
-const { spawn } = require("child_process");
-const { attackDetector } = require("@gryphon/protect");
+const child_process_1 = require("child_process");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
 const SCHEMA = {
     name: "Bash",
     description: "Executes a shell command in the vault directory. Use for any task " +
@@ -65,7 +65,7 @@ const MAX_OUTPUT_BYTES = 100_000;
 async function execute(input, ctx) {
     const command = input.command;
     const description = input.description || "(no description provided)";
-    const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1000, parseInt(input.timeout || DEFAULT_TIMEOUT_MS, 10)));
+    const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1000, parseInt(String(input.timeout || DEFAULT_TIMEOUT_MS), 10)));
     if (typeof command !== "string" || !command.trim()) {
         return _error("Missing or empty parameter: command");
     }
@@ -74,8 +74,8 @@ async function execute(input, ctx) {
     // where the pipe falls past the truncation point, so the title reads
     // like a benign `ls`). The modal body wraps long lines so full-length
     // commands stay readable.
-    const classification = attackDetector.classify("Bash", { command }, ctx);
-    const perm = await attackDetector.gate(classification, {
+    const classification = gryphon_protect_1.attackDetector.classify("Bash", { command }, ctx);
+    const perm = (await gryphon_protect_1.attackDetector.gate(classification, {
         ctx,
         action: "run shell command",
         target: command,
@@ -85,7 +85,7 @@ async function execute(input, ctx) {
             `\n--- command ---\n${command}`,
         cacheable: false, // never cache shell commands
         kind: "exec",
-    });
+    }));
     if (!perm.allow)
         return _error(perm.reason);
     return await _runCommand(command, ctx.vaultRoot, timeoutMs);
@@ -100,7 +100,7 @@ function _runCommand(command, cwd, timeoutMs) {
         // Use shell=true so the model can use pipes, redirects, &&, etc.
         // This is what CC's Bash does too. The permission gate is what
         // protects us — the model can't issue an unsanctioned command.
-        const proc = spawn(command, [], {
+        const proc = (0, child_process_1.spawn)(command, [], {
             cwd,
             shell: true,
             env: process.env,
@@ -110,11 +110,11 @@ function _runCommand(command, cwd, timeoutMs) {
             try {
                 proc.kill("SIGTERM");
             }
-            catch { }
+            catch { /* already exited */ }
             setTimeoutFn(() => { try {
                 proc.kill("SIGKILL");
             }
-            catch { } }, 5000);
+            catch { /* already exited */ } }, 5000);
         }, timeoutMs);
         proc.stdout.on("data", (chunk) => {
             const s = chunk.toString();

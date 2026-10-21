@@ -1,6 +1,44 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PathOutsideVaultError = void 0;
+exports.resolveVaultPath = resolveVaultPath;
+exports.matchProtectedPath = matchProtectedPath;
+exports.parsePatternList = parsePatternList;
+exports.resolveActivePatterns = resolveActivePatterns;
 /**
  * Path validation for SDK-mode tools.
  *
@@ -18,8 +56,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *   4. Symlinks that escape the vault are rejected (we resolve via
  *      fs.realpathSync where possible).
  */
-const path = require("path");
-const fs = require("fs");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
 class PathOutsideVaultError extends Error {
     requested;
     vaultRoot;
@@ -30,6 +68,7 @@ class PathOutsideVaultError extends Error {
         this.vaultRoot = vaultRoot;
     }
 }
+exports.PathOutsideVaultError = PathOutsideVaultError;
 /**
  * Resolve `requested` against `vaultRoot`, ensuring the result stays
  * inside the vault. Throws PathOutsideVaultError if it escapes.
@@ -184,18 +223,16 @@ function parsePatternList(settingValue) {
 function resolveActivePatterns(defaults, disabled, custom) {
     const defs = Array.isArray(defaults) ? defaults : [];
     const normalizedDefs = defs
-        .map((d) => (typeof d === "string" ? d : (d && typeof d.pattern === "string" ? d.pattern : null)))
-        .filter((p) => p && p.length > 0);
+        .map((d) => {
+        if (typeof d === "string")
+            return d;
+        const pattern = d && d.pattern;
+        return typeof pattern === "string" ? pattern : null;
+    })
+        .filter((p) => !!p && p.length > 0);
     const off = new Set(Array.isArray(disabled) ? disabled : []);
     const cust = Array.isArray(custom)
         ? custom.filter((p) => typeof p === "string" && p.length > 0)
         : [];
     return [...normalizedDefs.filter((p) => !off.has(p)), ...cust];
 }
-module.exports = {
-    resolveVaultPath,
-    PathOutsideVaultError,
-    matchProtectedPath,
-    parsePatternList,
-    resolveActivePatterns,
-};

@@ -1,18 +1,99 @@
 {
-  "name": "@gryphon/provider-runtime",
-  "version": "2.4.2",
+  "name": "@polleoai/gryphon-provider-runtime",
+  "version": "2.12.0",
   "description": "LLM provider runtime for Gryphon: provider abstraction, factory, six provider implementations (Claude/Codex/Gemini CLIs + Anthropic/OpenAI/Google APIs), tool loops, streaming + abort + retry.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polleoai/gryphon"
+  },
   "main": "dist/index.js",
   "types": "./index.d.ts",
+  "typesVersions": {
+    "*": {
+      "utils": [
+        "./dist/utils.d.ts"
+      ],
+      "factory": [
+        "./dist/factory.d.ts"
+      ],
+      "shell-quote": [
+        "./dist/shell-quote.d.ts"
+      ],
+      "launcher-refusal-text": [
+        "./dist/launcher-refusal-text.d.ts"
+      ],
+      "providers/claude-code/hook-settings-builder": [
+        "./dist/providers/claude-code/hook-settings-builder.d.ts"
+      ],
+      "providers/anthropic-api/anthropic-api": [
+        "./dist/providers/anthropic-api/anthropic-api.d.ts"
+      ],
+      "providers/openai-api/openai-api": [
+        "./dist/providers/openai-api/openai-api.d.ts"
+      ],
+      "providers/google-api/test-key": [
+        "./dist/providers/google-api/test-key.d.ts"
+      ],
+      "node-fetch": [
+        "./dist/node-fetch.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./utils": {
+      "types": "./dist/utils.d.ts",
+      "require": "./dist/utils.js",
+      "default": "./dist/utils.js"
+    },
+    "./factory": {
+      "types": "./dist/factory.d.ts",
+      "require": "./dist/factory.js",
+      "default": "./dist/factory.js"
+    },
+    "./shell-quote": {
+      "types": "./dist/shell-quote.d.ts",
+      "require": "./dist/shell-quote.js",
+      "default": "./dist/shell-quote.js"
+    },
+    "./launcher-refusal-text": {
+      "types": "./dist/launcher-refusal-text.d.ts",
+      "require": "./dist/launcher-refusal-text.js",
+      "default": "./dist/launcher-refusal-text.js"
+    },
+    "./node-fetch": {
+      "types": "./dist/node-fetch.d.ts",
+      "require": "./dist/node-fetch.js",
+      "default": "./dist/node-fetch.js"
+    },
+    "./providers/claude-code/hook-settings-builder": {
+      "types": "./dist/providers/claude-code/hook-settings-builder.d.ts",
+      "require": "./dist/providers/claude-code/hook-settings-builder.js",
+      "default": "./dist/providers/claude-code/hook-settings-builder.js"
+    },
+    "./providers/anthropic-api/anthropic-api": {
+      "types": "./dist/providers/anthropic-api/anthropic-api.d.ts",
+      "require": "./dist/providers/anthropic-api/anthropic-api.js",
+      "default": "./dist/providers/anthropic-api/anthropic-api.js"
+    },
+    "./providers/openai-api/openai-api": {
+      "types": "./dist/providers/openai-api/openai-api.d.ts",
+      "require": "./dist/providers/openai-api/openai-api.js",
+      "default": "./dist/providers/openai-api/openai-api.js"
+    },
+    "./providers/google-api/test-key": {
+      "types": "./dist/providers/google-api/test-key.d.ts",
+      "require": "./dist/providers/google-api/test-key.js",
+      "default": "./dist/providers/google-api/test-key.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/",
@@ -22,13 +103,14 @@
   ],
   "scripts": {
     "build:dist": "tsc -p tsconfig.build.json && node scripts/copy-passive-shim.cjs",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')){console.error('prepack: dist/index.js missing - run npm run prebuild at the repo root first');process.exit(1)}fs.copyFileSync('../../LICENSE','LICENSE')\""
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
     "@google/genai": "^1.51.0",
-    "@gryphon/protect": "file:../protect",
-    "@gryphon/provider-config": "file:../provider-config",
+    "@polleoai/gryphon-protect": "file:../protect",
+    "@polleoai/gryphon-provider-config": "file:../provider-config",
     "openai": "^6.35.0",
     "undici": "^8.1.0"
   }

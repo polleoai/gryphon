@@ -145,14 +145,95 @@
  * `cache_read_tokens`, and `thinking_tokens` is a new field gemini-cli's
  * `stats` shape doesn't have (folded into computeCost's existing
  * candidatesTokenCount mapping below rather than tracked separately,
- * since @gryphon/provider-config's google pricing table has no
+ * since @polleoai/gryphon-provider-config's google pricing table has no
  * thinking-token-specific rate).
  */
-declare const DEFAULT_MODEL: any;
+import type { ChildProcessByStdio } from "child_process";
+import type { Readable } from "stream";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+declare const DEFAULT_MODEL: string;
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+    notify(message: string, opts?: {
+        level?: string;
+        timeoutMs?: number;
+    }): void;
+}
+/** The slice of the host plugin this provider reads (also handed to the hook dispatcher). */
+type AgyHostPlugin = {
+    consumeTaintedSession?: (sessionId: string) => boolean;
+    consumeForceFreshSpawn?: (kind: string) => boolean;
+    [key: string]: unknown;
+};
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+interface AgyOptions {
+    model?: string | null;
+    effort?: string;
+    resumeSessionId?: string;
+    extraArgs?: string[];
+    antigravityTimeoutMs?: number;
+    plugin?: AgyHostPlugin | null;
+    security?: unknown;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride | null;
+    [key: string]: unknown;
+}
+/** Test-harness options-bag constructor form. */
+interface AgyBag {
+    antigravityPath?: string;
+    cwd?: string;
+    config?: {
+        model?: string;
+    } | null;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride;
+}
+/** What the hook dispatcher hands back for one spawn. */
+interface HookExtras {
+    ok: boolean;
+    mode?: string;
+    degradationReason?: string;
+    env?: Record<string, string | undefined>;
+    args?: string[];
+    cleanup?: (() => void) | null;
+}
+/** `agy -p` spawns with stdio ["ignore", "pipe", "pipe"]. */
+type AgyProc = ChildProcessByStdio<null, Readable, Readable>;
+interface AgyUsage {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_tokens?: number;
+}
+/** A `step_update` payload (only the fields read here). */
+interface AgyStepUpdate {
+    conversation_id?: unknown;
+    step_type?: string;
+    state?: string;
+    tool_name?: string;
+    text_delta?: unknown;
+    usage?: AgyUsage | null;
+}
+/** The terminal `result` payload (only the fields read here). */
+interface AgyResult {
+    conversation_id?: unknown;
+    status?: string;
+    error?: unknown;
+    usage?: AgyUsage | null;
+    response?: unknown;
+    duration_seconds?: unknown;
+}
+/** One `--output-format stream-json` stdout event. */
+interface AgyEvent {
+    event?: string;
+    conversation_id?: unknown;
+    step_update?: AgyStepUpdate | null;
+    result?: AgyResult | null;
+}
 declare const DEFAULT_HARD_TIMEOUT_MS = 60000;
 declare const SESSION_PREFIX = "antigravity-cli-";
-declare function _wrapSession(id: any): string | null;
-declare function _unwrapSession(id: any): any;
+declare function _wrapSession(id: unknown): string | null;
+declare function _unwrapSession(id: string | null): string | null;
 /**
  * Strip Antigravity-side internal-mechanism leaks from the model's
  * user-facing text. Mirrors gemini-cli's `_scrubInternalLeaks` /
@@ -161,10 +242,35 @@ declare function _unwrapSession(id: any): any;
  * without this scrub the model echoes the mechanism vocabulary back to the
  * user (see `feedback_public_release_wording`).
  */
-declare function _scrubInternalLeaks(text: any): any;
+declare function _scrubInternalLeaks(text: string): string;
 declare class AntigravityCliProvider {
-    [key: string]: any;
-    constructor(antigravityPath: any, cwd: any, options?: Record<string, any>);
+    antigravityPath: string;
+    cwd: string;
+    options: AgyOptions;
+    _spawnOverride: SpawnOverride | null;
+    hostAdapter: HostAdapterLike;
+    process: AgyProc | null;
+    alive: boolean;
+    sessionId: string | null;
+    resolvedModel: string;
+    contextTokens: number;
+    lastCumulativeCost: number;
+    _buffer: string;
+    _stderrTail: string;
+    _turnText: string;
+    _lastResult: AgyResult | null;
+    _currentResolve: ((result: Result) => void) | null;
+    _currentReject: ((reason?: unknown) => void) | null;
+    _watchdog: ReturnType<typeof setTimeout> | null;
+    onMessage: ((text: string, type: StreamMessageType) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: Result) => void) | null;
+    onSessionExpired: (() => void) | null;
+    _failed?: boolean;
+    _lastPrompt?: string;
+    _staleRecoveryFired?: boolean;
+    _hookCleanup?: (() => void) | null;
+    constructor(antigravityPath: string | AgyBag, cwd?: string, options?: AgyOptions);
     /**
      * The model id to actually spawn with.
      *
@@ -184,7 +290,7 @@ declare class AntigravityCliProvider {
      * follow-up, not changed here (its hook-spawn spec is skipped in the VM
      * image, so it has no E2E cover for a behaviour change).
      */
-    _modelForSpawn(): any;
+    _modelForSpawn(): string | null;
     /**
      * Decide whether this spawn may auto-approve, and whether a failure to
      * install the guardrail should stop it outright.
@@ -211,7 +317,7 @@ declare class AntigravityCliProvider {
      *    console.warn nobody reads while auto-approve stayed on. Refuse, so
      *    the next occurrence is visible instead of silent.
      */
-    _autoApproveDecision(hookExtras: any): {
+    _autoApproveDecision(hookExtras: HookExtras): {
         autoApprove: boolean;
         refuse: boolean;
         message: string;
@@ -221,26 +327,26 @@ declare class AntigravityCliProvider {
      *   true for callers that predate the guardrail coupling; the spawn path
      *   passes it explicitly. See `_autoApproveDecision`.
      */
-    _buildArgs(prompt: any, autoApprove?: boolean): any[];
+    _buildArgs(prompt: string, autoApprove?: boolean): string[];
     _buildEnv(): {
-        PATH: any;
+        PATH: string;
     };
-    send(prompt: any, options: any): any;
+    send(prompt: string, options?: SendOptions): Promise<Result>;
     /**
      * Execute one `agy -p` turn and return a Promise that resolves with the
      * result object {text, cost, cumulativeCost, sessionId, duration,
      * contextTokens}. When _spawnOverride is set (test-harness injection),
      * delegates directly to the override function.
      */
-    _spawnTurn(prompt: any): any;
+    _spawnTurn(prompt: string): Promise<Result>;
     _clearWatchdog(): void;
-    _handleStdout(data: any): void;
-    _processEvent(raw: any): void;
-    _handleStderr(data: any): void;
-    _handleClose(code: any): void;
-    _handleProcessError(err: any): void;
+    _handleStdout(data: Buffer | string): void;
+    _processEvent(raw: AgyEvent | null): void;
+    _handleStderr(data: Buffer | string): void;
+    _handleClose(code: number | null): void;
+    _handleProcessError(err: Error): void;
     abort(): void;
-    isAlive(): any;
+    isAlive(): boolean;
     get costIsEstimate(): boolean;
 }
 export { AntigravityCliProvider, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, DEFAULT_HARD_TIMEOUT_MS, };

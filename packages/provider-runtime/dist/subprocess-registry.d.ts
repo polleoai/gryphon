@@ -29,12 +29,20 @@
  *      then re-raise the signal so the host's own exit path still runs.
  *
  * The module is platform-aware but otherwise host-agnostic — it has no
- * Obsidian dependency, so a non-Obsidian consumer of @gryphon/provider-runtime
+ * Obsidian dependency, so a non-Obsidian consumer of @polleoai/gryphon-provider-runtime
  * gets the same leak-free guarantee.
  */
+import type { ChildProcess } from "child_process";
 type SpawnOptions = Record<string, unknown>;
+/** The slice of a ChildProcess the kill paths touch (tests pass look-alikes). */
+interface KillableChild {
+    pid?: number | null;
+    exitCode?: number | null;
+    signalCode?: NodeJS.Signals | null;
+    kill(signal?: NodeJS.Signals | number): boolean | void;
+}
 interface RegistryEntry {
-    child: any;
+    child: KillableChild;
     label: string;
     pgid: number | null;
     startedAt: number;
@@ -63,7 +71,7 @@ declare const LIVE_COUNT_WARN_THRESHOLD = 16;
  *          its children. Best-effort; we also call child.kill() as a
  *          backstop.
  */
-declare function killProcessTree(child: any, signal?: NodeJS.Signals | number): void;
+declare function killProcessTree(child: KillableChild | null | undefined, signal?: NodeJS.Signals | number): void;
 /**
  * Kill every tracked child tree. Used by the host's onunload and by the
  * process-shutdown handlers. Idempotent and never throws.
@@ -85,7 +93,7 @@ declare function killAll(signal?: NodeJS.Signals): number;
  */
 declare function managedSpawn(command: string, args: string[], options?: SpawnOptions, meta?: {
     label?: string;
-}): any;
+}): ChildProcess;
 /** Number of currently-tracked (presumed-live) children. For tests/diagnostics. */
 declare function liveCount(): number;
 export { managedSpawn, killProcessTree, killAll, liveCount, _registry, LIVE_COUNT_WARN_THRESHOLD, };

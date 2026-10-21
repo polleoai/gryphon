@@ -19,9 +19,51 @@
  *     any iteration boundary
  */
 
-const { getToolSchemas, executeTool } = require("./tools/tool-registry") as typeof import("./tools/tool-registry");
-const { untrustedFraming } = require("@gryphon/protect");
+import type Anthropic from "@anthropic-ai/sdk";
+import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
+import { getToolSchemas, executeTool } from "./tools/tool-registry";
+import { untrustedFraming, GRYPHON_SDK_COMPOUND_REQUEST_RULE } from "@polleoai/gryphon-protect";
+import { BudgetExceededError } from "../../budget-error";
 const { shouldFrame, buildFraming } = untrustedFraming;
+
+// Token counts the loop aggregates (subset of Anthropic.Usage).
+interface ToolLoopUsage {
+  input_tokens?: number | null;
+  output_tokens?: number | null;
+  cache_creation_input_tokens?: number | null;
+  cache_read_input_tokens?: number | null;
+}
+
+// Execution context shared with the tool registry. A type alias (not an
+// interface) so it also satisfies the tools' Record<string, unknown> ctx.
+type ToolLoopContext = {
+  coercionTool?: Anthropic.Tool | null;
+  toolChoice?: Anthropic.ToolChoice | null;
+  maxUsdBudget?: number | null;
+  computeIterationCost?: ((usage: ToolLoopUsage) => number) | null;
+  priorCumulativeCost?: number;
+  _loopCost?: number;
+  [key: string]: unknown;
+};
+
+type AnthropicMessageStream = MessageStream;
+
+interface ToolLoopCallbacks {
+  onMessage?: (text: string, type: string) => void;
+  onTool?: (name: string) => void;
+  onError?: (text: string) => void;
+  onStream?: (stream: AnthropicMessageStream) => void;
+}
+
+// Inputs of the tools whose output gets untrusted-content framing.
+interface FramedToolInput {
+  url?: string;
+  query?: string;
+  file_path?: string;
+  command?: string;
+}
+
+type ToolResultContent = string | Array<{ type: string; text: string }>;
 
 const MAX_ITERATIONS = 25;
 
@@ -39,7 +81,6 @@ const MAX_ITERATIONS = 25;
 // No mention of "Claude Code", "hooks", or "~/.claude" here — this is
 // the SDK path, so the CLI-specific vocabulary from
 // GRYPHON_SYSTEM_PROMPT_HINT (claude-code.js) doesn't apply.
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_SDK_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
@@ -100,7 +141,13 @@ const GRYPHON_SDK_SYSTEM_PROMPT =
  *   If you need to decouple: take a `pushTurn(turn)` callback argument
  *   from the caller and let the caller own all history mutations.
  */
-async function runToolLoop({ client, model, history, ctx, callbacks }: { client: any; model: any; history: any; ctx: any; callbacks: any }) {
+async function runToolLoop({ client, model, history, ctx, callbacks }: {
+  client: Anthropic;
+  model: string;
+  history: Anthropic.MessageParam[];
+  ctx: ToolLoopContext;
+  callbacks: ToolLoopCallbacks;
+}) {
   const tools = getToolSchemas({
     allowWrite: true,   // Phase 4: Write + Edit (gated per-tool by permissionMode)
     allowWeb: true,     // Phase 5: WebFetch + WebSearch
@@ -112,9 +159,9 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
   // it is invisible to executeTool() — the dispatch guard below uses this
   // to detect and skip it, treating its tool_use block as output only.
   const coercionToolName = ctx && ctx.coercionTool ? ctx.coercionTool.name : null;
-  const allTools = coercionToolName
+  const allTools = (coercionToolName
     ? [...tools, ctx.coercionTool]
-    : tools;
+    : tools) as Anthropic.Tool[];
 
   const totalUsage = {
     input_tokens: 0,
@@ -146,18 +193,18 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
   // just read. Carry earlier iterations forward so the bubble shows the
   // full turn (e.g. "summary." + "\n\n" + deny copy).
   let priorTurnText = "";
-  let finalMessage = null;
+  let finalMessage: Anthropic.Message | null = null;
   let iterations = 0;
   // Issue #4: thinking blocks accumulated across loop iterations. Each
   // iteration's finalMessage.content can carry `thinking` /
   // `redacted_thinking` blocks; we extract them so chat-view can persist
   // and surface them as a collapsible section on the assistant bubble.
-  const thinkingBlocks = [];
+  const thinkingBlocks: string[] = [];
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
 
-    const streamParams: Record<string, any> = {
+    const streamParams: Anthropic.MessageStreamParams = {
       model,
       max_tokens: 8192,
       system: GRYPHON_SDK_SYSTEM_PROMPT,
@@ -177,7 +224,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
     // separator + `iterationText`, so prior iterations' prose is preserved
     // (issue #32) without our mutating any tool-result content.
     let iterationText = "";
-    stream.on("text", (delta: any) => {
+    stream.on("text", (delta: string) => {
       iterationText += delta;
       turnText = priorTurnText
         ? `${priorTurnText}\n\n${iterationText}`
@@ -185,14 +232,14 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
       if (callbacks.onMessage) callbacks.onMessage(turnText, "replace");
     });
 
-    stream.on("error", (err: any) => {
+    stream.on("error", (err: Error) => {
       if (callbacks.onError) callbacks.onError(String(err?.message || err));
     });
 
     finalMessage = await stream.finalMessage();
 
     // Aggregate usage
-    const u = finalMessage.usage || {};
+    const u: ToolLoopUsage = finalMessage.usage || {};
     totalUsage.input_tokens += u.input_tokens || 0;
     totalUsage.output_tokens += u.output_tokens || 0;
     totalUsage.cache_creation_input_tokens += u.cache_creation_input_tokens || 0;
@@ -229,14 +276,15 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
     // the consumer-supplied maxUsdBudget. SDK providers throw mid-loop;
     // CLI providers can only check post-turn (subprocess owns mid-stream).
     if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+      // The `as number` casts below are compile-time only: an undefined
+      // budget still compares false at runtime, exactly as before.
       const iterCost = ctx.computeIterationCost(u);
       if (!ctx._loopCost) ctx._loopCost = 0;
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
-      if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+      if (callCumulative >= (ctx.maxUsdBudget as number)) {
         throw new BudgetExceededError({
-          budget: ctx.maxUsdBudget,
+          budget: ctx.maxUsdBudget as number,
           spent: callCumulative,
           lastTurnCost: iterCost,
         });
@@ -252,7 +300,9 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
     }
 
     // Execute all tool_use blocks from this turn
-    const toolUseBlocks = finalMessage.content.filter((b: any) => b.type === "tool_use");
+    const toolUseBlocks = finalMessage.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use",
+    );
     if (toolUseBlocks.length === 0) {
       // stop_reason said tool_use but no blocks present — defensive exit
       console.warn("[gryphon/sdk] stop_reason=tool_use but no tool_use blocks");
@@ -264,11 +314,16 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
     // dispatch it to the tool registry or feed a tool_result back to the
     // model (that would trigger another iteration). The provider-level
     // send() extracts the block.input from finalMessage.content.
-    if (coercionToolName && toolUseBlocks.every((b: any) => b.name === coercionToolName)) {
+    if (coercionToolName && toolUseBlocks.every((b) => b.name === coercionToolName)) {
       return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
     }
 
-    const toolResults = [];
+    const toolResults: Array<{
+      type: "tool_result";
+      tool_use_id: string;
+      content: ToolResultContent;
+      is_error: boolean;
+    }> = [];
     for (const block of toolUseBlocks) {
       // L6: skip the coercion tool if it appears alongside real tool calls
       // (defensive — caller shouldn't mix both, but guard anyway).
@@ -278,18 +333,19 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
       const result = await executeTool(block.name, block.input, ctx);
       
       // Apply framing for tools that should be framed (WebFetch, WebSearch, etc.)
-      let framedContent = result.content;
+      let framedContent: ToolResultContent = result.content;
       if (!result.isError && shouldFrame(block.name)) {
         // Extract source detail for the framing
+        const blockInput = block.input as FramedToolInput | null | undefined;
         let sourceDetail: string | undefined;
-        if (block.name === "WebFetch" && block.input?.url) {
-          sourceDetail = block.input.url;
-        } else if (block.name === "WebSearch" && block.input?.query) {
-          sourceDetail = block.input.query;
-        } else if (block.name === "Read" && block.input?.file_path) {
-          sourceDetail = block.input.file_path;
-        } else if (block.name === "Bash" && block.input?.command) {
-          sourceDetail = block.input.command;
+        if (block.name === "WebFetch" && blockInput?.url) {
+          sourceDetail = blockInput.url;
+        } else if (block.name === "WebSearch" && blockInput?.query) {
+          sourceDetail = blockInput.query;
+        } else if (block.name === "Read" && blockInput?.file_path) {
+          sourceDetail = blockInput.file_path;
+        } else if (block.name === "Bash" && blockInput?.command) {
+          sourceDetail = blockInput.command;
         }
         
         // Build the framing text
@@ -321,7 +377,7 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: { client:
     }
 
     // Feed tool results back as the next user turn
-    history.push({ role: "user", content: toolResults });
+    history.push({ role: "user", content: toolResults as Anthropic.ToolResultBlockParam[] });
     // Loop continues
   }
 

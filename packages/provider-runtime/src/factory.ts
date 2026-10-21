@@ -37,21 +37,75 @@
  * detector, but no extra hook layer.
  */
 
-// Issue #26: provider classes are lazy-required inside each branch of
-// `createProvider` rather than at module load. Each SDK pulls in
-// significant transitive bytes:
+// Issue #26 / gryphon-dev#38: each API SDK pulls in significant transitive
+// bytes:
 //   - @anthropic-ai/sdk ~150 KB
 //   - openai            ~163 KB
 //   - @google/genai     ~625 KB
-// A user on a single provider used to pay parse + side-effect cost for
-// the other two. esbuild bundles all of them either way (no DCE), but
-// Node defers `_compile` until `require()` actually runs — so deferring
-// the require defers the V8 parse + module-init work for branches the
-// user never takes. claude-code / codex-cli / gemini-cli are subprocess-
-// based and have no heavy SDK, but lazy-requiring them too keeps the
-// pattern symmetric and makes future SDK additions impossible to forget.
-const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
+// A user on a single provider must not pay parse + module-init cost for the
+// others. The provider classes are imported statically below because their
+// modules no longer load an SDK at module load: each API provider imports
+// its SDK on first use (one cached dynamic `import()` per provider module),
+// so the SDK for a branch the user never takes is never evaluated.
+import { DEFAULT_PROVIDER_PREFERENCE, pricing as configPricing, registry as configRegistry } from "@polleoai/gryphon-provider-config";
+import { resolveCliPath as protectResolveCliPath, setActiveProviderKindResolver } from "@polleoai/gryphon-protect";
+import * as utils from "./utils";
+import { HeadlessHostAdapter } from "./host-adapter";
+import { ClaudeCodeProvider } from "./providers/claude-code/claude-code";
+import { AnthropicAPIProvider } from "./providers/anthropic-api/anthropic-api";
+import { OpenAIProvider } from "./providers/openai-api/openai-api";
+import { GoogleProvider } from "./providers/google-api/google-api";
+import { CodexProvider } from "./providers/codex-cli/codex-cli";
+import { GeminiCliProvider } from "./providers/gemini-cli/gemini-cli";
+import { AntigravityCliProvider } from "./providers/antigravity-cli/antigravity-cli";
 import type { LLMProvider, ProviderKind } from "./types";
+
+/** The settings fields the factory reads (host settings carry many more). */
+interface FactorySettings {
+  providerPreference?: string;
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+  googleApiKey?: string;
+  fallbackProviderPreference?: string;
+  fallbackModel?: string;
+}
+
+/** The host plugin (Gryphon's, or an embedder's stub); passed through to providers. */
+interface FactoryPlugin {
+  settings?: FactorySettings | null;
+  securityHostId?: string;
+  app?: unknown;
+}
+
+/** Per-call options; everything beyond these is passed through to the provider. */
+type FactoryOptions = {
+  cliPaths?: Record<string, string | null | undefined> | null;
+  securityHostId?: string;
+  securityOverrides?: { paths?: unknown } | null;
+  hostAdapter?: unknown;
+  extraArgs?: unknown;
+  extraArgsByProvider?: Record<string, string[] | undefined> | null;
+  [key: string]: unknown;
+};
+
+/** Headless options-bag form of createProvider. */
+interface ProviderBag {
+  kind: string;
+  config?: object | null;
+  cwd?: string;
+  options?: object | null;
+  hostAdapter?: unknown;
+}
+
+/** Bag config + options merged (keys / CLI paths the bag path reads). */
+type BagOptions = {
+  apiKey?: string;
+  claudePath?: string;
+  codexPath?: string;
+  geminiPath?: string;
+  antigravityPath?: string;
+  [key: string]: unknown;
+};
 
 /**
  * @param {object} pluginOrBag  — either:
@@ -74,18 +128,18 @@ import type { LLMProvider, ProviderKind } from "./types";
  *                              provider can be constructed (caller shows
  *                              setup guidance).
  */
-function createProvider(pluginOrBag: any, cwd?: string, options: Record<string, any> = {}): LLMProvider | null {
+function createProvider(pluginOrBag: FactoryPlugin | ProviderBag, cwd?: string, options: FactoryOptions = {}): LLMProvider | null {
   // Detect headless options-bag form: { kind, config, cwd?, options?, hostAdapter? }
   // Positive discriminant: real Obsidian plugin instances never have a `.kind`
   // string property, so this single check is unambiguous and removes the
   // previous `settings === undefined` footgun (a test stub like
   // `{ settings: undefined, ... }` would have routed into the bag path,
   // missed `.kind`, and silently returned null).
-  if (typeof pluginOrBag.kind === "string") {
+  if ("kind" in pluginOrBag && typeof pluginOrBag.kind === "string") {
     return _createProviderFromBag(pluginOrBag);
   }
-  const plugin = pluginOrBag;
-  const settings = plugin.settings || {};
+  const plugin = pluginOrBag as FactoryPlugin;
+  const settings: FactorySettings = plugin.settings || {};
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
 
   // Resolve the user's preference to a concrete kind, then construct via the
@@ -113,18 +167,18 @@ function createProvider(pluginOrBag: any, cwd?: string, options: Record<string, 
  *                             → find*Binary detection.
  * Returns a per-call memoised `(kind) => path | null`.
  */
-function _cliPathResolver(plugin: any, options: Record<string, any> = {}): (kind: string) => string | null {
+function _cliPathResolver(plugin: FactoryPlugin | null | undefined, options: FactoryOptions = {}): (kind: string) => string | null {
   const given = options && options.cliPaths && typeof options.cliPaths === "object" ? options.cliPaths : null;
   const memo: Record<string, string | null> = {};
   return (kind: string) => {
     if (given && Object.prototype.hasOwnProperty.call(given, kind)) return given[kind] || null;
     if (Object.prototype.hasOwnProperty.call(memo, kind)) return memo[kind];
-    const { resolveCliPath } = require("@gryphon/protect");
     const hostId = options.securityHostId !== undefined ? options.securityHostId : plugin && plugin.securityHostId;
-    const r = resolveCliPath(kind, {
+    const r = protectResolveCliPath(kind, {
       app: plugin && plugin.app,
       hostPlugin: plugin,
-      hostId,
+      // null and undefined both mean "no host id" to resolveCliPath.
+      hostId: hostId ?? undefined,
       overrides: options.securityOverrides,
       detect: _detectFor,
     });
@@ -155,8 +209,8 @@ function _detectFor(kind: string): string | null {
  * contract as createProvider.
  */
 function createProviderForKind(
-  plugin: any, kind: ProviderKind, cwd?: string,
-  options: Record<string, any> = {}, modelOverride?: string,
+  plugin: FactoryPlugin | null | undefined, kind: ProviderKind, cwd?: string,
+  options: FactoryOptions = {}, modelOverride?: string,
 ): LLMProvider | null {
   if (!plugin || typeof kind !== "string") return null;
   return _buildProvider(plugin, kind, cwd, options, modelOverride);
@@ -169,10 +223,10 @@ function createProviderForKind(
  * both route through here so the two can never drift.
  */
 function _buildProvider(
-  plugin: any, kind: string, cwd?: string,
-  options: Record<string, any> = {}, modelOverride?: string,
+  plugin: FactoryPlugin, kind: string, cwd?: string,
+  options: FactoryOptions = {}, modelOverride?: string,
 ): LLMProvider | null {
-  const settings = plugin.settings || {};
+  const settings: FactorySettings = plugin.settings || {};
   const pathFor = _cliPathResolver(plugin, options);
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
@@ -186,11 +240,11 @@ function _buildProvider(
   // hostAdapter: callers may supply one via options (ObsidianHostAdapter in
   // Obsidian). If absent, default to HeadlessHostAdapter so the provider is
   // always adapter-safe regardless of host.
-  const hostAdapter = options.hostAdapter || new (require("./host-adapter").HeadlessHostAdapter)();
+  const hostAdapter = options.hostAdapter || new HeadlessHostAdapter();
   const enrich = (k: string) => {
-    const legacy = Array.isArray(options.extraArgs) ? options.extraArgs : [];
+    const legacy: unknown[] = Array.isArray(options.extraArgs) ? options.extraArgs : [];
     const perKind = (options.extraArgsByProvider && options.extraArgsByProvider[k]) || [];
-    const merged: Record<string, any> = {
+    const merged: Record<string, unknown> = {
       ...options,
       extraArgs: [...legacy, ...perKind],
       plugin,
@@ -209,39 +263,33 @@ function _buildProvider(
   if (kind === "claude-code") {
     const claudePath = pathFor("claude-code");
     if (!claudePath) return null;
-    const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
-    return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code"));
+    return new ClaudeCodeProvider(claudePath, cwd, enrich("claude-code")) as LLMProvider;
   }
   if (kind === "anthropic-api") {
     if (!apiKey) return null;
-    const { AnthropicAPIProvider } = require("./providers/anthropic-api/anthropic-api");
-    return new AnthropicAPIProvider(apiKey, cwd, enrich("anthropic-api"));
+    return new AnthropicAPIProvider(apiKey, cwd as string, enrich("anthropic-api")) as LLMProvider;
   }
   if (kind === "openai-api") {
     if (!openaiKey) return null;
-    const { OpenAIProvider } = require("./providers/openai-api/openai-api");
-    return new OpenAIProvider(openaiKey, cwd, enrich("openai-api"));
+    return new OpenAIProvider(openaiKey, cwd as string, enrich("openai-api")) as LLMProvider;
   }
   if (kind === "google-api") {
     if (!googleKey) return null;
-    const { GoogleProvider } = require("./providers/google-api/google-api");
-    return new GoogleProvider(googleKey, cwd, enrich("google-api"));
+    return new GoogleProvider(googleKey, cwd as string, enrich("google-api")) as LLMProvider;
   }
   // codex-cli (v1.3): the OpenAI Codex CLI subprocess. Auth is handled by the
   // CLI itself (`codex login`); no API key from settings. Binary must exist.
   if (kind === "codex-cli") {
     const codexPath = pathFor("codex-cli");
     if (!codexPath) return null;
-    const { CodexProvider } = require("./providers/codex-cli/codex-cli");
-    return new CodexProvider(codexPath, cwd, enrich("codex-cli"));
+    return new CodexProvider(codexPath, cwd, enrich("codex-cli")) as LLMProvider;
   }
   // gemini-cli (v1.3): the Google Gemini CLI subprocess. Auth via
   // settings.googleApiKey forwarded as GEMINI_API_KEY env. Binary must exist.
   if (kind === "gemini-cli") {
     const geminiPath = pathFor("gemini-cli");
     if (!geminiPath) return null;
-    const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
-    return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli"));
+    return new GeminiCliProvider(geminiPath, cwd, enrich("gemini-cli")) as LLMProvider;
   }
   // antigravity-cli (issue #19): the Google Antigravity CLI (`agy`)
   // subprocess. Auth is handled by the CLI itself (silent keyring / OAuth,
@@ -250,8 +298,7 @@ function _buildProvider(
   if (kind === "antigravity-cli") {
     const antigravityPath = pathFor("antigravity-cli");
     if (!antigravityPath) return null;
-    const { AntigravityCliProvider } = require("./providers/antigravity-cli/antigravity-cli");
-    return new AntigravityCliProvider(antigravityPath, cwd, enrich("antigravity-cli"));
+    return new AntigravityCliProvider(antigravityPath, cwd, enrich("antigravity-cli")) as LLMProvider;
   }
   return null;
 }
@@ -262,7 +309,7 @@ function _buildProvider(
  * createProvider's "auto" path and resolveFallback's "auto" fallback. The
  * CLI fallthroughs are intentionally excluded (see createProvider).
  */
-function _firstAvailableKind(settings: any, pathFor: (kind: string) => string | null): ProviderKind | null {
+function _firstAvailableKind(settings: FactorySettings, pathFor: (kind: string) => string | null): ProviderKind | null {
   const claudePath = pathFor("claude-code");
   const apiKey = settings.anthropicApiKey || process.env.ANTHROPIC_API_KEY || "";
   const openaiKey = settings.openaiApiKey || process.env.OPENAI_API_KEY || "";
@@ -283,10 +330,11 @@ function defaultModelForKind(kind: string): string {
   // own default — the vendor default (gpt-6.1-sol) is rejected by Codex's
   // ChatGPT auth, and agy has its own catalog.
   try {
-    const pricing = require("@gryphon/provider-config").pricing;
+    const pricing = configPricing;
     if (kind === "codex-cli") return pricing.openai.CODEX_CLI_DEFAULT_MODEL;
+    // Typed loosely upstream; it is the agy default model id.
     if (kind === "antigravity-cli") return pricing.google.ANTIGRAVITY_CLI_DEFAULT_MODEL;
-  } catch (_) { /* fall through to the vendor default */ }
+  } catch { /* fall through to the vendor default */ }
   const vendor =
     (kind === "anthropic-api" || kind === "claude-code") ? "anthropic" :
     (kind === "openai-api" || kind === "codex-cli") ? "openai" :
@@ -295,8 +343,8 @@ function defaultModelForKind(kind: string): string {
     (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") ? "google" : null;
   if (!vendor) return "";
   try {
-    return require("@gryphon/provider-config").registry.defaultModelFor(vendor) || "";
-  } catch (_) { return ""; }
+    return configRegistry.defaultModelFor(vendor) || "";
+  } catch { return ""; }
 }
 
 /**
@@ -313,8 +361,8 @@ function defaultModelForKind(kind: string): string {
  * `fallbackModel` is unset. Pure over `plugin.settings` + binary detection —
  * no chat-view dependency, so headless consumers can call it directly.
  */
-function resolveFallback(plugin: any, options: Record<string, any> = {}): { kind: ProviderKind; model: string } | null {
-  const settings = (plugin && plugin.settings) || {};
+function resolveFallback(plugin: FactoryPlugin | null | undefined, options: FactoryOptions = {}): { kind: ProviderKind; model: string } | null {
+  const settings: FactorySettings = (plugin && plugin.settings) || {};
   const pref = settings.fallbackProviderPreference;
   if (pref === "none") return null;
 
@@ -325,7 +373,7 @@ function resolveFallback(plugin: any, options: Record<string, any> = {}): { kind
   } else if (pref === "auto") {
     kind = _firstAvailableKind(settings, pathFor);
   } else {
-    kind = pref;
+    kind = pref as ProviderKind; // an explicit user choice is taken at face value
   }
   if (!kind) return null;
   const model = settings.fallbackModel || defaultModelForKind(kind);
@@ -339,53 +387,45 @@ function resolveFallback(plugin: any, options: Record<string, any> = {}): { kind
  * `config` is passed as options to the concrete constructor.
  * `hostAdapter` defaults to HeadlessHostAdapter when absent.
  */
-function _createProviderFromBag(bag: Record<string, unknown>): LLMProvider | null {
+function _createProviderFromBag(bag: ProviderBag): LLMProvider | null {
   const kind = bag.kind;
   const config = bag.config || {};
   const cwd = bag.cwd || "";
   const baseOptions = bag.options || {};
-  const { HeadlessHostAdapter } = require("./host-adapter");
   const hostAdapter = bag.hostAdapter || new HeadlessHostAdapter();
-  const opts: Record<string, any> = { ...config, ...baseOptions, hostAdapter };
+  const opts: BagOptions = { ...config, ...baseOptions, hostAdapter };
 
   if (kind === "anthropic-api") {
     if (!opts.apiKey) return null;
-    const { AnthropicAPIProvider } = require("./providers/anthropic-api/anthropic-api");
-    return new AnthropicAPIProvider(opts.apiKey, cwd, opts);
+    return new AnthropicAPIProvider(opts.apiKey, cwd, opts) as LLMProvider;
   }
   if (kind === "openai-api") {
     if (!opts.apiKey) return null;
-    const { OpenAIProvider } = require("./providers/openai-api/openai-api");
-    return new OpenAIProvider(opts.apiKey, cwd, opts);
+    return new OpenAIProvider(opts.apiKey, cwd, opts) as LLMProvider;
   }
   if (kind === "google-api") {
     if (!opts.apiKey) return null;
-    const { GoogleProvider } = require("./providers/google-api/google-api");
-    return new GoogleProvider(opts.apiKey, cwd, opts);
+    return new GoogleProvider(opts.apiKey, cwd, opts) as LLMProvider;
   }
   if (kind === "claude-code") {
     const claudePath = opts.claudePath || _detectClaudeBinary();
     if (!claudePath) return null;
-    const { ClaudeCodeProvider } = require("./providers/claude-code/claude-code");
-    return new ClaudeCodeProvider(claudePath, cwd, opts);
+    return new ClaudeCodeProvider(claudePath, cwd, opts as ConstructorParameters<typeof ClaudeCodeProvider>[2]) as LLMProvider;
   }
   if (kind === "codex-cli") {
     const codexPath = opts.codexPath || _detectCodexBinary();
     if (!codexPath) return null;
-    const { CodexProvider } = require("./providers/codex-cli/codex-cli");
-    return new CodexProvider(codexPath, cwd, opts);
+    return new CodexProvider(codexPath, cwd, opts) as LLMProvider;
   }
   if (kind === "gemini-cli") {
     const geminiPath = opts.geminiPath || _detectGeminiBinary();
     if (!geminiPath) return null;
-    const { GeminiCliProvider } = require("./providers/gemini-cli/gemini-cli");
-    return new GeminiCliProvider(geminiPath, cwd, opts);
+    return new GeminiCliProvider(geminiPath, cwd, opts) as LLMProvider;
   }
   if (kind === "antigravity-cli") {
     const antigravityPath = opts.antigravityPath || _detectAntigravityBinary();
     if (!antigravityPath) return null;
-    const { AntigravityCliProvider } = require("./providers/antigravity-cli/antigravity-cli");
-    return new AntigravityCliProvider(antigravityPath, cwd, opts);
+    return new AntigravityCliProvider(antigravityPath, cwd, opts) as LLMProvider;
   }
   return null;
 }
@@ -394,8 +434,8 @@ function _createProviderFromBag(bag: Record<string, unknown>): LLMProvider | nul
  * Returns a human-readable explanation of why createProvider returned
  * null, used by chat-view to surface a setup hint to the user.
  */
-function explainUnavailable(plugin: any, options: Record<string, any> = {}): string {
-  const settings = plugin.settings || {};
+function explainUnavailable(plugin: FactoryPlugin, options: FactoryOptions = {}): string {
+  const settings: FactorySettings = plugin.settings || {};
   const pathFor = _cliPathResolver(plugin, options);
   // Round 15 fix (F20): single source of truth for the default. Previously
   // createProvider used "auto" while explainUnavailable used "anthropic-api"
@@ -497,8 +537,7 @@ function explainUnavailable(plugin: any, options: Record<string, any> = {}): str
  * the exact remediation commands is the cleanest thing we can do.
  */
 function _cliNotFoundMessage() {
-  const { detectFlatpakSandbox } = require("./utils");
-  const { isFlatpak, appId } = detectFlatpakSandbox();
+  const { isFlatpak, appId } = utils.detectFlatpakSandbox();
   if (isFlatpak) {
     return (
       "No local `claude` CLI found. Obsidian is running inside a Flatpak " +
@@ -526,31 +565,23 @@ function _cliNotFoundMessage() {
   );
 }
 
-// Look this up fresh on every call (like _detectCodexBinary /
-// _detectGeminiBinary below) rather than caching the function reference:
-// node's `require` already caches the module, the per-call cost is one
-// property access, and the freshness lets tests patch `utils.findClaudeBinary`
-// at runtime without invalidating a private factory cache. (The result of
-// the lookup itself is cached inside utils.findClaudeBinary.)
+// The utils finders dispatch through utils.binaryFinders on every call, so a
+// test that substitutes a finder there takes effect here too. (The lookup
+// result itself is cached inside utils.)
 function _detectClaudeBinary() {
-  return require("./utils").findClaudeBinary();
+  return utils.findClaudeBinary();
 }
 
-// Look these up fresh on every call rather than caching the function
-// reference at module scope — node's `require` itself caches the
-// module, and the freshness lets tests patch `utils.findCodexBinary`
-// at runtime without also having to invalidate a private factory
-// cache. The lookup cost is one property access on a cached module.
 function _detectCodexBinary() {
-  return require("./utils").findCodexBinary();
+  return utils.findCodexBinary();
 }
 
 function _detectGeminiBinary() {
-  return require("./utils").findGeminiBinary();
+  return utils.findGeminiBinary();
 }
 
 function _detectAntigravityBinary() {
-  return require("./utils").findAntigravityBinary();
+  return utils.findAntigravityBinary();
 }
 
 /**
@@ -574,12 +605,12 @@ function _detectAntigravityBinary() {
  *   apiKeySource: "settings" | "env" | null,
  * }}
  */
-function detectAvailable(plugin: any, options: Record<string, any> = {}) {
-  const settings = plugin.settings || {};
+function detectAvailable(plugin: FactoryPlugin, options: FactoryOptions = {}) {
+  const settings: FactorySettings = plugin.settings || {};
   const pathFor = _cliPathResolver(plugin, options);
   const cliPath = pathFor("claude-code");
   let apiKey = "";
-  let apiKeySource = null;
+  let apiKeySource: "settings" | "env" | null = null;
   if (settings.anthropicApiKey) {
     apiKey = settings.anthropicApiKey;
     apiKeySource = "settings";
@@ -589,7 +620,7 @@ function detectAvailable(plugin: any, options: Record<string, any> = {}) {
   }
 
   let openaiKey = "";
-  let openaiKeySource = null;
+  let openaiKeySource: "settings" | "env" | null = null;
   if (settings.openaiApiKey) {
     openaiKey = settings.openaiApiKey;
     openaiKeySource = "settings";
@@ -599,7 +630,7 @@ function detectAvailable(plugin: any, options: Record<string, any> = {}) {
   }
 
   let googleKey = "";
-  let googleKeySource = null;
+  let googleKeySource: "settings" | "env" | null = null;
   if (settings.googleApiKey) {
     googleKey = settings.googleApiKey;
     googleKeySource = "settings";
@@ -636,8 +667,8 @@ function detectAvailable(plugin: any, options: Record<string, any> = {}) {
  * Returns one of: "claude-code" | "anthropic-api" | "openai-api" | "google-api" | null.
  * Mirrors createProvider's selection logic exactly (any divergence = bug).
  */
-function getActiveProviderKind(plugin: any, options: Record<string, any> = {}): ProviderKind | null {
-  const settings = (plugin && plugin.settings) || {};
+function getActiveProviderKind(plugin: FactoryPlugin | null | undefined, options: FactoryOptions = {}): ProviderKind | null {
+  const settings: FactorySettings = (plugin && plugin.settings) || {};
   const preference = settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
   // Lazy: only the kind the preference names is resolved (each resolve may
   // probe `--version` on a validated binary).
@@ -662,6 +693,11 @@ function getActiveProviderKind(plugin: any, options: Record<string, any> = {}): 
   if (googleKey)  return "google-api";
   return null;
 }
+
+// protect's permission prompt names the active assistant ("Codex is asking …")
+// but can't import this module (factory → providers → protect would cycle), so
+// the factory registers the lookup when it loads.
+setActiveProviderKindResolver((plugin) => getActiveProviderKind(plugin as FactoryPlugin | null | undefined));
 
 export {
   createProvider, explainUnavailable, detectAvailable, getActiveProviderKind,

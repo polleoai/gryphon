@@ -9,7 +9,9 @@
  */
 
 class BudgetExceededError extends Error {
-  [key: string]: any;
+  declare budget: number;
+  declare spent: number;
+  declare lastTurnCost: number;
   constructor({ budget, spent, lastTurnCost }: { budget: number; spent: number; lastTurnCost: number }) {
     super(`Per-call budget exceeded: budget=$${budget.toFixed(2)}, spent=$${spent.toFixed(2)}`);
     this.name = "BudgetExceededError";

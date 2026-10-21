@@ -11,7 +11,15 @@
  * Source: Anthropic pricing page. Update registry.js when prices change.
  */
 
-const registry = require("../registry");
+import * as registry from "../registry";
+
+// Per-model USD-per-million-token rates (registry `pricing` shape).
+interface ModelPricing {
+  input: number;
+  output: number;
+  cached_input?: number;
+  [rate: string]: number | undefined;
+}
 
 // Guard against NaN / Infinity token counts from malformed usage objects.
 // `|| 0` passes NaN through as 0 only after the logical-OR coercion, which
@@ -25,12 +33,12 @@ function _finite(n: unknown): number {
 // Derive MODEL_PRICES object keyed by model id (back-compat shape).
 // Includes `_default` fallback for unknown model ids — uses Sonnet
 // (the mid-tier reference) so cost estimates are never wildly off.
-const MODEL_PRICES: Record<string, any> = (() => {
-  const out: Record<string, any> = {};
+const MODEL_PRICES: Record<string, ModelPricing> = (() => {
+  const out: Record<string, ModelPricing> = {};
   for (const m of registry.modelsByVendor("anthropic")) {
     out[m.id] = m.pricing;
   }
-  out._default = registry.VENDOR_FALLBACK_PRICING.anthropic;
+  out._default = registry.VENDOR_FALLBACK_PRICING.anthropic as ModelPricing;
   return out;
 })();
 
@@ -41,7 +49,7 @@ const MODEL_PRICES: Record<string, any> = (() => {
 const MODEL_ALIAS: Record<string, string> = (() => {
   const out: Record<string, string> = {};
   for (const [alias, perVendor] of Object.entries(registry.CROSS_VENDOR_ALIASES)) {
-    const pv = perVendor as Record<string, string>;
+    const pv = perVendor;
     if (pv.anthropic) out[alias] = pv.anthropic;
   }
   for (const m of registry.modelsByVendor("anthropic")) {
@@ -57,7 +65,7 @@ const MODEL_ALIAS: Record<string, string> = (() => {
   return out;
 })();
 
-const DEFAULT_MODEL = registry.defaultModelFor("anthropic");
+const DEFAULT_MODEL = registry.defaultModelFor("anthropic") as string;
 
 /**
  * Resolve an alias or concrete model id to a concrete model id for this vendor.
@@ -80,7 +88,7 @@ function resolveModel(alias: string | null | undefined): string {
  * Return the pricing object for a model id. Falls back to _default for
  * unknown ids (e.g. a future model id not yet in the registry).
  */
-function priceFor(modelId: string): Record<string, number> {
+function priceFor(modelId: string): ModelPricing {
   return MODEL_PRICES[modelId] || MODEL_PRICES._default;
 }
 
@@ -106,7 +114,7 @@ function computeCost(usage: Record<string, unknown> | null | undefined, modelId:
          (outputTokens / 1_000_000) * p.output;
 }
 
-module.exports = {
+export {
   MODEL_PRICES,
   MODEL_ALIAS,
   DEFAULT_MODEL,

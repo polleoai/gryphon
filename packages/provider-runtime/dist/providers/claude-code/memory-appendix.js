@@ -21,15 +21,48 @@
  * Pure apart from reading the named files: returns the text and the
  * problems; the provider writes the temp file and surfaces the problems.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LARGE_MEMORY_CHARS = exports.MAX_IMPORT_DEPTH = void 0;
 exports.buildMemoryAppendix = buildMemoryAppendix;
 exports.writeMemoryFile = writeMemoryFile;
 exports.findImports = findImports;
-const crypto = require("crypto");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const crypto = __importStar(require("crypto"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const path = __importStar(require("path"));
 const MAX_IMPORT_DEPTH = 5;
 exports.MAX_IMPORT_DEPTH = MAX_IMPORT_DEPTH;
 /**
@@ -87,7 +120,7 @@ function resolveWithin(root, abs) {
         try {
             st = fs.lstatSync(next);
         }
-        catch (_) {
+        catch {
             return { path: null };
         } // missing → plain "@word"
         if (!st.isSymbolicLink()) {
@@ -100,7 +133,7 @@ function resolveWithin(root, abs) {
         try {
             link = fs.readlinkSync(next);
         }
-        catch (_) {
+        catch {
             return { path: null };
         }
         // Order matters: `\\?\UNC\host` is network; `\\?\C:\...` is a local
@@ -164,7 +197,7 @@ function buildMemoryAppendix(files) {
             body = fs.readFileSync(real, "utf8");
         }
         catch (e) {
-            warnings.push(`couldn't read memory import ${real} (${(e && e.message) || e})`);
+            warnings.push(`couldn't read memory import ${real} (${((e && e.message) || e)})`);
             return;
         }
         parts.push(`<!-- memory: ${path.relative(root, real).split(path.sep).join("/")} -->\n${body}`);
@@ -194,7 +227,7 @@ function buildMemoryAppendix(files) {
                 if (!fs.statSync(targetReal).isFile())
                     continue;
             }
-            catch (_) {
+            catch {
                 continue;
             }
             if (!isUnder(targetReal, root)) {
@@ -231,7 +264,7 @@ function buildMemoryAppendix(files) {
             if (!fs.statSync(real).isFile())
                 throw new Error("not a file");
         }
-        catch (_) {
+        catch {
             missing.push(f);
             continue;
         }

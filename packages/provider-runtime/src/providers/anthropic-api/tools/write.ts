@@ -9,10 +9,23 @@
  * touches files outside the vault, even with bypassPermissions.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
-const { attackDetector } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as path from "path";
+import { resolveVaultPath, PathOutsideVaultError } from "@polleoai/gryphon-protect";
+import { attackDetector } from "@polleoai/gryphon-protect";
+
+interface WriteInput {
+  file_path?: unknown;
+  content?: unknown;
+}
+
+// Tool-loop context (vaultRoot plus whatever the permission gate reads).
+// A type alias (not an interface) so it satisfies the gate's
+// Record<string, unknown> ctx parameter.
+type WriteToolContext = {
+  vaultRoot: string;
+  [key: string]: unknown;
+};
 
 // On Linux/macOS, `O_NOFOLLOW` tells the kernel to refuse the open if the
 // final path component is a symlink — closing the last TOCTOU sliver where
@@ -46,7 +59,7 @@ const SCHEMA = {
 
 const MAX_PREVIEW_LINES = 30;
 
-async function execute(input: any, ctx: any) {
+async function execute(input: WriteInput, ctx: WriteToolContext) {
   const filePath = input.file_path;
   const content = input.content;
 
@@ -78,7 +91,7 @@ async function execute(input: any, ctx: any) {
     (content.split("\n").length > MAX_PREVIEW_LINES ? "\n…" : "");
 
   const classification = attackDetector.classify("Write", { file_path: filePath, content }, ctx);
-  const perm = await attackDetector.gate(classification, {
+  const perm = (await attackDetector.gate(classification, {
     ctx,
     action: exists ? "overwrite" : "create",
     target: filePath,
@@ -88,7 +101,7 @@ async function execute(input: any, ctx: any) {
             `\n--- preview (first ${MAX_PREVIEW_LINES} lines) ---\n` +
             previewText,
     kind: "fileEdit",
-  });
+  }));
 
   if (!perm.allow) return _error(perm.reason);
 
@@ -131,7 +144,7 @@ async function execute(input: any, ctx: any) {
     }
     return _error(`Failed to write file: ${(e as Error).message}`);
   } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best-effort close */ } }
   }
 
   return _ok(
@@ -139,11 +152,11 @@ async function execute(input: any, ctx: any) {
   );
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

@@ -19,9 +19,12 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 
-const net = require("net") as typeof import("net");
-const crypto = require("crypto") as typeof import("crypto");
-const fs = require("fs") as typeof import("fs");
+import * as net from "net";
+import * as crypto from "crypto";
+import * as fs from "fs";
+
+/** A parsed JSON object (the IPC reply / hook stdin document). */
+type JsonObject = Record<string, unknown>;
 
 const DEFAULT_TIMEOUT_MS = 30000;
 const SOCKET_ENV_VAR = "GRYPHON_PERMISSION_SOCKET";
@@ -47,7 +50,10 @@ const TRACE_ENV_VAR = "GRYPHON_HOOK_TRACE_FILE";
  * The `id` field is auto-assigned if the caller didn't supply one so
  * correlation is always possible when debugging.
  */
-async function sendToGryphon(request: any, options: any = {}) {
+async function sendToGryphon<T = JsonObject>(
+  request: JsonObject,
+  options: { timeoutMs?: number; socketPath?: string } = {},
+): Promise<T> {
   const timeoutMs = options.timeoutMs || DEFAULT_TIMEOUT_MS;
   const socketPath = options.socketPath || process.env[SOCKET_ENV_VAR];
 
@@ -57,22 +63,22 @@ async function sendToGryphon(request: any, options: any = {}) {
 
   const payload = Object.assign({ id: randomId() }, request);
 
-  return new Promise((resolve, reject) => {
+  return new Promise<T>((resolve, reject) => {
     const sock = net.createConnection(socketPath);
     let buffer = "";
     let settled = false;
 
-    const done = (err: any, value?: any) => {
+    const done = (err: Error | null, value?: T) => {
       if (settled) return;
       settled = true;
       clearTimeoutFn(timer);
-      try { sock.end(); } catch (_) { /* ignore */ }
+      try { sock.end(); } catch { /* ignore */ }
       if (err) reject(err);
-      else resolve(value);
+      else resolve(value as T);
     };
 
     const timer = setTimeoutFn(() => {
-      try { sock.destroy(); } catch (_) { /* ignore */ }
+      try { sock.destroy(); } catch { /* ignore */ }
       done(new Error("ipc-timeout"));
     }, timeoutMs);
 
@@ -89,8 +95,8 @@ async function sendToGryphon(request: any, options: any = {}) {
       const nl = buffer.indexOf("\n");
       if (nl >= 0) {
         const line = buffer.slice(0, nl);
-        try { done(null, JSON.parse(line)); }
-        catch (e) { done(e); }
+        try { done(null, JSON.parse(line) as T); }
+        catch (e) { done(e as Error); }
       }
     });
     sock.on("error", (e: Error) => done(e));
@@ -98,7 +104,7 @@ async function sendToGryphon(request: any, options: any = {}) {
       try {
         sock.write(JSON.stringify(payload) + "\n");
       } catch (e) {
-        done(e);
+        done(e as Error);
       }
     });
   });
@@ -115,26 +121,30 @@ async function emitEvent(type: string, fields: Record<string, unknown> = {}) {
       Object.assign({ req: "event", type }, fields),
       { timeoutMs: 5000 },
     );
-  } catch (_) { /* fire-and-forget */ }
+  } catch { /* fire-and-forget */ }
 }
 
 /**
  * Read all of stdin as a single JSON document. Hook scripts get their
  * input this way.
  */
-async function readStdinJson() {
-  return new Promise((resolve, reject) => {
+async function readStdinJson<T = JsonObject>(): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
     let buf = "";
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => { buf += chunk; });
+    // setEncoding("utf8") above: chunks arrive as strings.
+    process.stdin.on("data", (chunk: string) => { buf += chunk; });
     process.stdin.on("end", () => {
       const trimmed = buf.trim();
       if (!trimmed) {
-        resolve({});
+        resolve({} as T);
         return;
       }
-      try { resolve(JSON.parse(trimmed)); }
-      catch (e) { reject(e); }
+      try { resolve(JSON.parse(trimmed) as T); }
+      catch (e) {
+        const parseError = e as Error;  // JSON.parse throws SyntaxError
+        reject(parseError);
+      }
     });
     process.stdin.on("error", reject);
   });
@@ -151,7 +161,7 @@ async function readStdinJson() {
  *
  * No trailing newline — CC parses a raw JSON document, not NDJSON.
  */
-function writeStdoutJson(obj: any) {
+function writeStdoutJson(obj: unknown) {
   return new Promise<void>((resolve) => {
     process.stdout.write(JSON.stringify(obj || {}), () => resolve());
   });
@@ -203,10 +213,10 @@ function installHookDeadline({ deadlineMs, onTimeoutPayload, onCrashPayload }: {
     emitted = true;
     try {
       await writeStdoutJson(payload);
-    } catch (_) { /* stdout closed — nothing to do */ }
+    } catch { /* stdout closed — nothing to do */ }
     process.exit(0);
   }
-  const timer = setTimeoutFn(() => { emitAndExit(onTimeoutPayload); }, deadlineMs);
+  const timer = setTimeoutFn(() => { void emitAndExit(onTimeoutPayload); }, deadlineMs);
   // Don't keep the event loop alive just for this timer — the hook
   // exits as soon as main() finishes, deadline timer or not.
   timer.unref();
@@ -232,10 +242,10 @@ function traceHook(hookName: string, input: unknown) {
     hook: hookName,
     input: input || null,
   }) + "\n";
-  try { fs.appendFileSync(file, line); } catch (_) { /* best-effort */ }
+  try { fs.appendFileSync(file, line); } catch { /* best-effort */ }
 }
 
-module.exports = {
+export {
   sendToGryphon,
   emitEvent,
   readStdinJson,

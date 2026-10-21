@@ -1,6 +1,7 @@
 "use strict";
 // TypeScript module marker.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.launcherRefusalText = launcherRefusalText;
 // Short names: Windows only creates them for folders made after they're
 // turned on, so "turn them on" can't fix an existing folder — giving that
 // folder a short name (an administrator's `fsutil file setshortname`) can.
@@ -35,7 +36,7 @@ const RULES = [
 ];
 /** The cause and fix for a launcher refusal named in `reason`, or null. */
 function launcherRefusalText(reason) {
-    const r = String(reason || "");
+    const r = reason || "";
     const where = /non-ascii path without a short name: (vault and user folder|vault|user folder|node)/i.exec(r);
     if (where) {
         const folder = NON_ASCII_WHERE[where[1].toLowerCase()];
@@ -49,4 +50,3 @@ function launcherRefusalText(reason) {
             return text;
     return null;
 }
-module.exports = { launcherRefusalText };

@@ -13,12 +13,12 @@ executes tools *inside* the host claude subprocess and aggregates everything to 
 hands them back to you. It also runs claude clean-room: the caller's `systemPrompt` *replaces*
 the default (never appends), inherited MCP servers and user/project/local settings are
 skipped, and all built-in tools are denied — so the model only ever calls the tools you
-declared. No `@gryphon/protect` coupling (no Obsidian system prompt, no permission-IPC).
+declared. No `@polleoai/gryphon-protect` coupling (no Obsidian system prompt, no permission-IPC).
 
 ## API
 
 ```ts
-import { createPassiveSession } from "@gryphon/provider-runtime";
+import { createPassiveSession } from "@polleoai/gryphon-provider-runtime";
 
 const session = await createPassiveSession({
   kind: "claude-code",

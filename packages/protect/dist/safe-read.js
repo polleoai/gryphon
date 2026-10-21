@@ -1,6 +1,41 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.readRegularFile = readRegularFile;
+exports.clearNonFile = clearNonFile;
 /**
  * Issue #32 (re-review of 0fd38d0): read a Gryphon store file — the
  * security settings, the MCP approvals, or their trusted copies — only if
@@ -20,7 +55,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * descriptor, so the file can't be swapped between the check and the read.
  * Node builtins only: this module is bundled into the store-guard hook.
  */
-const fs = require("fs");
+const fs = __importStar(require("fs"));
 // EISDIR at open: Windows refuses to open a directory (POSIX opens it and
 // fstat says so below).
 const ABSENT_CODES = new Set(["ENOENT", "ENOTDIR", "ELOOP", "EISDIR"]);
@@ -56,7 +91,7 @@ function readRegularFile(file, opts = {}) {
         try {
             fs.closeSync(fd);
         }
-        catch (_) { /* already closed */ }
+        catch { /* already closed */ }
     }
 }
 /**
@@ -69,7 +104,7 @@ function clearNonFile(p) {
     try {
         st = fs.lstatSync(p);
     }
-    catch (_) {
+    catch {
         return;
     }
     if (st.isFile())
@@ -78,15 +113,14 @@ function clearNonFile(p) {
         fs.unlinkSync(p);
         return;
     }
-    catch (_) { /* a directory */ }
+    catch { /* a directory */ }
     try {
         fs.rmdirSync(p);
         return;
     }
-    catch (_) { /* not empty */ }
+    catch { /* not empty */ }
     try {
         fs.renameSync(p, `${p}.not-a-record-${process.pid}-${Date.now()}`);
     }
-    catch (_) { /* left; the write reports it */ }
+    catch { /* left; the write reports it */ }
 }
-module.exports = { readRegularFile, clearNonFile };

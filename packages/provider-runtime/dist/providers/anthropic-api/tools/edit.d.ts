@@ -14,6 +14,21 @@
  *
  * Permission-gated like Write.
  */
+interface EditInput {
+    file_path?: unknown;
+    old_string?: unknown;
+    new_string?: unknown;
+    replace_all?: unknown;
+}
+type EditToolContext = {
+    vaultRoot: string;
+    plugin?: {
+        settings?: {
+            maxReadFileSizeMb?: unknown;
+        };
+    } | null;
+    [key: string]: unknown;
+};
 declare const SCHEMA: {
     name: string;
     description: string;
@@ -40,10 +55,10 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<{
+declare function execute(input: EditInput, ctx: EditToolContext): Promise<{
     content: {
         type: string;
-        text: any;
+        text: string;
     }[];
     isError: boolean;
 }>;

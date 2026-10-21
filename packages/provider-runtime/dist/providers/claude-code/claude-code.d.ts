@@ -9,11 +9,145 @@
  * Extension point: `options.extraArgs` is appended to the CLI args so
  * callers can supply plugin-specific flags without modifying this module.
  */
+import type { ChildProcessWithoutNullStreams } from "child_process";
+import type { ClaudeCodeScopeOptions, McpApprovalsReader, ResolvedScope } from "./scope";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+    notify(message: string, opts?: {
+        level?: string;
+        timeoutMs?: number;
+    }): void;
+    /** Optional (issue #25): the host's own UX for unapproved vault MCP servers. */
+    mcpApprovalsPending?: (info: {
+        cwd: string;
+        vaultKey: string;
+        pending: ResolvedScope["pendingApprovals"];
+    }) => void;
+}
+/** The slice of the host plugin this provider reads. */
+interface ClaudeCodeHostPlugin {
+    ipcServer?: {
+        isListening(): boolean;
+        socketPath(): string;
+    } | null;
+    absolutePluginDir?: () => string;
+    settings?: {
+        devCliDebug?: boolean;
+    } | null;
+}
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+interface ClaudeCodeOptions {
+    model?: string | null;
+    effort?: string;
+    permissionMode?: string;
+    resumeSessionId?: string;
+    claudeCodeScope?: ClaudeCodeScopeOptions | null;
+    extraArgs?: string[];
+    compactionSummary?: unknown;
+    plugin?: ClaudeCodeHostPlugin | null;
+    security?: unknown;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride | null;
+    _mcpApprovals?: McpApprovalsReader | null;
+    _claudeUserConfigFile?: string;
+}
+/** Test-harness options-bag constructor form. */
+interface ClaudeCodeBag {
+    claudePath?: string;
+    cwd?: string;
+    config?: {
+        model?: string;
+    } | null;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride;
+}
+/** Launch context kept for _handleProcessError diagnostics. */
+interface SpawnDiagnostic {
+    windowsWrapped: boolean;
+    argCount: number;
+    firstFive: string[];
+    lastFive: string[];
+    resumeSessionId: string | null;
+    hookSettingsFile: string | null;
+}
+/** A content block inside an `assistant` stream-json event. */
+interface CcContentBlock {
+    type?: string;
+    text?: string;
+    name: string;
+    thinking?: unknown;
+}
+/** One parsed stream-json stdout event (only the fields read here). */
+interface CcStreamEvent {
+    type?: string;
+    subtype?: string;
+    /** Present on `system` init and `result` events. */
+    session_id: string;
+    model?: string;
+    mcp_servers?: unknown;
+    event?: {
+        type?: string;
+        index?: unknown;
+        content_block?: {
+            type?: string;
+        };
+        delta?: {
+            type?: string;
+            text?: string;
+            thinking?: unknown;
+        };
+    };
+    message?: {
+        content?: CcContentBlock[];
+        usage?: {
+            input_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+        };
+    };
+    name?: string;
+    total_cost_usd?: number;
+    result?: string;
+    /** Present on `result` events. */
+    duration_ms: number;
+}
 declare class ClaudeCodeProvider {
-    [key: string]: any;
-    constructor(claudePath: any, cwd: any, options?: Record<string, any>);
+    claudePath: string;
+    cwd: string;
+    options: ClaudeCodeOptions;
+    _spawnOverride: SpawnOverride | null;
+    hostAdapter: HostAdapterLike;
+    process: ChildProcessWithoutNullStreams | null;
+    alive: boolean;
+    sessionId: string | null;
+    resolvedModel: string | null;
+    buffer: string;
+    lastCumulativeCost: number;
+    contextTokens: number;
+    turnText: string;
+    turnThinking: string[];
+    _thinkingByIndex: Record<string, string>;
+    pendingResolve: ((result: Result) => void) | null;
+    pendingReject: ((reason?: unknown) => void) | null;
+    _stderrTail: string;
+    _lastSpawnError: Error | null;
+    onMessage: ((text: string, type: StreamMessageType) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: Result) => void) | null;
+    onSessionExpired?: () => void;
+    _hookSettingsFile?: string | null;
+    _mcpConfigFile?: string | null;
+    _memoryFile?: string | null;
+    _scopeMcpServerNames?: string[];
+    _mcpInitChecked?: boolean;
+    _lastSpawnDiagnostic?: SpawnDiagnostic;
+    _lastPrompt?: string;
+    _staleRecoveryFired?: boolean;
+    constructor(claudePath: string | ClaudeCodeBag, cwd?: string, options?: ClaudeCodeOptions);
     spawn(): void;
-    send(prompt: any, options: any): any;
+    send(prompt: string, options?: SendOptions): Promise<Result>;
     /**
      * Execute one prompt turn and return a Promise that resolves with the
      * result object {text, cost, cumulativeCost, sessionId, duration,
@@ -23,8 +157,8 @@ declare class ClaudeCodeProvider {
      * to the override function. Otherwise runs the real persistent-process
      * stdin write → stream-json event → result pipeline.
      */
-    _doOneTurn(prompt: any): any;
-    _writePrompt(prompt: any, onWriteError: any): void;
+    _doOneTurn(prompt: string): Promise<Result>;
+    _writePrompt(prompt: string, onWriteError: ((err: unknown) => void) | null): void;
     /**
      * CC prints "No conversation found with session ID: <uuid>" to stderr
      * when `--resume` points at a session that's no longer in its local
@@ -41,8 +175,8 @@ declare class ClaudeCodeProvider {
      * user rather than looping.
      */
     _handleStaleSession(): void;
-    _handleStdout(data: any): void;
-    _processEvent(raw: any): void;
+    _handleStdout(data: Buffer | string): void;
+    _processEvent(raw: CcStreamEvent): void;
     /**
      * Issue #25 (Design rev 2): the vault defines MCP servers nothing outside
      * the vault has approved, so they were left out of this launch. The host
@@ -50,7 +184,7 @@ declare class ClaudeCodeProvider {
      * optional `hostAdapter.mcpApprovalsPending`; a host without it still gets
      * a plain Notice, so a server never goes missing silently.
      */
-    _reportPendingMcpApprovals(scope: any): void;
+    _reportPendingMcpApprovals(scope: ResolvedScope): void;
     /**
      * Issue #25: tell the user when a server on Gryphon's MCP allowlist didn't
      * come up (e.g. the vault's `python3 -m <server>` errors at launch) — the
@@ -58,9 +192,9 @@ declare class ClaudeCodeProvider {
      * checked: under "inherit" the user's own servers are their business.
      * Once per spawn; "pending" is still connecting, not a failure.
      */
-    _checkScopedMcpServers(servers: any): void;
-    _handleStderr(data: any): void;
-    _handleClose(code: any): void;
+    _checkScopedMcpServers(servers: unknown): void;
+    _handleStderr(data: Buffer | string): void;
+    _handleClose(code: number | null): void;
     /**
      * Build a user-facing error message for an unexpected CLI exit.
      *
@@ -76,7 +210,7 @@ declare class ClaudeCodeProvider {
      * the exact error the CLI printed" — the user can match it against
      * their settings or paste it into a bug report.
      */
-    _formatCloseError(code: any): string;
+    _formatCloseError(code: number | null): string;
     /**
      * Replace paths / API-key fragments / vault root in stderr text
      * before it's surfaced to the user in an error message. Targets
@@ -84,8 +218,8 @@ declare class ClaudeCodeProvider {
      * panel; the error line shouldn't expose their username, home
      * directory, or any provider-key fragment that CC may have echoed.
      */
-    _redactStderrForDisplay(text: any): any;
-    _handleProcessError(err: any): void;
+    _redactStderrForDisplay(text: string): string;
+    _handleProcessError(err: NodeJS.ErrnoException): void;
     /**
      * Remove the per-spawn temp files (--settings and, issue #25,
      * --mcp-config). Best-effort: neither auto-loads anywhere (CC only sees
@@ -96,7 +230,7 @@ declare class ClaudeCodeProvider {
      */
     _cleanupSpawnFiles(): void;
     abort(): void;
-    isAlive(): any;
+    isAlive(): boolean;
     get costIsEstimate(): boolean;
 }
 export { ClaudeCodeProvider };

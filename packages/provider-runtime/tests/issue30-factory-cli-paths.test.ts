@@ -26,13 +26,13 @@ process.env.XDG_CONFIG_HOME = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir
 
 const utils = require("../src/utils");
 const factory = require("../src/factory");
-const { setMachineCliPath } = require("@gryphon/protect");
+const { setMachineCliPath } = require("@polleoai/gryphon-protect");
 
 const FINDERS = ["findClaudeBinary", "findCodexBinary", "findGeminiBinary", "findAntigravityBinary"];
 const orig: Record<string, any> = {};
-for (const f of FINDERS) orig[f] = utils[f];
-function stubDetect(map: Record<string, string | null>) { for (const f of FINDERS) utils[f] = () => (f in map ? map[f] : null); }
-function restoreDetect() { for (const f of FINDERS) utils[f] = orig[f]; }
+for (const f of FINDERS) orig[f] = utils.binaryFinders[f];
+function stubDetect(map: Record<string, string | null>) { for (const f of FINDERS) utils.binaryFinders[f] = () => (f in map ? map[f] : null); }
+function restoreDetect() { for (const f of FINDERS) utils.binaryFinders[f] = orig[f]; }
 
 function tmpDir(prefix: string): string { return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); }
 function fakeCli(dir: string, name: string, sentinel?: string): string {

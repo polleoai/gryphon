@@ -4,23 +4,25 @@
 //
 // See docs/superpowers/specs/2026-06-14-passive-backend-design.md.
 
-const path = require("path") as typeof import("path");
-const { ClaudePassiveSession } = require("./claude-passive-session") as typeof import("./claude-passive-session");
-const { createBridge } = require("./mcp-bridge") as typeof import("./mcp-bridge");
-const { buildMcpConfig, namespacedToolName } = require("./mcp-config-builder") as typeof import("./mcp-config-builder");
+import * as path from "path";
+import { ClaudePassiveSession } from "./claude-passive-session";
+import type { PassiveSessionInit } from "./claude-passive-session";
+import { createBridge } from "./mcp-bridge";
+import { buildMcpConfig, namespacedToolName } from "./mcp-config-builder";
+import type { DeclaredTool } from "./types";
 
-function validateDeclaredTools(tools: any): void {
+function validateDeclaredTools(tools: unknown): void {
   if (!Array.isArray(tools)) throw new Error("declaredTools must be an array");
-  for (const t of tools) {
+  for (const t of tools as Array<Partial<DeclaredTool> | null>) {
     if (!t || typeof t.name !== "string" || !t.name) throw new Error("each declaredTool needs a non-empty name");
     if (typeof t.description !== "string") throw new Error(`declaredTool ${t && t.name}: description must be a string`);
     if (!t.input_schema || typeof t.input_schema !== "object") throw new Error(`declaredTool ${t.name}: input_schema must be an object`);
   }
 }
 
-async function createPassiveSession(config: any): Promise<any> {
+async function createPassiveSession(config: PassiveSessionInit): Promise<ClaudePassiveSession> {
   if (!config || typeof config !== "object") throw new Error("config is required");
-  if (config.kind !== "claude-code") throw new Error(`unsupported kind: ${config.kind}`);
+  if (config.kind !== "claude-code") throw new Error(`unsupported kind: ${config.kind as string}`); // runtime value from an untyped caller
   if (!config.cwd || typeof config.cwd !== "string") throw new Error("cwd is required (explicit, never process.cwd())");
   if (!config.model || typeof config.model !== "string") throw new Error("model is required");
 
@@ -34,7 +36,7 @@ async function createPassiveSession(config: any): Promise<any> {
   let allowedTools = null;
   if (declared.length > 0) {
     bridge = config._bridgeOverride || bridge || (await createBridge());
-    allowedTools = declared.map((t: any) => namespacedToolName(t.name));
+    allowedTools = declared.map((t) => namespacedToolName(t.name));
     if (!mcpConfigPath && !config._spawnOverride) {
       const shimEntry = path.join(__dirname, "mcp-shim", "server.cjs");
       mcpConfigPath = buildMcpConfig(declared, { shimEntry, socketPath: bridge.socketPath }).jsonPath;
@@ -50,4 +52,4 @@ async function createPassiveSession(config: any): Promise<any> {
   });
 }
 
-module.exports = { createPassiveSession };
+export { createPassiveSession };

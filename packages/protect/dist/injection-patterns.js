@@ -1,6 +1,8 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCAN_MAX_BYTES = exports.INJECTION_PATTERNS = void 0;
+exports.scanForInjectionMarkers = scanForInjectionMarkers;
 /**
  * Injection-marker regex catalog (v0.6.0 Stage 5).
  *
@@ -66,7 +68,7 @@ const INJECTION_PATTERNS = [
     },
     {
         id: "ssh-key-read",
-        regex: /\b(cat|read|show)\s+[~\/]\S*\.ssh\/\S+/i,
+        regex: /\b(cat|read|show)\s+[~/]\S*\.ssh\/\S+/i,
         severity: "high",
     },
     {
@@ -97,10 +99,12 @@ const INJECTION_PATTERNS = [
         severity: "medium",
     },
 ];
+exports.INJECTION_PATTERNS = INJECTION_PATTERNS;
 // Scan budget — cap at ~256 KB to keep hook latency bounded even when
 // a Bash command produces megabytes of stdout. Measured in characters
 // (conservative proxy for UTF-8 bytes).
 const SCAN_MAX_BYTES = 256 * 1024;
+exports.SCAN_MAX_BYTES = SCAN_MAX_BYTES;
 /**
  * Scan a string for injection patterns. Returns an array of hit
  * descriptors (empty if none). Short-circuits after SCAN_MAX_BYTES of
@@ -134,8 +138,3 @@ function scanForInjectionMarkers(text) {
     }
     return hits;
 }
-module.exports = {
-    INJECTION_PATTERNS,
-    SCAN_MAX_BYTES,
-    scanForInjectionMarkers,
-};

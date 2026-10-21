@@ -16,8 +16,49 @@
  * v1.2 cost calculator bills cached tokens at the full input rate per
  * the design-spec decision (consistent with anthropic-api + openai-api).
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const registry = require("../registry");
+exports.DEFAULT_MODEL = exports.MODEL_ALIAS = exports.MODEL_PRICES = exports.ANTIGRAVITY_CLI_DEFAULT_MODEL = exports.ANTIGRAVITY_CLI_SUPPORTED_MODELS = void 0;
+exports.getAntigravityCliModelDropdownOptions = getAntigravityCliModelDropdownOptions;
+exports.coerceToAntigravityCliModel = coerceToAntigravityCliModel;
+exports.resolveModel = resolveModel;
+exports.coerceToVendorModel = coerceToVendorModel;
+exports.priceFor = priceFor;
+exports.computeCost = computeCost;
+exports.getModelDropdownOptions = getModelDropdownOptions;
+const registry = __importStar(require("../registry"));
 // Guard against NaN / Infinity token counts (see anthropic.js for rationale).
 function _finite(n) {
     return (typeof n === "number" && Number.isFinite(n)) ? n : 0;
@@ -31,6 +72,7 @@ const MODEL_PRICES = (() => {
     out._default = registry.VENDOR_FALLBACK_PRICING.google;
     return out;
 })();
+exports.MODEL_PRICES = MODEL_PRICES;
 // Derive cross-vendor + native-passthrough alias map.
 // Cross-vendor: haiku/sonnet/opus/opus[1m] → concrete Google ids.
 // Native passthrough: concrete id → itself (so resolveModel is a no-op
@@ -52,7 +94,9 @@ const MODEL_ALIAS = (() => {
     }
     return out;
 })();
+exports.MODEL_ALIAS = MODEL_ALIAS;
 const DEFAULT_MODEL = registry.defaultModelFor("google");
+exports.DEFAULT_MODEL = DEFAULT_MODEL;
 /**
  * Resolve an alias or concrete model id to a concrete model id for this vendor.
  *
@@ -131,7 +175,9 @@ function getModelDropdownOptions() {
 // `antigravityCliSupported`). The antigravity-cli provider reuses this
 // vendor's dropdown; this is its filter, mirroring Codex's in pricing/openai.
 const ANTIGRAVITY_CLI_SUPPORTED_MODELS = registry.antigravityCliSupportedModels();
+exports.ANTIGRAVITY_CLI_SUPPORTED_MODELS = ANTIGRAVITY_CLI_SUPPORTED_MODELS;
 const ANTIGRAVITY_CLI_DEFAULT_MODEL = DEFAULT_MODEL;
+exports.ANTIGRAVITY_CLI_DEFAULT_MODEL = ANTIGRAVITY_CLI_DEFAULT_MODEL;
 function getAntigravityCliModelDropdownOptions() {
     return getModelDropdownOptions().filter((opt) => ANTIGRAVITY_CLI_SUPPORTED_MODELS.has(opt.id));
 }
@@ -149,17 +195,3 @@ function coerceToAntigravityCliModel(alias) {
         return ANTIGRAVITY_CLI_DEFAULT_MODEL;
     return resolved;
 }
-module.exports = {
-    ANTIGRAVITY_CLI_SUPPORTED_MODELS,
-    ANTIGRAVITY_CLI_DEFAULT_MODEL,
-    getAntigravityCliModelDropdownOptions,
-    coerceToAntigravityCliModel,
-    MODEL_PRICES,
-    MODEL_ALIAS,
-    DEFAULT_MODEL,
-    resolveModel,
-    coerceToVendorModel,
-    priceFor,
-    computeCost,
-    getModelDropdownOptions,
-};

@@ -17,16 +17,54 @@
  * that file when Anthropic's pricing changes, and run
  * `scripts/probe-model.sh anthropic <id>` for any newly-added model id.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.resolveModel = exports.AnthropicAPIProvider = void 0;
 exports.testApiKey = testApiKey;
-const Anthropic = require("@anthropic-ai/sdk").default;
-const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop");
-const { getToolSchemas } = require("./tools/tool-registry");
-// Pricing + alias resolution lives in @gryphon/provider-config (v2.2).
+const tool_loop_1 = require("./tool-loop");
+const tool_registry_1 = require("./tools/tool-registry");
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+const host_adapter_1 = require("../../host-adapter");
+let _sdk = null;
+async function loadSdk() {
+    return (_sdk ??= await Promise.resolve().then(() => __importStar(require("@anthropic-ai/sdk"))));
+}
+// Pricing + alias resolution lives in @polleoai/gryphon-provider-config (v2.2).
 // We import the helpers and re-export the names this module's consumers
 // rely on (notably `resolveModel`, which the factory imports).
-const { MODEL_PRICES, MODEL_ALIAS, DEFAULT_MODEL, resolveModel, priceFor, computeCost, } = require("@gryphon/provider-config").pricing.anthropic;
+const { resolveModel, computeCost, } = gryphon_provider_config_1.pricing.anthropic;
 exports.resolveModel = resolveModel;
 class AnthropicAPIProvider {
     constructor(apiKey, cwd, options = {}) {
@@ -37,25 +75,10 @@ class AnthropicAPIProvider {
         this.cwd = cwd; // unused in Phase 2 — relevant once tools land
         this.options = options;
         this.hostAdapter = options.hostAdapter ||
-            new (require("../../host-adapter").HeadlessHostAdapter)();
-        // dangerouslyAllowBrowser: required because Obsidian's renderer process
-        // exposes the `window` global, which the SDK treats as "browser-like"
-        // and refuses by default. The SDK's threat model (API key leaking via
-        // XSS or devtools shipped to end users) doesn't apply to Obsidian
-        // plugins — the key lives in plugin data.json on the user's own disk
-        // and is never sent anywhere except Anthropic's API.
-        //
-        // maxRetries: the SDK automatically retries on 408/409/429/>=500 with
-        // exponential backoff (respecting Retry-After headers). Default is 2;
-        // we raise to 3 so transient rate-limits during a long agentic turn
-        // don't surface to the user as hard errors. A full tool-use loop can
-        // issue ~10-25 API calls and rate-limits hit more often than single-
-        // shot chats, so the extra retry buys real reliability.
-        this.client = new Anthropic({
-            apiKey,
-            dangerouslyAllowBrowser: true,
-            maxRetries: 3,
-        });
+            new host_adapter_1.HeadlessHostAdapter();
+        // Test seam: callers may inject a client. Otherwise the real SDK client
+        // is built on first use by `_ensureClient()` (the SDK loads lazily).
+        this.client = options.client || null;
         // Seed from persisted history if the caller (chat-view after reload)
         // supplies it. Defensive copy — provider mutates history in place and
         // shouldn't leak those mutations back to the caller's array.
@@ -83,6 +106,37 @@ class AnthropicAPIProvider {
     }
     isAlive() { return !this.destroyed; }
     /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    async _ensureClient() {
+        if (this.client)
+            return this.client;
+        const Anthropic = (await loadSdk()).default;
+        // A concurrent first call may have built one while we awaited.
+        if (this.client)
+            return this.client;
+        // dangerouslyAllowBrowser: required because Obsidian's renderer process
+        // exposes the `window` global, which the SDK treats as "browser-like"
+        // and refuses by default. The SDK's threat model (API key leaking via
+        // XSS or devtools shipped to end users) doesn't apply to Obsidian
+        // plugins — the key lives in plugin data.json on the user's own disk
+        // and is never sent anywhere except Anthropic's API.
+        //
+        // maxRetries: the SDK automatically retries on 408/409/429/>=500 with
+        // exponential backoff (respecting Retry-After headers). Default is 2;
+        // we raise to 3 so transient rate-limits during a long agentic turn
+        // don't surface to the user as hard errors. A full tool-use loop can
+        // issue ~10-25 API calls and rate-limits hit more often than single-
+        // shot chats, so the extra retry buys real reliability.
+        this.client = new Anthropic({
+            apiKey: this.apiKey,
+            dangerouslyAllowBrowser: true,
+            maxRetries: 3,
+        });
+        return this.client;
+    }
+    /**
      * Build the request body for `messages.countTokens` — authoritative
      * pre-send count of input tokens for the NEXT turn if it were sent
      * with `prospectiveInput` as the user message.
@@ -109,10 +163,10 @@ class AnthropicAPIProvider {
             ...this.history,
             { role: "user", content: text },
         ];
-        const tools = getToolSchemas({ allowWrite: true, allowWeb: true, allowBash: true });
+        const tools = (0, tool_registry_1.getToolSchemas)({ allowWrite: true, allowWeb: true, allowBash: true });
         const body = {
             model: this.resolvedModel,
-            system: GRYPHON_SDK_SYSTEM_PROMPT,
+            system: tool_loop_1.GRYPHON_SDK_SYSTEM_PROMPT,
             messages,
         };
         if (tools.length > 0)
@@ -145,13 +199,14 @@ class AnthropicAPIProvider {
         }
         try {
             const body = this._buildCountTokensRequest(prospectiveInput);
-            const result = await this.client.messages.countTokens(body);
+            const client = await this._ensureClient();
+            const result = await client.messages.countTokens(body);
             const tokens = (result && typeof result.input_tokens === "number")
                 ? result.input_tokens : null;
             this._countTokensCache = { key: cacheKey, value: tokens };
             return tokens;
         }
-        catch (_) {
+        catch {
             // Caller's fallback path uses the heuristic estimator. Don't
             // surface the error — countTokens failing shouldn't block typing.
             this._countTokensCache = { key: cacheKey, value: null };
@@ -159,7 +214,7 @@ class AnthropicAPIProvider {
         }
     }
     // Anthropic API mode: cost is computed locally from token usage × pricing
-    // imported from @gryphon/provider-config.pricing.anthropic (derived from
+    // imported from @polleoai/gryphon-provider-config.pricing.anthropic (derived from
     // the canonical registry). Prices may drift between Gryphon releases, and
     // cache discounts are estimated (we assume 5-min ephemeral cache: 1.25×
     // write, 0.10× read). UI labels SDK costs as "(est.)" so users know to
@@ -170,7 +225,7 @@ class AnthropicAPIProvider {
             try {
                 this.activeStream.abort();
             }
-            catch { }
+            catch { /* stream already settled */ }
             this.activeStream = null;
         }
         this.pending = false;
@@ -237,8 +292,9 @@ class AnthropicAPIProvider {
             ctx.toolChoice = { type: "tool", name: options.structuredOutput.name };
         }
         try {
-            const { turnText, finalMessage, totalUsage, peakUsage, thinkingBlocks } = await runToolLoop({
-                client: this.client,
+            const client = await this._ensureClient();
+            const { turnText, finalMessage, totalUsage, peakUsage, thinkingBlocks } = await (0, tool_loop_1.runToolLoop)({
+                client,
                 model: this.resolvedModel,
                 history: this.history,
                 ctx,
@@ -279,7 +335,10 @@ class AnthropicAPIProvider {
                     if (typeof c === "string")
                         return c.includes(_GRYPHON_DENY_MARKER);
                     if (Array.isArray(c)) {
-                        return c.some((sub) => sub && typeof sub.text === "string" && sub.text.includes(_GRYPHON_DENY_MARKER));
+                        return c.some((sub) => {
+                            const subText = sub && sub.text;
+                            return typeof subText === "string" && subText.includes(_GRYPHON_DENY_MARKER);
+                        });
                     }
                     return false;
                 });
@@ -323,7 +382,8 @@ class AnthropicAPIProvider {
             // block's `input` is already-parsed JSON — assign it to result.json
             // and serialize result.text for consumer consistency.
             if (ctx.coercionTool && finalMessage && Array.isArray(finalMessage.content)) {
-                const coercionBlock = finalMessage.content.find((b) => b && b.type === "tool_use" && b.name === ctx.coercionTool.name);
+                const coercionName = ctx.coercionTool.name;
+                const coercionBlock = finalMessage.content.find((b) => !!b && b.type === "tool_use" && b.name === coercionName);
                 if (coercionBlock) {
                     result.json = coercionBlock.input;
                     result.text = JSON.stringify(coercionBlock.input);
@@ -333,7 +393,7 @@ class AnthropicAPIProvider {
                     // without invoking the coercion tool — surface a clear error so
                     // callers get an actionable code rather than result.json === undefined.
                     const err = new Error(`structuredOutput: Anthropic returned stop_reason "${finalMessage.stop_reason}" ` +
-                        `without invoking the forced "${ctx.coercionTool.name}" tool — coercion failed.`);
+                        `without invoking the forced "${coercionName}" tool — coercion failed.`);
                     err.code = "STRUCTURED_OUTPUT_COERCION_FAILED";
                     throw err;
                 }
@@ -375,7 +435,9 @@ class AnthropicAPIProvider {
         return parts.join("");
     }
     _formatError(err) {
-        if (err instanceof Anthropic.APIError) {
+        // No SDK loaded → no SDK error can exist; skip the class checks.
+        const Anthropic = _sdk && _sdk.default;
+        if (Anthropic && err instanceof Anthropic.APIError) {
             if (err instanceof Anthropic.AuthenticationError) {
                 return "Invalid API key. Check Settings → Gryphon → Anthropic API key.";
             }
@@ -405,7 +467,9 @@ exports.AnthropicAPIProvider = AnthropicAPIProvider;
 async function testApiKey(apiKey) {
     if (!apiKey)
         return { ok: false, message: "No API key provided" };
+    let Anthropic = null;
     try {
+        Anthropic = (await loadSdk()).default;
         const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
         await client.messages.create({
             model: "claude-haiku-4-5",
@@ -415,10 +479,10 @@ async function testApiKey(apiKey) {
         return { ok: true, message: "Key works" };
     }
     catch (err) {
-        if (err instanceof Anthropic.AuthenticationError) {
+        if (Anthropic && err instanceof Anthropic.AuthenticationError) {
             return { ok: false, message: "Invalid API key" };
         }
-        if (err instanceof Anthropic.APIError) {
+        if (Anthropic && err instanceof Anthropic.APIError) {
             return { ok: false, message: `API error (${err.status || "?"}): ${err.message}` };
         }
         return { ok: false, message: String(err?.message || err) };

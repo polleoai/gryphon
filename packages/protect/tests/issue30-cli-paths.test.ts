@@ -48,11 +48,11 @@ function fakeCli(dir: string, name: string, version = "9.9.9", sentinel?: string
 
 const FINDERS = ["findClaudeBinary", "findCodexBinary", "findGeminiBinary", "findAntigravityBinary"];
 const orig: Record<string, any> = {};
-for (const f of FINDERS) orig[f] = utils[f];
+for (const f of FINDERS) orig[f] = utils.binaryFinders[f];
 function stubDetect(map: Record<string, string | null>) {
-  for (const f of FINDERS) utils[f] = () => (f in map ? map[f] : null);
+  for (const f of FINDERS) utils.binaryFinders[f] = () => (f in map ? map[f] : null);
 }
-function restoreDetect() { for (const f of FINDERS) utils[f] = orig[f]; }
+function restoreDetect() { for (const f of FINDERS) utils.binaryFinders[f] = orig[f]; }
 
 const KINDS: Array<[string, string, string, string]> = [
   // kind, key, finder, binary name
@@ -64,7 +64,7 @@ const KINDS: Array<[string, string, string, string]> = [
 
 // ── exports ────────────────────────────────────────────────────────────
 
-test("#30: @gryphon/protect exports the CLI-path API", () => {
+test("#30: @polleoai/gryphon-protect exports the CLI-path API", () => {
   for (const k of ["resolveCliPath", "setMachineCliPath", "CliPathRejectedError", "EXECUTABLE_KEYS"]) {
     assert.ok(protect[k], `missing export ${k}`);
   }

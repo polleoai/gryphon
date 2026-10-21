@@ -1,4 +1,7 @@
 "use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.SCHEMA = void 0;
+exports.execute = execute;
 /**
  * WebSearch tool — search the web via Brave Search API.
  *
@@ -14,9 +17,7 @@
  *
  * Permission: read-only network. Refused only in plan mode.
  */
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.SCHEMA = void 0;
-exports.execute = execute;
+const host_response_1 = require("../../../host-response");
 // These run in both the Obsidian renderer and headless Node paths (CLI probes,
 // passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
 // the ambient timer global to a module-local. obsidianmd/prefer-window-timers
@@ -44,15 +45,11 @@ const SCHEMA = {
     },
 };
 exports.SCHEMA = SCHEMA;
-// Network requests are routed through ctx.hostAdapter.fetch() (same
-// reasoning as web-fetch.js — requestUrl in Obsidian, globalThis.fetch
-// in headless). The module-level lazy require is gone; the adapter is
-// injected at execute() time via ctx.
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const REQUEST_TIMEOUT_MS = 15_000;
 async function execute(input, ctx) {
     const query = input.query;
-    const maxResults = Math.min(20, Math.max(1, parseInt(input.max_results || 10, 10)));
+    const maxResults = Math.min(20, Math.max(1, parseInt(String(input.max_results || 10), 10)));
     if (typeof query !== "string" || !query.trim()) {
         return _error("Missing or empty parameter: query");
     }
@@ -105,21 +102,13 @@ async function execute(input, ctx) {
     if (response.status < 200 || response.status >= 300) {
         return _error(`Brave Search returned HTTP ${response.status}`);
     }
-    // requestUrl provides `.json` (parsed) and `.text` (raw) directly — no
-    // separate .json() / .text() calls needed (those are standard fetch).
-    let body = response.json;
-    if (!body && typeof response.text === "string") {
-        try {
-            body = JSON.parse(response.text);
-        }
-        catch (e) {
-            return _error(`Brave Search returned non-JSON response: ${e.message}`);
-        }
-    }
+    // requestUrl's `.json` / `.text` properties, or fetch-style methods.
+    const body = await (0, host_response_1.readJson)(response);
     if (!body || typeof body !== "object") {
         return _error("Brave Search returned empty or non-JSON response");
     }
-    const results = (body.web && body.web.results) || [];
+    const brave = body;
+    const results = (brave.web && brave.web.results) || [];
     if (results.length === 0) {
         return _ok(`No results for "${query}".`);
     }

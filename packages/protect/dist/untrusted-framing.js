@@ -1,6 +1,9 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.TOOL_LABELS = void 0;
+exports.buildFraming = buildFraming;
+exports.shouldFrame = shouldFrame;
 /**
  * Untrusted-content framing builder (v0.6.0 Stage 5).
  *
@@ -32,6 +35,7 @@ const TOOL_LABELS = {
     Glob: "a filename list (Glob)",
     Grep: "file contents matched by a search (Grep)",
 };
+exports.TOOL_LABELS = TOOL_LABELS;
 /**
  * Build the `additionalContext` framing string.
  *
@@ -128,8 +132,3 @@ function shouldFrame(tool) {
             return false; // Edit, Write, and any unknown tools
     }
 }
-module.exports = {
-    buildFraming,
-    shouldFrame,
-    TOOL_LABELS,
-};

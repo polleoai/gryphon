@@ -19,11 +19,21 @@
  * changes between review and click, the new spec simply isn't approved.
  */
 
-const path = require("path") as typeof import("path");
-const { mcpApprovals } = require("@gryphon/protect");
+import * as path from "path";
+import { mcpApprovals } from "@polleoai/gryphon-protect";
+import type { App, ButtonComponent, Setting as SettingType } from "obsidian";
+import { Notice, Modal, Setting } from "obsidian";
+import { warningButton, noticeWithElement } from "./obsidian-compat";
 
-interface PendingApproval { name: string; spec: any; specHash: string; reason: "new" | "changed" }
+interface PendingApproval { name: string; spec: unknown; specHash: string; reason: "new" | "changed" }
 interface PendingReport { cwd?: string; vaultKey: string; pending: PendingApproval[] }
+
+/** The slice of the plugin instance this module reads and writes. */
+interface ApprovalPluginHost {
+  app?: App;
+  mcpApprovalsGeneration?: number;
+  _mcpApprovalNoticesSeen?: Set<string>;
+}
 
 /**
  * Env keys that change WHAT runs rather than configure it (preloaded code,
@@ -59,9 +69,20 @@ const SOFT_CWD_WARNING = "This server starts with the vault as its working direc
 /** Vault-supplied text → safe to display (Cc / bidi chars escaped). */
 const _clean: (v: unknown) => string = mcpApprovals.displaySafe;
 
+/** Display text for a value read from a vault file: strings as-is, other
+ *  values as JSON (an object shows its content, not "[object Object]"). */
+function _displayText(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "bigint") return v.toString();
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (v === null) return "null";
+  if (v === undefined) return "undefined";
+  return JSON.stringify(v) ?? typeof v;
+}
+
 function _maskedPairs(obj: Record<string, unknown>, flagged: string[] | null): string {
   return Object.keys(obj).map((k) => {
-    const v = String(obj[k]);
+    const v = _displayText(obj[k]);
     if (flagged && EXEC_ENV_RE.test(k)) { flagged.push(k); return `⚠ ${k}=${v}`; }
     return SECRET_KEY_RE.test(k) && !VAR_REF_RE.test(v) ? `${k}=••••` : `${k}=${v}`;
   }).join(", ");
@@ -95,15 +116,15 @@ function _pointsIntoVault(token: unknown, vaultDir: string | null): boolean {
  * editing that code later does NOT invalidate the approval, which covers
  * the spec, not the files it points at. Every value is `_clean`ed.
  */
-function describeServer(spec: any, vaultDir: string | null = null): Array<[string, string]> {
-  const s = spec && typeof spec === "object" ? spec : {};
+function describeServer(spec: unknown, vaultDir: string | null = null): Array<[string, string]> {
+  const s = (spec && typeof spec === "object" ? spec : {}) as Record<string, unknown>;
   const rows: Array<[string, string]> = [];
   const warnings: string[] = [];
   const type = typeof s.type === "string" ? s.type : (typeof s.url === "string" ? "http" : "stdio");
   rows.push(["Type", type]);
   if (typeof s.command === "string") {
-    const args = Array.isArray(s.args) ? s.args : [];
-    rows.push(["Command", [s.command, ...args].map((a: unknown) => JSON.stringify(String(a))).join(" ")]);
+    const args: unknown[] = Array.isArray(s.args) ? (s.args as unknown[]) : [];
+    rows.push(["Command", [s.command, ...args].map((a: unknown) => JSON.stringify(_displayText(a))).join(" ")]);
     // The cwd is the vault unless the spec sets one outside it, and any
     // program may read config or code from its cwd — so a vault cwd is
     // always warned. The strong text goes to interpreters, package runners,
@@ -113,7 +134,7 @@ function describeServer(spec: any, vaultDir: string | null = null): Array<[strin
     // text. Matched on the program, not its flags, since flags cluster
     // (`-Im`, `-mpkg`) in too many forms.
     const cwdInVault = typeof s.cwd !== "string" || !_isAbsolute(s.cwd) || _pointsIntoVault(s.cwd, vaultDir);
-    const interp = String(s.command).replace(/\\/g, "/").split("/").pop()!.toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, "").replace(/[\d.]+t?$/, "");
+    const interp = String(s.command).replace(/\\/g, "/").split("/").pop().toLowerCase().replace(/\.(?:exe|cmd|bat|ps1)$/, "").replace(/[\d.]+t?$/, "");
     const plainBinaryOutside = _isAbsolute(String(s.command)) && !_pointsIntoVault(s.command, vaultDir) && !CWD_LOADING_RE.test(interp);
     if ([s.command, ...args].some((t) => _pointsIntoVault(t, vaultDir)) || (cwdInVault && (!plainBinaryOutside || args.includes("-m")))) {
       warnings.push(STRONG_CWD_WARNING);
@@ -123,13 +144,13 @@ function describeServer(spec: any, vaultDir: string | null = null): Array<[strin
   }
   if (typeof s.url === "string") rows.push(["URL", s.url]);
   if (typeof s.cwd === "string") rows.push(["Working directory", s.cwd]);
-  const env = s.env && typeof s.env === "object" && !Array.isArray(s.env) ? s.env : null;
+  const env = (s.env && typeof s.env === "object" && !Array.isArray(s.env) ? s.env : null) as Record<string, unknown> | null;
   if (env && Object.keys(env).length > 0) {
     const flagged: string[] = [];
     rows.push(["Environment", _maskedPairs(env, flagged)]);
     if (flagged.length > 0) warnings.push(`${flagged.join(", ")} changes what runs (shown in full above). Check ${flagged.length > 1 ? "them" : "it"} carefully.`);
   }
-  const headers = s.headers && typeof s.headers === "object" && !Array.isArray(s.headers) ? s.headers : null;
+  const headers = (s.headers && typeof s.headers === "object" && !Array.isArray(s.headers) ? s.headers : null) as Record<string, unknown> | null;
   if (headers && Object.keys(headers).length > 0) {
     rows.push(["Headers", _maskedPairs(headers, null)]);
   }
@@ -159,25 +180,23 @@ function takeUnannounced(seen: Set<string>, vaultKey: string, pending: PendingAp
   return fresh;
 }
 
-function _bumpGeneration(plugin: any) {
+function _bumpGeneration(plugin: ApprovalPluginHost) {
   plugin.mcpApprovalsGeneration = (plugin.mcpApprovalsGeneration || 0) + 1;
 }
 
 /** Host hook for the provider: Notice with a Review action. */
-function handlePendingApprovals(plugin: any, report: PendingReport) {
+function handlePendingApprovals(plugin: ApprovalPluginHost, report: PendingReport) {
   if (!report || !Array.isArray(report.pending) || report.pending.length === 0) return;
   if (!plugin._mcpApprovalNoticesSeen) plugin._mcpApprovalNoticesSeen = new Set();
   const fresh = takeUnannounced(plugin._mcpApprovalNoticesSeen, report.vaultKey, report.pending);
   if (fresh.length === 0) return;
-  const { Notice } = require("obsidian");
   const many = report.pending.length > 1;
   const names = report.pending.map((p) => (p.reason === "changed" ? `${_clean(p.name)} (changed)` : _clean(p.name))).join(", ");
-  const notice = new Notice(
+  const { notice, el } = noticeWithElement(
     `This vault defines MCP server${many ? "s" : ""} ${names} that ${many ? "haven't" : "hasn't"} been approved. ` +
     `${many ? "They" : "It"} won't run.`,
     20000,
   );
-  const el = notice && notice.noticeEl;
   if (el && typeof el.createEl === "function") {
     const btn = el.createEl("button", { text: "Review" });
     btn.addEventListener("click", (ev: Event) => {
@@ -188,8 +207,7 @@ function handlePendingApprovals(plugin: any, report: PendingReport) {
   }
 }
 
-function openReviewModal(plugin: any, report: PendingReport) {
-  const { Modal, Setting, Notice } = require("obsidian");
+function openReviewModal(plugin: ApprovalPluginHost, report: PendingReport) {
   const modal = new Modal(plugin.app);
   modal.titleEl.setText("Review vault MCP servers");
   const c = modal.contentEl;
@@ -217,7 +235,7 @@ function openReviewModal(plugin: any, report: PendingReport) {
       box.createEl("p", { text: `A server named "${name}" can't be approved. Rename it in the vault's .mcp.json to run it.` });
       continue;
     }
-    new Setting(box).addButton((btn: any) =>
+    new Setting(box).addButton((btn: ButtonComponent) =>
       btn.setButtonText("Approve").setCta().onClick(() => {
         try {
           mcpApprovals.approve(report.vaultKey, p.name, p.specHash);
@@ -230,14 +248,19 @@ function openReviewModal(plugin: any, report: PendingReport) {
       })
     );
   }
-  new Setting(c).addButton((btn: any) => btn.setButtonText("Not now").onClick(() => modal.close()));
+  new Setting(c).addButton((btn: ButtonComponent) => btn.setButtonText("Not now").onClick(() => modal.close()));
   modal.open();
 }
 
 /** Settings → Advanced: this vault's approvals, each with Revoke. */
-function renderApprovedServersSetting(plugin: any, panelEl: any, descToTooltip: (s: any, t: string) => any) {
-  const { Setting, Notice } = require("obsidian");
-  const basePath = plugin.app && plugin.app.vault && plugin.app.vault.adapter && plugin.app.vault.adapter.basePath;
+function renderApprovedServersSetting(
+  plugin: ApprovalPluginHost,
+  panelEl: HTMLElement,
+  descToTooltip: (s: SettingType, t: string) => unknown,
+) {
+  // `basePath` is the desktop FileSystemAdapter's field; Obsidian's typings omit it.
+  const adapter = (plugin.app && plugin.app.vault && plugin.app.vault.adapter) as { basePath?: string } | undefined;
+  const basePath = adapter && adapter.basePath;
   descToTooltip(
     new Setting(panelEl).setName("Approved vault MCP servers").setHeading(),
     "Claude Code mode only. MCP servers defined in this vault's .mcp.json run only after you " +
@@ -255,8 +278,8 @@ function renderApprovedServersSetting(plugin: any, panelEl: any, descToTooltip: 
   for (const e of entries) {
     const when = e.approvedAt ? e.approvedAt.slice(0, 10) : "unknown date";
     const row = new Setting(panelEl).setName(_clean(e.name)).setDesc(`Approved ${when}`);
-    row.addButton((btn: any) =>
-      btn.setButtonText("Revoke").setWarning().onClick(() => {
+    row.addButton((btn: ButtonComponent) =>
+      warningButton(btn.setButtonText("Revoke")).onClick(() => {
         try {
           mcpApprovals.revoke(vk, e.name);
           _bumpGeneration(plugin);
@@ -270,7 +293,7 @@ function renderApprovedServersSetting(plugin: any, panelEl: any, descToTooltip: 
   }
 }
 
-module.exports = {
+export {
   describeServer,
   takeUnannounced,
   handlePendingApprovals,

@@ -20,22 +20,19 @@
  * The translator deep-copies schema bodies so callers can mutate the
  * returned object without affecting the source registry.
  */
-declare function translateSchemaToGemini(schema: any): {
-    name: any;
-    description: any;
-    parameters: any;
-};
-declare function translateSchemasToGemini(schemas: any): {
-    functionDeclarations: {
-        name: any;
-        description: any;
-        parameters: any;
-    }[];
+interface GeminiFunctionDeclaration {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+}
+declare function translateSchemaToGemini(input: unknown): GeminiFunctionDeclaration;
+declare function translateSchemasToGemini(schemas: unknown): {
+    functionDeclarations: GeminiFunctionDeclaration[];
 };
 /**
  * Deep-copy a JSON-Schema-shaped object, removing `additionalProperties`
  * at every depth. Arrays + primitive values pass through unchanged
  * structurally; only object keys are filtered.
  */
-declare function stripAdditionalProperties(value: any): any;
+declare function stripAdditionalProperties(value: unknown): unknown;
 export { translateSchemaToGemini, translateSchemasToGemini, stripAdditionalProperties, };

@@ -20,20 +20,38 @@
  * so the caller's send() can roll back to a pre-turn checkpoint on thrown
  * error. Do not clone the array internally.
  */
+import type { Content, GenerateContentConfig, GenerateContentResponseUsageMetadata, GoogleGenAI } from "@google/genai";
+type GeminiStream = Awaited<ReturnType<GoogleGenAI["models"]["generateContentStream"]>>;
+type GeminiToolLoopContext = {
+    responseSchema?: GenerateContentConfig["responseSchema"];
+    maxUsdBudget?: number | null;
+    computeIterationCost?: ((usage: GenerateContentResponseUsageMetadata) => number) | null;
+    priorCumulativeCost?: number;
+    _loopCost?: number;
+    hostAdapter?: {
+        notify?: (message: string, opts: {
+            level: string;
+        }) => void;
+    } | null;
+    [key: string]: unknown;
+};
+interface GeminiToolLoopCallbacks {
+    onMessage?: (text: string, type: string) => void;
+    onTool?: (name: string) => void;
+    onError?: (text: string) => void;
+    onStream?: (stream: GeminiStream) => void;
+}
 declare const MAX_ITERATIONS = 25;
 declare function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }: {
-    client: any;
-    model: any;
-    systemPrompt: any;
-    history: any;
-    ctx: any;
-    callbacks: any;
+    client: GoogleGenAI;
+    model: string;
+    systemPrompt: string | null | undefined;
+    history: Content[];
+    ctx: GeminiToolLoopContext;
+    callbacks: GeminiToolLoopCallbacks;
 }): Promise<{
     turnText: string;
-    finalMessage: {
-        role: string;
-        parts: any[];
-    } | null;
+    finalMessage: Content | null;
     totalUsage: {
         promptTokenCount: number;
         candidatesTokenCount: number;
@@ -61,7 +79,10 @@ declare function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, 
  * the model reads as state rather than as a presentational tag.
  * User report 2026-05-04 (Windows VM, google-api).
  */
-declare function serializeToolResultAsGeminiResponse(result: any): {
+declare function serializeToolResultAsGeminiResponse(result: {
+    content?: unknown;
+    isError?: boolean;
+} | null | undefined): {
     result: string;
     success: boolean;
 };

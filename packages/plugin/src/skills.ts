@@ -12,12 +12,30 @@
  * See docs/gryphon-skills-design.md for the full design and file format.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { TFile, Notice } = require("obsidian");
-const { SLASH_COMMANDS, RESERVED_SKILL_NAMES } = require("./constants");
-const BUNDLED_SKILLS = require("./bundled-skills");
-const BUNDLED_DOCS = require("./bundled-docs");
+import * as fs from "fs";
+import * as path from "path";
+import { TFile, Notice } from "obsidian";
+import type { App, DataAdapter, EventRef, TAbstractFile, TFolder } from "obsidian";
+import { SLASH_COMMANDS, RESERVED_SKILL_NAMES } from "./constants";
+import BUNDLED_SKILLS from "./bundled-skills";
+import BUNDLED_DOCS from "./bundled-docs";
+
+interface SkillEntry {
+  name: string;
+  description: string;
+  argumentHint: string;
+  body: string;
+  path: string;
+}
+
+interface ParsedSkillFile {
+  frontmatter: Record<string, string>;
+  body: string;
+}
+
+// The desktop adapter (FileSystemAdapter) carries a `basePath` field that
+// Obsidian's public typings don't declare; mobile adapters lack it.
+type AdapterWithBasePath = DataAdapter & { basePath?: unknown };
 
 const GRYPHON_DIR = "Gryphon";
 const SKILLS_DIR = "Gryphon/Skills";
@@ -28,8 +46,8 @@ const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 // name conventions for cross-tool consistency.
 const SKILL_NAME_RE = /^[a-z][a-z0-9-]*$/;
 
-function parseFrontmatter(yaml) {
-  const out = {};
+function parseFrontmatter(yaml: string): Record<string, string> {
+  const out: Record<string, string> = {};
   for (const raw of yaml.split("\n")) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
@@ -46,7 +64,7 @@ function parseFrontmatter(yaml) {
   return out;
 }
 
-function parseSkillFile(text) {
+function parseSkillFile(text: string): ParsedSkillFile {
   const m = FRONTMATTER_RE.exec(text);
   if (!m) throw new Error("missing or malformed frontmatter block");
   const fm = parseFrontmatter(m[1]);
@@ -55,14 +73,14 @@ function parseSkillFile(text) {
 }
 
 class SkillRegistry {
-  app: any;
-  skills: Map<string, any>;
+  app: App;
+  skills: Map<string, SkillEntry>;
   errors: Map<string, string>;
-  eventRefs: any[];
-  _pendingLoads: Set<Promise<any>>;
+  eventRefs: EventRef[];
+  _pendingLoads: Set<Promise<void>>;
   _unloaded: boolean;
 
-  constructor(app: any) {
+  constructor(app: App) {
     this.app = app;
     this.skills = new Map();
     // Per-file load errors keyed by vault path. Surfaced via getErrors()
@@ -121,13 +139,13 @@ class SkillRegistry {
       .sort((a, b) => a.cmd.localeCompare(b.cmd));
   }
 
-  expand(name, args) {
+  expand(name: string, args?: string | null): string | null {
     const skill = this.skills.get(name);
     if (!skill) return null;
     return skill.body.replaceAll("{{args}}", args || "");
   }
 
-  has(name) { return this.skills.has(name); }
+  has(name: string): boolean { return this.skills.has(name); }
 
   async _ensureSkillsFolder() {
     const adapter = this.app.vault.adapter;
@@ -154,7 +172,7 @@ class SkillRegistry {
     }
   }
 
-  async _migrateLegacyHermesFolder(adapter) {
+  async _migrateLegacyHermesFolder(adapter: DataAdapter) {
     // One-time migration for users who installed this plugin under its
     // previous name "Hermes" (renamed to Gryphon at v1.0.0). If the
     // legacy "Hermes" folder exists and "Gryphon" doesn't, rename in
@@ -175,7 +193,7 @@ class SkillRegistry {
 
   async _scanAll() {
     this.skills.clear();
-    const folder = this.app.vault.getAbstractFileByPath(SKILLS_DIR);
+    const folder = this.app.vault.getAbstractFileByPath(SKILLS_DIR) as TFolder | null;
     if (!folder || !folder.children) return;
     for (const child of folder.children) {
       if (child instanceof TFile && child.extension === "md" &&
@@ -185,7 +203,7 @@ class SkillRegistry {
     }
   }
 
-  _loadFile(file) {
+  _loadFile(file: TFile): Promise<void> {
     // Wrap the real loader so unload() can await all in-flight loads.
     const p = this._doLoadFile(file).finally(() => {
       this._pendingLoads.delete(p);
@@ -194,7 +212,7 @@ class SkillRegistry {
     return p;
   }
 
-  async _doLoadFile(file) {
+  async _doLoadFile(file: TFile): Promise<void> {
     // Clear any prior error for this path so re-loads (modify event)
     // don't accumulate stale messages.
     this.errors.delete(file.path);
@@ -206,7 +224,8 @@ class SkillRegistry {
     // contents as a slash-command body (prompt-injection vector). Also
     // reject broken symlinks. Skipped on mobile/unusual adapters where
     // basePath isn't exposed.
-    const basePath = this.app.vault?.adapter?.basePath;
+    const adapter = this.app.vault?.adapter as AdapterWithBasePath | undefined;
+    const basePath = adapter?.basePath;
     if (typeof basePath === "string" && basePath.length > 0) {
       try {
         const absPath = path.join(basePath, file.path);
@@ -221,18 +240,18 @@ class SkillRegistry {
         }
       } catch (e) {
         this._recordError(file.path,
-          `Cannot resolve skill path (broken symlink or permission error): ${e.message}`);
+          `Cannot resolve skill path (broken symlink or permission error): ${(e as Error).message}`);
         return;
       }
     }
 
-    let parsed;
+    let parsed: ParsedSkillFile;
     try {
       const text = await this.app.vault.read(file);
       parsed = parseSkillFile(text);
     } catch (e) {
       this._recordError(file.path,
-        `Frontmatter parse failed: ${e.message}. ` +
+        `Frontmatter parse failed: ${(e as Error).message}. ` +
         `Skill files must start with a YAML block (--- ... ---) ` +
         `containing at least 'name' and 'description'.`);
       return;
@@ -278,18 +297,18 @@ class SkillRegistry {
     this.skills.set(name, { name, description, argumentHint, body, path: file.path });
   }
 
-  _recordError(filePath, message) {
+  _recordError(filePath: string, message: string) {
     this.errors.set(filePath, message);
     console.warn(`[gryphon] Skill ${filePath}: ${message}`);
   }
 
-  _isSkillFile(path) {
+  _isSkillFile(path: string): boolean {
     return path.startsWith(`${SKILLS_DIR}/`) &&
            path.endsWith(".md") &&
            !path.endsWith("/README.md");
   }
 
-  _removeByPath(path) {
+  _removeByPath(path: string) {
     // Clear any tracked error for this file too — if the user deletes a
     // broken skill file, the error shouldn't persist.
     this.errors.delete(path);
@@ -300,21 +319,21 @@ class SkillRegistry {
 
   _attachWatchers() {
     const vault = this.app.vault;
-    const onCreate = vault.on("create", (file) => {
+    const onCreate = vault.on("create", (file: TAbstractFile) => {
       if (file instanceof TFile && this._isSkillFile(file.path)) {
-        this._loadFile(file);
+        void this._loadFile(file);
       }
     });
-    const onModify = vault.on("modify", async (file) => {
+    const onModify = vault.on("modify", async (file: TAbstractFile) => {
       if (file instanceof TFile && this._isSkillFile(file.path)) {
         this._removeByPath(file.path);
         await this._loadFile(file);
       }
     });
-    const onDelete = vault.on("delete", (file) => {
+    const onDelete = vault.on("delete", (file: TAbstractFile) => {
       if (this._isSkillFile(file.path)) this._removeByPath(file.path);
     });
-    const onRename = vault.on("rename", async (file, oldPath) => {
+    const onRename = vault.on("rename", async (file: TAbstractFile, oldPath: string) => {
       if (this._isSkillFile(oldPath)) this._removeByPath(oldPath);
       if (file instanceof TFile && this._isSkillFile(file.path)) {
         await this._loadFile(file);
@@ -324,4 +343,4 @@ class SkillRegistry {
   }
 }
 
-module.exports = { SkillRegistry, parseSkillFile, SKILLS_DIR };
+export { SkillRegistry, parseSkillFile, SKILLS_DIR };

@@ -34,15 +34,30 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 
-const { spawn } = require("child_process") as typeof import("child_process");
-const { buildEnhancedPath } = require("../../utils");
-const { killProcessTree } = require("../../subprocess-registry");
+import { spawn } from "child_process";
+import type { SpawnOptionsWithStdioTuple, StdioNull, StdioPipe } from "child_process";
+import { buildEnhancedPath } from "../../utils";
+import { killProcessTree } from "../../subprocess-registry";
 
 const _LIVENESS_TIMEOUT_MS = 30000;
 const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
 
-function testCli(geminiPath: any) {
-  return new Promise((resolve) => {
+/** Result of a liveness probe: never throws, always settles. */
+interface CliTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/** One stream-json line (only the fields read here). */
+interface ProbeEvent {
+  type?: string;
+  role?: string;
+  content?: unknown;
+  delta?: unknown;
+}
+
+function testCli(geminiPath: unknown): Promise<CliTestResult> {
+  return new Promise<CliTestResult>((resolve) => {
     if (!geminiPath || typeof geminiPath !== "string") {
       resolve({ ok: false, message: "No Gemini CLI path configured." });
       return;
@@ -51,7 +66,7 @@ function testCli(geminiPath: any) {
     const isWindowsShim =
       process.platform === "win32" &&
       /\.(cmd|bat)$/i.test(geminiPath);
-    const opts: Record<string, any> = {
+    const opts: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe> = {
       env: { ...process.env, PATH: buildEnhancedPath() },
       // Close stdin so a CLI that misinterprets missing flags as
       // "wait for interactive input" fails fast instead of hanging.
@@ -85,19 +100,19 @@ function testCli(geminiPath: any) {
     // The liveness timer is also captured and cleared: unstored, it keeps the
     // event loop alive for its full duration after a fast probe, delaying exit of
     // the very script the gate runs.
-    let timer: any = null;
-    const finish = (result: any) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: CliTestResult) => {
       if (settled) return;
       settled = true;
-      if (timer) { try { clearTimeoutFn(timer); } catch {} timer = null; }
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
+      if (timer) { try { clearTimeoutFn(timer); } catch { /* best-effort */ } timer = null; }
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* already exited */ }
       resolve(result);
     };
 
-    proc.stdout.on("data", (d: any) => { out += d.toString(); });
-    proc.stderr.on("data", (d: any) => { err += d.toString(); });
-    proc.on("error", (e: any) => finish({ ok: false, message: `Spawn error: ${e.message}` }));
-    proc.on("close", (code: any) => {
+    proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { err += d.toString(); });
+    proc.on("error", (e: Error) => finish({ ok: false, message: `Spawn error: ${e.message}` }));
+    proc.on("close", (code: number | null) => {
       // Issue #19: this is the specific failure the old --version-only
       // check could never catch — surface it by name rather than the
       // generic "no output" message below.
@@ -139,8 +154,8 @@ function _extractAssistantText(stdout: string): string {
   let text = "";
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    let evt: any;
-    try { evt = JSON.parse(line); } catch { continue; }
+    let evt: ProbeEvent | null;
+    try { evt = JSON.parse(line) as ProbeEvent | null; } catch { continue; }
     if (evt && evt.type === "message" && evt.role === "assistant" && typeof evt.content === "string") {
       text = evt.delta ? text + evt.content : evt.content;
     }

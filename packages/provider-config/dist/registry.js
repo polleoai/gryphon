@@ -16,6 +16,20 @@
  * include the probe verdict.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.RETIRED_MODEL_MIGRATION = exports.LEGACY_ALIAS_MIGRATION = exports.CROSS_VENDOR_ALIASES = exports.VENDOR_FALLBACK_PRICING = exports.MODELS = void 0;
+exports.allModels = allModels;
+exports.modelsByVendor = modelsByVendor;
+exports.priceFor = priceFor;
+exports.aliasFor = aliasFor;
+exports.defaultModelFor = defaultModelFor;
+exports.dropdownFor = dropdownFor;
+exports.isKnownModel = isKnownModel;
+exports.contextTokensFor = contextTokensFor;
+exports.coldStartMsFor = coldStartMsFor;
+exports.legacyAliasMigrationFor = legacyAliasMigrationFor;
+exports.retiredModelSuccessor = retiredModelSuccessor;
+exports.codexCliSupportedModels = codexCliSupportedModels;
+exports.antigravityCliSupportedModels = antigravityCliSupportedModels;
 // Why concrete IDs (e.g. "claude-sonnet-4-6") instead of aliases ("sonnet")?
 //
 // The claude-code CLI's alias resolution depends on the installed CLI
@@ -230,6 +244,7 @@ const MODELS = [
     { id: "gemini-2.5-flash", vendor: "google", pricing: { input: 0.30, output: 2.50, cached_input: 0.03 } },
     { id: "gemini-2.5-flash-lite", vendor: "google", pricing: { input: 0.10, output: 0.40, cached_input: 0.01 } },
 ];
+exports.MODELS = MODELS;
 // Vendor-specific fallback pricing for unknown ids. Tracks each vendor's
 // default model, so an unrecognised id is estimated at the rate of the
 // model a user would most likely have picked instead.
@@ -238,6 +253,7 @@ const VENDOR_FALLBACK_PRICING = {
     openai: { input: 2.00, output: 10.00, cached_input: 0.10 },
     google: { input: 1.50, output: 7.50, cached_input: 0.15 },
 };
+exports.VENDOR_FALLBACK_PRICING = VENDOR_FALLBACK_PRICING;
 // Cross-vendor aliases — Anthropic-style names (haiku/sonnet/opus) map
 // to per-vendor counterparts so a user switching Provider keeps a
 // working model. `opus` on OpenAI stays on the balanced tier (gpt-6.1-sol,
@@ -249,6 +265,7 @@ const CROSS_VENDOR_ALIASES = {
     opus: { anthropic: "claude-opus-5-5", openai: "gpt-6.1-sol", google: "gemini-3.1-pro-preview" },
     "opus[1m]": { anthropic: "claude-opus-5-5", openai: "gpt-6.1-sol", google: "gemini-3.1-pro-preview" },
 };
+exports.CROSS_VENDOR_ALIASES = CROSS_VENDOR_ALIASES;
 // Legacy-alias migration: users whose persisted `settings.model` is one
 // of the old aliases get rewritten to the concrete ID at plugin load.
 // Keyed by vendor so other vendors can join later if they grow legacy
@@ -262,6 +279,7 @@ const LEGACY_ALIAS_MIGRATION = {
         "opus[1m]": "claude-opus-5-5",
     },
 };
+exports.LEGACY_ALIAS_MIGRATION = LEGACY_ALIAS_MIGRATION;
 // Retired-model migration: a persisted model id that is no longer in its
 // vendor's dropdown (hidden-but-served, or removed after a vendor
 // shutdown) is rewritten to its successor at plugin load. Flat, because
@@ -307,6 +325,7 @@ const RETIRED_MODEL_MIGRATION = {
     "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
     "gemini-2.5-flash-lite": "gemini-3.5-flash-lite",
 };
+exports.RETIRED_MODEL_MIGRATION = RETIRED_MODEL_MIGRATION;
 // ─────────────── freeze all data tables at module init ────────────────
 //
 // Prevents consumers from accidentally corrupting the in-process registry
@@ -420,25 +439,3 @@ function antigravityCliSupportedModels() {
 function codexCliSupportedModels() {
     return new Set(MODELS.filter((m) => m.vendor === "openai" && m.codexCliSupported).map((m) => m.id));
 }
-module.exports = {
-    // Data tables (exported for tests / advanced consumers)
-    MODELS,
-    VENDOR_FALLBACK_PRICING,
-    CROSS_VENDOR_ALIASES,
-    LEGACY_ALIAS_MIGRATION,
-    RETIRED_MODEL_MIGRATION,
-    // Lookup API
-    allModels,
-    modelsByVendor,
-    priceFor,
-    aliasFor,
-    defaultModelFor,
-    dropdownFor,
-    isKnownModel,
-    contextTokensFor,
-    coldStartMsFor,
-    legacyAliasMigrationFor,
-    retiredModelSuccessor,
-    codexCliSupportedModels,
-    antigravityCliSupportedModels,
-};

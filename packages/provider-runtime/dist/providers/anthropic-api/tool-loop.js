@@ -22,9 +22,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.GRYPHON_SDK_SYSTEM_PROMPT = exports.MAX_ITERATIONS = void 0;
 exports.runToolLoop = runToolLoop;
-const { getToolSchemas, executeTool } = require("./tools/tool-registry");
-const { untrustedFraming } = require("@gryphon/protect");
-const { shouldFrame, buildFraming } = untrustedFraming;
+const tool_registry_1 = require("./tools/tool-registry");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const budget_error_1 = require("../../budget-error");
+const { shouldFrame, buildFraming } = gryphon_protect_1.untrustedFraming;
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
 // System prompt sent with every SDK-mode request. Covers four observed
@@ -41,7 +42,6 @@ exports.MAX_ITERATIONS = MAX_ITERATIONS;
 // No mention of "Claude Code", "hooks", or "~/.claude" here — this is
 // the SDK path, so the CLI-specific vocabulary from
 // GRYPHON_SYSTEM_PROMPT_HINT (claude-code.js) doesn't apply.
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_SDK_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsidian plugin. The user's " +
     "own protected-pattern list inside Gryphon decides which file " +
     "paths and shell commands require approval or are refused. " +
@@ -75,7 +75,7 @@ const GRYPHON_SDK_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsid
 // the destructive sub-request — never even attempting the tool, so
 // Gryphon's permission gate never fires and the user sees no deny.
 // User report 2026-05-04 (Windows VM, openai-api mode).
-const GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
+const GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT_BASE + gryphon_protect_1.GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 exports.GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT;
 /**
  * @param {object} args
@@ -100,7 +100,7 @@ exports.GRYPHON_SDK_SYSTEM_PROMPT = GRYPHON_SDK_SYSTEM_PROMPT;
  *   from the caller and let the caller own all history mutations.
  */
 async function runToolLoop({ client, model, history, ctx, callbacks }) {
-    const tools = getToolSchemas({
+    const tools = (0, tool_registry_1.getToolSchemas)({
         allowWrite: true, // Phase 4: Write + Edit (gated per-tool by permissionMode)
         allowWeb: true, // Phase 5: WebFetch + WebSearch
         allowBash: true, // Phase 5: Bash (always prompts in default mode)
@@ -110,9 +110,9 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
     // it is invisible to executeTool() — the dispatch guard below uses this
     // to detect and skip it, treating its tool_use block as output only.
     const coercionToolName = ctx && ctx.coercionTool ? ctx.coercionTool.name : null;
-    const allTools = coercionToolName
+    const allTools = (coercionToolName
         ? [...tools, ctx.coercionTool]
-        : tools;
+        : tools);
     const totalUsage = {
         input_tokens: 0,
         output_tokens: 0,
@@ -221,14 +221,15 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
         // the consumer-supplied maxUsdBudget. SDK providers throw mid-loop;
         // CLI providers can only check post-turn (subprocess owns mid-stream).
         if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+            // The `as number` casts below are compile-time only: an undefined
+            // budget still compares false at runtime, exactly as before.
             const iterCost = ctx.computeIterationCost(u);
             if (!ctx._loopCost)
                 ctx._loopCost = 0;
             ctx._loopCost += iterCost;
             const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
             if (callCumulative >= ctx.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
-                throw new BudgetExceededError({
+                throw new budget_error_1.BudgetExceededError({
                     budget: ctx.maxUsdBudget,
                     spent: callCumulative,
                     lastTurnCost: iterCost,
@@ -264,23 +265,24 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
                 continue;
             if (callbacks.onTool)
                 callbacks.onTool(block.name);
-            const result = await executeTool(block.name, block.input, ctx);
+            const result = await (0, tool_registry_1.executeTool)(block.name, block.input, ctx);
             // Apply framing for tools that should be framed (WebFetch, WebSearch, etc.)
             let framedContent = result.content;
             if (!result.isError && shouldFrame(block.name)) {
                 // Extract source detail for the framing
+                const blockInput = block.input;
                 let sourceDetail;
-                if (block.name === "WebFetch" && block.input?.url) {
-                    sourceDetail = block.input.url;
+                if (block.name === "WebFetch" && blockInput?.url) {
+                    sourceDetail = blockInput.url;
                 }
-                else if (block.name === "WebSearch" && block.input?.query) {
-                    sourceDetail = block.input.query;
+                else if (block.name === "WebSearch" && blockInput?.query) {
+                    sourceDetail = blockInput.query;
                 }
-                else if (block.name === "Read" && block.input?.file_path) {
-                    sourceDetail = block.input.file_path;
+                else if (block.name === "Read" && blockInput?.file_path) {
+                    sourceDetail = blockInput.file_path;
                 }
-                else if (block.name === "Bash" && block.input?.command) {
-                    sourceDetail = block.input.command;
+                else if (block.name === "Bash" && blockInput?.command) {
+                    sourceDetail = blockInput.command;
                 }
                 // Build the framing text
                 const framing = buildFraming({

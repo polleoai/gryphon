@@ -1,12 +1,12 @@
-# @gryphon/protect
+# @polleoai/gryphon-protect
 
-`@gryphon/protect` is the security and permission-gate layer extracted from the
+`@polleoai/gryphon-protect` is the security and permission-gate layer extracted from the
 Gryphon Obsidian plugin per [ADR 0006][adr-0006]. Its scope is limited to two
 concerns: permission gating and command/attack classification. It does not
 contain an MCP client, an agentic orchestration loop, or any consumer domain
 logic (see [ADR 0007][adr-0007]). Two callers consume it today: the Gryphon
 plugin shell running inside Obsidian, and Peitho, a headless Node host that
-implements its own tool-use loop and asks `@gryphon/protect` for a
+implements its own tool-use loop and asks `@polleoai/gryphon-protect` for a
 `decide()` verdict on each action before executing it.
 
 ---
@@ -17,7 +17,7 @@ Existing Obsidian-side callers pass `plugin` and (optionally) `settings`.
 Nothing changes for this path.
 
 ```javascript
-const { createProtectionContext } = require("@gryphon/protect");
+const { createProtectionContext } = require("@polleoai/gryphon-protect");
 
 const ctx = createProtectionContext({
   plugin: this,            // Obsidian plugin instance
@@ -35,7 +35,7 @@ const ctx = createProtectionContext({
 Non-Obsidian callers omit `plugin` and pass a `config` object instead.
 
 ```javascript
-const { createProtectionContext } = require("@gryphon/protect");
+const { createProtectionContext } = require("@polleoai/gryphon-protect");
 
 const ctx = createProtectionContext({
   config: {
@@ -202,7 +202,7 @@ Nine keys can weaken protection (`WEAKENING_KEYS`): `protectedMode`,
 isn't one of them, because both of its values enforce.
 
 ```js
-const { securitySettings } = require("@gryphon/protect");
+const { securitySettings } = require("@polleoai/gryphon-protect");
 const scope = securitySettings.resolveSecurityScope({ app, hostPlugin }); // { vaultKey, hostId } | null
 const security = securitySettings.effectiveSecuritySettings(hostPlugin.settings, scope, overrides);
 createProtectionContext({ plugin, security });   // enforcement reads the snapshot
@@ -271,7 +271,7 @@ Exact record shapes and edge cases are covered by the S3 tests in
 ## Reference
 
 - **[ADR 0007 — scope: LLM and security only][adr-0007]** — what
-  `@gryphon/protect` does and deliberately does not do.
+  `@polleoai/gryphon-protect` does and deliberately does not do.
 - **[`docs/consumer-requirements.md`][consumer-req]** — full requirement
   IDs for the Peitho integration: S1 (callable `decide()` gate), S2 (policy
   primitives), S3 (audit sink — active), S4 (classifier), B4

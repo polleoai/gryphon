@@ -18,33 +18,140 @@
 const setTimeoutFn = setTimeout;
 
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const path = require("path") as typeof import("path");
-const { buildEnhancedPath, findNodeBinary, resolveCliBinary } = require("../../utils");
-const { buildDisallowedTools } = require("@gryphon/protect");
-const { winSpawn } = require("@gryphon/protect");
-const { mcpApprovals, buildApprovalsStoreDenyGlobs, securityInputsOf } = require("@gryphon/protect");
-const {
+import type { ChildProcessWithoutNullStreams } from "child_process";
+import { managedSpawn, killProcessTree } from "../../subprocess-registry";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import {
+  buildDisallowedTools,
+  winSpawn,
+  mcpApprovals,
+  buildApprovalsStoreDenyGlobs,
+  securityInputsOf,
+  // The system-prompt hints (anti-leak directives + fallback deny copy)
+  // were promoted to src/providers/shared/system-prompt-hints.js in
+  // v1.3 Stage 2.5 so Codex CLI (and future providers) reuse the same
+  // directives. See that file for the full rationale, the
+  // no-embedded-newlines constraint, and the history of the wording.
+  GRYPHON_SYSTEM_PROMPT_HINT,
+  GRYPHON_FALLBACK_DENY_HINT,
+} from "@polleoai/gryphon-protect";
+import {
   buildHookSettings,
   buildPermissionsOnlySettings,
   writeHookSettingsFile,
   HOOK_FILES,
-} = require("./hook-settings-builder") as typeof import("./hook-settings-builder");
-const { resolveClaudeCodeScope } = require("./scope") as typeof import("./scope");
-const { buildMemoryAppendix, writeMemoryFile } = require("./memory-appendix") as typeof import("./memory-appendix");
-const { writeMcpConfigFile } = require("../../passive/mcp-config-builder") as typeof import("../../passive/mcp-config-builder");
+} from "./hook-settings-builder";
+import { resolveClaudeCodeScope } from "./scope";
+import type { ClaudeCodeScopeOptions, McpApprovalsReader, ResolvedScope } from "./scope";
+import { buildMemoryAppendix, writeMemoryFile } from "./memory-appendix";
+import { writeMcpConfigFile } from "../../passive/mcp-config-builder";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
 
-// The system-prompt hints (anti-leak directives + fallback deny copy)
-// were promoted to src/providers/shared/system-prompt-hints.js in
-// v1.3 Stage 2.5 so Codex CLI (and future providers) reuse the same
-// directives. See that file for the full rationale, the
-// no-embedded-newlines constraint, and the history of the wording.
-const {
-  GRYPHON_SYSTEM_PROMPT_HINT,
-  GRYPHON_FALLBACK_DENY_HINT,
-} = require("@gryphon/protect");
+import { buildEnhancedPath, findNodeBinary, resolveCliBinary } from "../../utils";
+import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
+import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
+import { BudgetExceededError } from "../../budget-error";
+import { HeadlessHostAdapter } from "../../host-adapter";
+
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+  notify(message: string, opts?: { level?: string; timeoutMs?: number }): void;
+  /** Optional (issue #25): the host's own UX for unapproved vault MCP servers. */
+  mcpApprovalsPending?: (info: { cwd: string; vaultKey: string; pending: ResolvedScope["pendingApprovals"] }) => void;
+}
+
+/** The slice of the host plugin this provider reads. */
+interface ClaudeCodeHostPlugin {
+  ipcServer?: { isListening(): boolean; socketPath(): string } | null;
+  absolutePluginDir?: () => string;
+  settings?: { devCliDebug?: boolean } | null;
+}
+
+/** The plugin once the hook preflight has confirmed the IPC server + plugin dir. */
+type HookReadyPlugin = ClaudeCodeHostPlugin & {
+  ipcServer: { isListening(): boolean; socketPath(): string };
+  absolutePluginDir(): string;
+};
+
+/** The security snapshot securityInputsOf returns (only the keys read here). */
+interface SecurityInputs {
+  protectedMode?: boolean;
+  autoDenyProtected?: boolean;
+  [key: string]: unknown;
+}
+
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+
+interface ClaudeCodeOptions {
+  model?: string | null;
+  effort?: string;
+  permissionMode?: string;
+  resumeSessionId?: string;
+  claudeCodeScope?: ClaudeCodeScopeOptions | null;
+  extraArgs?: string[];
+  compactionSummary?: unknown;
+  plugin?: ClaudeCodeHostPlugin | null;
+  security?: unknown;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride | null;
+  _mcpApprovals?: McpApprovalsReader | null;
+  _claudeUserConfigFile?: string;
+}
+
+/** Test-harness options-bag constructor form. */
+interface ClaudeCodeBag {
+  claudePath?: string;
+  cwd?: string;
+  config?: { model?: string } | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride;
+}
+
+/** Launch context kept for _handleProcessError diagnostics. */
+interface SpawnDiagnostic {
+  windowsWrapped: boolean;
+  argCount: number;
+  firstFive: string[];
+  lastFive: string[];
+  resumeSessionId: string | null;
+  hookSettingsFile: string | null;
+}
+
+/** A content block inside an `assistant` stream-json event. */
+interface CcContentBlock {
+  type?: string;
+  text?: string;
+  name: string;
+  thinking?: unknown;
+}
+
+/** One parsed stream-json stdout event (only the fields read here). */
+interface CcStreamEvent {
+  type?: string;
+  subtype?: string;
+  /** Present on `system` init and `result` events. */
+  session_id: string;
+  model?: string;
+  mcp_servers?: unknown;
+  event?: {
+    type?: string;
+    index?: unknown;
+    content_block?: { type?: string };
+    delta?: { type?: string; text?: string; thinking?: unknown };
+  };
+  message?: {
+    content?: CcContentBlock[];
+    usage?: { input_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number };
+  };
+  name?: string;
+  total_cost_usd?: number;
+  result?: string;
+  /** Present on `result` events. */
+  duration_ms: number;
+}
 
 // UUID shape match — 8-4-4-4-12 hex groups separated by dashes,
 // case-insensitive. Intentionally LOOSER than strict RFC 4122 v4
@@ -63,13 +170,44 @@ const {
 // the expected flavor and tighten here with a matching comment in
 // the regex.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function _looksLikeUUID(value: any) {
+function _looksLikeUUID(value: unknown) {
   return typeof value === "string" && UUID_RE.test(value);
 }
 
 class ClaudeCodeProvider {
-  [key: string]: any;
-  constructor(claudePath: any, cwd: any, options: Record<string, any> = {}) {
+  declare claudePath: string;
+  declare cwd: string;
+  declare options: ClaudeCodeOptions;
+  declare _spawnOverride: SpawnOverride | null;
+  declare hostAdapter: HostAdapterLike;
+  declare process: ChildProcessWithoutNullStreams | null;
+  declare alive: boolean;
+  declare sessionId: string | null;
+  declare resolvedModel: string | null;
+  declare buffer: string;
+  declare lastCumulativeCost: number;
+  declare contextTokens: number;
+  declare turnText: string;
+  declare turnThinking: string[];
+  declare _thinkingByIndex: Record<string, string>;
+  declare pendingResolve: ((result: Result) => void) | null;
+  declare pendingReject: ((reason?: unknown) => void) | null;
+  declare _stderrTail: string;
+  declare _lastSpawnError: Error | null;
+  declare onMessage: ((text: string, type: StreamMessageType) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: Result) => void) | null;
+  declare onSessionExpired?: () => void;
+  declare _hookSettingsFile?: string | null;
+  declare _mcpConfigFile?: string | null;
+  declare _memoryFile?: string | null;
+  declare _scopeMcpServerNames?: string[];
+  declare _mcpInitChecked?: boolean;
+  declare _lastSpawnDiagnostic?: SpawnDiagnostic;
+  declare _lastPrompt?: string;
+  declare _staleRecoveryFired?: boolean;
+
+  constructor(claudePath: string | ClaudeCodeBag, cwd?: string, options: ClaudeCodeOptions = {}) {
     // Test-harness options-bag form: ClaudeCodeProvider({ config, hostAdapter,
     // _spawnOverride }) — no claudePath or cwd required. The _spawnOverride
     // function replaces the real CLI spawn for unit tests.
@@ -83,14 +221,16 @@ class ClaudeCodeProvider {
         _spawnOverride: bag._spawnOverride,
       };
     }
-    this.claudePath = claudePath;
-    this.cwd = cwd;
+    // Bag form is resolved above; any other object here is passed through
+    // untouched, as before (the assertions only narrow the static type).
+    this.claudePath = claudePath as string;
+    this.cwd = cwd as string;
     this.options = options;
     // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
     this.process = null;
     this.alive = false;
     this.sessionId = null;
@@ -232,7 +372,7 @@ class ClaudeCodeProvider {
         userConfigFile: this.options._claudeUserConfigFile,
       });
     } catch (e) {
-      const msg = (e && (e as Error).message) || String(e);
+      const msg = ((e as Error | null) && (e as Error).message) || String(e);
       console.error("[gryphon/claude-code] launch scope:", msg);
       this._lastSpawnError = new Error(`Gryphon: ${msg}`);
       return;
@@ -248,7 +388,7 @@ class ClaudeCodeProvider {
     //                      fallback. Hooks MUST be on in auto-deny too —
     //                      the deny-list globs are byte-exact and miss
     //                      Unicode-obfuscated shapes (fullwidth `ｒｍ`,
-    //                      zero-width-joined `r​m`). The hook's
+    //                      zero-width-joined `r<U+200B>m`). The hook's
     //                      classify() runs NFKC normalization which
     //                      catches those bypasses. See the auto-deny
     //                      short-circuit in _handleClassifyRequest that
@@ -267,7 +407,7 @@ class ClaudeCodeProvider {
     const hookNodePath = findNodeBinary();
     // Issue #29: the host's security snapshot for this spawn
     // (options.security) decides protection, not the vault's data.json.
-    const security = plugin ? securityInputsOf({ security: this.options.security, plugin }) : null;
+    const security = plugin ? securityInputsOf({ security: this.options.security, plugin }) as SecurityInputs : null;
     const protectedModeOn = !!security && security.protectedMode !== false;
     const autoDenyProtected = !!security && security.autoDenyProtected === true;
 
@@ -298,9 +438,12 @@ class ClaudeCodeProvider {
     // Round-6 F1: doing this in the other order risks a silent
     // protection gap — if enableHooks is true but writeHookSettingsFile
     // throws (EROFS, ENOSPC), we'd ship with neither hooks nor deny-list.
-    let hookSettingsFile = null;
-    let hookSocketPath = null;
+    let hookSettingsFile: string | null = null;
+    let hookSocketPath: string | null = null;
     if (enableHooks) {
+      // enableHooks implies the preflight above found the IPC server and
+      // plugin dir, so the narrower type is safe.
+      const hookPlugin = plugin as HookReadyPlugin;
       try {
         // Pre-flight: verify every hook script referenced in the
         // settings JSON actually exists on disk. If any is missing,
@@ -312,8 +455,8 @@ class ClaudeCodeProvider {
         // broke every hook; no modal, no trace log, no error). Fail
         // loudly at spawn time instead. Also covers the common
         // `ipc-client.js` library the hook scripts require.
-        const hookDir = path.join(plugin.absolutePluginDir(), "hooks");
-        const missing = [];
+        const hookDir = path.join(hookPlugin.absolutePluginDir(), "hooks");
+        const missing: string[] = [];
         for (const scriptName of Object.values(HOOK_FILES)) {
           const p = path.join(hookDir, String(scriptName));
           if (!fs.existsSync(p)) missing.push(p);
@@ -334,7 +477,7 @@ class ClaudeCodeProvider {
           //   Google Drive (file, not folder — safe to skip)
           let cloudHint = "";
           try {
-            const pluginDir = plugin.absolutePluginDir();
+            const pluginDir = hookPlugin.absolutePluginDir();
             if (!fs.existsSync(hookDir) && fs.existsSync(pluginDir)) {
               const siblings = fs.readdirSync(pluginDir);
               const conflictRe = [
@@ -343,7 +486,7 @@ class ClaudeCodeProvider {
                 /^hooks\.sync-conflict-/i,           // Syncthing
                 /^hooks\s+\(.*\)$/i,                 // Dropbox "(conflicted copy ...)"
               ];
-              const renamed = siblings.filter((name: any) =>
+              const renamed = siblings.filter((name: string) =>
                 name !== "hooks" && conflictRe.some((r) => r.test(name))
               );
               if (renamed.length > 0) {
@@ -359,7 +502,7 @@ class ClaudeCodeProvider {
                   `sync" section in Gryphon/MANUAL.md.`;
               }
             }
-          } catch (_) { /* readdir failed — skip hint, keep base message */ }
+          } catch { /* readdir failed — skip hint, keep base message */ }
           throw new Error(
             `Gryphon plugin helper files not found — the plugin directory ` +
             `is incomplete or mis-linked. Missing:\n  ${missing.join("\n  ")}` +
@@ -368,19 +511,19 @@ class ClaudeCodeProvider {
           );
         }
 
-        hookSocketPath = plugin.ipcServer.socketPath();
+        hookSocketPath = hookPlugin.ipcServer.socketPath();
         const settings = {
           ...buildHookSettings({
-            pluginDir: plugin.absolutePluginDir(),
+            pluginDir: hookPlugin.absolutePluginDir(),
             socketPath: hookSocketPath,
-            nodePath: hookNodePath,
+            nodePath: hookNodePath as string, // enableHooks ⇒ hasNodeBinary
           }),
           ...scope.settingsKeys,
         };
         hookSettingsFile = writeHookSettingsFile(settings);
         args.push("--settings", hookSettingsFile);
       } catch (e) {
-        const msg = (e && (e as Error).message) || String(e);
+        const msg = ((e as Error | null) && (e as Error).message) || String(e);
         console.error("[gryphon/cli] hook settings build failed; falling back to --disallowedTools:", msg);
         // Surface to the user via an Obsidian Notice so this class of
         // failure isn't just-a-console-line. Required for bug-report
@@ -392,7 +535,7 @@ class ClaudeCodeProvider {
           { level: "error", timeoutMs: 20000 },
         );
         if (hookSettingsFile && fs.existsSync(hookSettingsFile)) {
-          try { fs.unlinkSync(hookSettingsFile); } catch (_) { /* ignore */ }
+          try { fs.unlinkSync(hookSettingsFile); } catch { /* ignore */ }
         }
         hookSettingsFile = null;
         hookSocketPath = null;
@@ -425,7 +568,7 @@ class ClaudeCodeProvider {
     // That lied when denyGlobs ended up empty (user disabled all
     // defaults, or custom regexes produced no mappable globs). Compute
     // denyGlobs FIRST, then decide what the Notice should say.
-    let denyGlobs = [];
+    let denyGlobs: string[] = [];
     if (!hooksActive && protectedModeOn) {
       denyGlobs = security ? buildDisallowedTools(security) : [];
     }
@@ -466,7 +609,7 @@ class ClaudeCodeProvider {
           // — but with no Gryphon-enforced protection in Claude Code mode. Log
           // to Dev Tools so a user who reports "no approval modal
           // appeared" has a trail.
-          const msg = (e && (e as Error).message) || String(e);
+          const msg = ((e as Error | null) && (e as Error).message) || String(e);
           console.error("[gryphon/cli] fallback permissions file write failed:", msg);
           // In Auto-deny mode, a fallback-write failure here leaves the
           // session completely unprotected in CLI (no hooks, no deny-
@@ -502,7 +645,7 @@ class ClaudeCodeProvider {
         hookSettingsFile = writeHookSettingsFile({ ...own, ...scope.settingsKeys });
         args.push("--settings", hookSettingsFile);
       } catch (e) {
-        console.error("[gryphon/cli] scope settings file write failed:", (e && (e as Error).message) || String(e));
+        console.error("[gryphon/cli] scope settings file write failed:", ((e as Error | null) && (e as Error).message) || String(e));
       }
     }
     // Track for cleanup in _handleClose so we don't litter tmpdir.
@@ -526,7 +669,7 @@ class ClaudeCodeProvider {
         const personal = new Set(scope.personalMcpServerNames);
         this._scopeMcpServerNames = Object.keys(scope.mcpServers).filter((n) => !personal.has(n));
       } catch (e) {
-        scopeWarnings.push(`couldn't write the MCP server list (${(e && (e as Error).message) || String(e)})`);
+        scopeWarnings.push(`couldn't write the MCP server list (${((e as Error | null) && (e as Error).message) || String(e)})`);
       }
     }
     args.push(...scope.args);
@@ -568,7 +711,7 @@ class ClaudeCodeProvider {
           this._memoryFile = writeMemoryFile(mem.text);
           args.push("--append-system-prompt-file", this._memoryFile);
         } catch (e) {
-          const msg = (e && (e as Error).message) || String(e);
+          const msg = ((e as Error | null) && (e as Error).message) || String(e);
           console.error("[gryphon/claude-code] memory file write failed:", msg);
           this.hostAdapter.notify(
             `Gryphon: couldn't pass the consumer memory files to Claude Code (${msg}); their rules are NOT in effect this session.`,
@@ -610,7 +753,6 @@ class ClaudeCodeProvider {
     // so a multi-provider consumer can pass a shared extraArgs without
     // breaking spawns on the other CLIs.
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      const { filterExtraArgs } = require("@gryphon/provider-config");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "claude-code");
       if (dropped.length > 0) {
         // Round 4 review (SFH-1): use console.error not warn — DevTools
@@ -654,7 +796,9 @@ class ClaudeCodeProvider {
           console.error("[gryphon/cli] hook settings read-back failed:", e && (e as Error).message);
         }
       } else if (protectedModeOn) {
-        console.error("[gryphon/cli] hooks disabled — findNodeBinary:", hookNodePath, "pluginDir:", typeof plugin.absolutePluginDir === "function" ? plugin.absolutePluginDir() : null);
+        // protectedModeOn ⇒ a security snapshot ⇒ a plugin.
+        const p = plugin as ClaudeCodeHostPlugin;
+        console.error("[gryphon/cli] hooks disabled — findNodeBinary:", hookNodePath, "pluginDir:", typeof p.absolutePluginDir === "function" ? p.absolutePluginDir() : null);
       }
       // Always dump the per-component preflight so a "hooks silently
       // not firing" report is diagnosable from the log alone. Cheap —
@@ -663,7 +807,7 @@ class ClaudeCodeProvider {
       console.error("[gryphon/cli] launch scope:", JSON.stringify(scope.summary));
     }
 
-    const spawnEnv: Record<string, any> = { ...process.env, PATH: buildEnhancedPath() };
+    const spawnEnv: NodeJS.ProcessEnv = { ...process.env, PATH: buildEnhancedPath() };
     if (hookSocketPath) {
       spawnEnv.GRYPHON_PERMISSION_SOCKET = hookSocketPath;
     }
@@ -724,7 +868,8 @@ class ClaudeCodeProvider {
     // managedSpawn: detached process group on POSIX so killProcessTree can
     // reap the whole tree (claude + its MCP-server grandchildren), tracked
     // in the subprocess registry for guaranteed cleanup on unload / exit.
-    const proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "claude-code" });
+    // stdio is all "pipe", so the child's streams are non-null.
+    const proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "claude-code" }) as ChildProcessWithoutNullStreams;
     this.process = proc;
     this.alive = true;
     this.buffer = "";
@@ -737,13 +882,13 @@ class ClaudeCodeProvider {
     // bind a closed-over `proc` reference and only dispatch if it
     // still matches this.process.
     const forThisProcess = () => this.process === proc;
-    proc.stdout.on("data", (data: any) => { if (forThisProcess()) this._handleStdout(data); });
-    proc.stderr.on("data", (data: any) => { if (forThisProcess()) this._handleStderr(data); });
-    proc.on("close", (code: any) => { if (forThisProcess()) this._handleClose(code); });
-    proc.on("error", (err: any) => { if (forThisProcess()) this._handleProcessError(err); });
+    proc.stdout.on("data", (data: Buffer) => { if (forThisProcess()) this._handleStdout(data); });
+    proc.stderr.on("data", (data: Buffer) => { if (forThisProcess()) this._handleStderr(data); });
+    proc.on("close", (code: number | null) => { if (forThisProcess()) this._handleClose(code); });
+    proc.on("error", (err: Error) => { if (forThisProcess()) this._handleProcessError(err); });
   }
 
-  send(prompt: any, options: any) {
+  send(prompt: string, options?: SendOptions): Promise<Result> {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -754,7 +899,7 @@ class ClaudeCodeProvider {
     if (options && options.signal) {
       if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
       if (typeof options.signal.addEventListener === "function") {
-        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch { /* best-effort */ } }, { once: true });
       }
     }
     // L6.1 — structured-output retry budget for CLI providers.
@@ -763,11 +908,6 @@ class ClaudeCodeProvider {
     // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
     // path (no option) falls through to _doOneTurn unchanged.
     if (options && options.structuredOutput) {
-      const {
-        injectSchemaHint,
-        parseAndValidate,
-        CliStructuredOutputError,
-      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -777,8 +917,8 @@ class ClaudeCodeProvider {
       // ourselves on success with the enriched result (json + text).
       this.onDone = null;
 
-      const loop = async () => {
-        let lastError = null;
+      const loop = async (): Promise<Result> => {
+        let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
         // Snapshot before the retry loop: each failed attempt still costs
         // money; the per-call cap covers all attempts within this send().
         const priorCallCumulative = this.lastCumulativeCost;
@@ -795,14 +935,13 @@ class ClaudeCodeProvider {
             if (options && typeof options.maxUsdBudget === "number") {
               const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
               if (cumCost === null) {
-                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
                   `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
                   { level: "warn" },
                 );
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -811,7 +950,8 @@ class ClaudeCodeProvider {
               }
             }
             try {
-              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              // structuredOutput was checked truthy before the loop started.
+              const json = parseAndValidate(turnResult.text, (options.structuredOutput as NonNullable<SendOptions["structuredOutput"]>).schema);
               const result = { ...turnResult, json, text: JSON.stringify(json) };
               this.onDone = savedOnDone;
               if (this.onDone) this.onDone(result);
@@ -821,18 +961,18 @@ class ClaudeCodeProvider {
               lastError = e;
               try {
                 this.hostAdapter.notify(
-                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${(e as any).reason}`,
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
                   { level: "warn" },
                 );
-              } catch (_) { /* notify must never block */ }
+              } catch { /* notify must never block */ }
             }
           }
           throw new CliStructuredOutputError(
-            `structured-output budget exhausted after ${maxRetries} attempts on claude-code: ${lastError && (lastError as any).message}`,
+            `structured-output budget exhausted after ${maxRetries} attempts on claude-code: ${lastError && lastError.message}`,
             {
               reason: "budget-exhausted",
               attempts: maxRetries,
-              lastOutput: lastError && (lastError as any).lastOutput,
+              lastOutput: lastError && lastError.lastOutput,
             },
           );
         } finally {
@@ -852,22 +992,21 @@ class ClaudeCodeProvider {
     // (this call's cost < budget).
     if (options && typeof options.maxUsdBudget === "number") {
       const priorCallCumulative = this.lastCumulativeCost;
-      return this._doOneTurn(prompt).then((result: any) => {
+      return this._doOneTurn(prompt).then((result: Result) => {
         // Keep lastCumulativeCost in sync when _spawnOverride is active
         // (the real path updates it via _processEvent; the override bypasses that).
         if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
         const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
         if (cumCost === null) {
-          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
             `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
             { level: "warn" },
           );
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+        if (perCallSpent >= (options.maxUsdBudget as number)) {
           throw new BudgetExceededError({
-            budget: options.maxUsdBudget,
+            budget: options.maxUsdBudget as number, // checked as a number before .then
             spent: perCallSpent,
             lastTurnCost: result.cost || 0,
           });
@@ -888,7 +1027,7 @@ class ClaudeCodeProvider {
    * to the override function. Otherwise runs the real persistent-process
    * stdin write → stream-json event → result pipeline.
    */
-  _doOneTurn(prompt: any) {
+  _doOneTurn(prompt: string): Promise<Result> {
     if (this._spawnOverride) {
       return this._spawnOverride(prompt);
     }
@@ -908,7 +1047,7 @@ class ClaudeCodeProvider {
       this.pendingResolve = null;
       this.pendingReject = null;
       if (this.process) {
-        try { killProcessTree(this.process, "SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
         this.process = null;
       }
       this.alive = false;
@@ -931,7 +1070,7 @@ class ClaudeCodeProvider {
     // the "stale session" recovery path below.
     this._lastPrompt = prompt;
 
-    return new Promise((resolve, reject) => {
+    return new Promise<Result>((resolve, reject) => {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
       this.turnText = "";
@@ -940,13 +1079,14 @@ class ClaudeCodeProvider {
     });
   }
 
-  _writePrompt(prompt: any, onWriteError: any) {
+  _writePrompt(prompt: string, onWriteError: ((err: unknown) => void) | null) {
     const msg = JSON.stringify({
       type: "user",
       message: { role: "user", content: prompt },
     });
     try {
-      this.process.stdin.write(msg + "\n");
+      // A null process throws here and lands in onWriteError, as before.
+      (this.process as ChildProcessWithoutNullStreams).stdin.write(msg + "\n");
     } catch (err) {
       if (onWriteError) onWriteError(err);
     }
@@ -975,7 +1115,7 @@ class ClaudeCodeProvider {
 
     // Tear down the failed process.
     if (this.process) {
-      try { killProcessTree(this.process, "SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
       this.process = null;
     }
     this.alive = false;
@@ -988,7 +1128,7 @@ class ClaudeCodeProvider {
     // Without this, the NEXT provider constructed by the factory would
     // re-read the stale ID from settings and fail the same way.
     if (typeof this.onSessionExpired === "function") {
-      try { this.onSessionExpired(); } catch {}
+      try { this.onSessionExpired(); } catch { /* best-effort */ }
     }
 
     // Respawn and re-send the pending prompt.
@@ -1003,20 +1143,20 @@ class ClaudeCodeProvider {
       return;
     }
     if (prompt) {
-      this._writePrompt(prompt, (err: any) => {
+      this._writePrompt(prompt, (err: unknown) => {
         if (this.pendingReject) this.pendingReject(err);
       });
     }
   }
 
-  _handleStdout(data: any) {
+  _handleStdout(data: Buffer | string) {
     this.buffer += data.toString();
     const lines = this.buffer.split("\n");
     this.buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(line) as CcStreamEvent;
         this._processEvent(parsed);
       } catch (e) {
         if (!(e instanceof SyntaxError)) {
@@ -1026,7 +1166,7 @@ class ClaudeCodeProvider {
     }
   }
 
-  _processEvent(raw: any) {
+  _processEvent(raw: CcStreamEvent) {
     if (raw.type === "system") {
       if (raw.subtype === "init") {
         this.sessionId = raw.session_id;
@@ -1041,7 +1181,7 @@ class ClaudeCodeProvider {
     }
 
     if (raw.type === "stream_event") {
-      const event = raw.event || {};
+      const event: NonNullable<CcStreamEvent["event"]> = raw.event || {};
       // Block-start padding: when a NEW text content block begins
       // and turnText already has content from a prior block (typical
       // shape: model emitted text → called a tool → emits a new text
@@ -1167,7 +1307,7 @@ class ClaudeCodeProvider {
       // edge case where streaming produced no text at all.
       // User report 2026-05-03.
       const text = this.turnText || raw.result || "";
-      const result = {
+      const result: Result = {
         text,
         cost: turnCost,
         cumulativeCost,
@@ -1196,7 +1336,7 @@ class ClaudeCodeProvider {
    * optional `hostAdapter.mcpApprovalsPending`; a host without it still gets
    * a plain Notice, so a server never goes missing silently.
    */
-  _reportPendingMcpApprovals(scope: any) {
+  _reportPendingMcpApprovals(scope: ResolvedScope) {
     const pending = scope.pendingApprovals;
     const host = this.hostAdapter;
     if (host && typeof host.mcpApprovalsPending === "function") {
@@ -1208,7 +1348,7 @@ class ClaudeCodeProvider {
       }
     }
     const shown = (n: unknown) => mcpApprovals.displaySafe(n);
-    const names = pending.map((p: any) => (p.reason === "changed" ? `${shown(p.name)} (changed since you approved it)` : shown(p.name)));
+    const names = pending.map((p) => (p.reason === "changed" ? `${shown(p.name)} (changed since you approved it)` : shown(p.name)));
     const many = pending.length > 1;
     host.notify(
       `Gryphon: this vault defines MCP server${many ? "s" : ""} ${names.join(", ")} that ` +
@@ -1224,14 +1364,14 @@ class ClaudeCodeProvider {
    * checked: under "inherit" the user's own servers are their business.
    * Once per spawn; "pending" is still connecting, not a failure.
    */
-  _checkScopedMcpServers(servers: any) {
+  _checkScopedMcpServers(servers: unknown) {
     if (this._mcpInitChecked) return;
     this._mcpInitChecked = true;
-    const wanted = new Set(this._scopeMcpServerNames || []);
+    const wanted = new Set<unknown>(this._scopeMcpServerNames || []);
     if (wanted.size === 0 || !Array.isArray(servers)) return;
-    const down = servers
-      .filter((s: any) => s && wanted.has(s.name) && s.status !== "connected" && s.status !== "pending")
-      .map((s: any) => mcpApprovals.displaySafe(`${s.name} (${s.status || "unknown"})`));
+    const down = (servers as Array<{ name?: string; status?: string } | null>)
+      .filter((s): s is { name?: string; status?: string } => !!s && wanted.has(s.name) && s.status !== "connected" && s.status !== "pending")
+      .map((s) => mcpApprovals.displaySafe(`${s.name} (${s.status || "unknown"})`));
     if (down.length === 0) return;
     const many = down.length > 1;
     this.hostAdapter.notify(
@@ -1241,7 +1381,7 @@ class ClaudeCodeProvider {
     );
   }
 
-  _handleStderr(data: any) {
+  _handleStderr(data: Buffer | string) {
     const raw = data.toString();
     // Keep a rolling tail so _handleClose has something to surface if CC
     // dies before emitting a result event. Append first, trim to the
@@ -1261,7 +1401,7 @@ class ClaudeCodeProvider {
     if (this.onError) this.onError(text);
   }
 
-  _handleClose(code: any) {
+  _handleClose(code: number | null) {
     this.alive = false;
     this.process = null;
     this._cleanupSpawnFiles();
@@ -1290,7 +1430,7 @@ class ClaudeCodeProvider {
    * the exact error the CLI printed" — the user can match it against
    * their settings or paste it into a bug report.
    */
-  _formatCloseError(code: any) {
+  _formatCloseError(code: number | null) {
     const stderr = (this._stderrTail || "").trim();
     const header = code === 0
       ? "Claude Code ended without producing a response."
@@ -1304,7 +1444,7 @@ class ClaudeCodeProvider {
       // dumping multi-KB spew into the chat view.
       const tail = stderr
         .split(/\r?\n/)
-        .map((l: any) => l.trim())
+        .map((l) => l.trim())
         .filter(Boolean)
         .slice(-6)
         .join("\n");
@@ -1338,10 +1478,10 @@ class ClaudeCodeProvider {
    * panel; the error line shouldn't expose their username, home
    * directory, or any provider-key fragment that CC may have echoed.
    */
-  _redactStderrForDisplay(text: any) {
+  _redactStderrForDisplay(text: string): string {
     if (typeof text !== "string" || !text) return text;
     let out = text;
-    const escapeRe = (s: any) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Replace home directory (safely — falls back to no-op if
     // os.homedir() isn't resolvable in the test harness).
     try {
@@ -1349,7 +1489,7 @@ class ClaudeCodeProvider {
       if (home && home.length >= 3) {
         out = out.replace(new RegExp(escapeRe(home), "g"), "~");
       }
-    } catch (_) { /* os.homedir unavailable; skip */ }
+    } catch { /* os.homedir unavailable; skip */ }
     // Replace the vault root path too — users who keep their vault
     // in a non-home location (e.g., /mnt/vault/, D:\Vault\) would
     // still leak that path via echoed CC error lines. cwd is the
@@ -1357,7 +1497,7 @@ class ClaudeCodeProvider {
     if (this.cwd && typeof this.cwd === "string" && this.cwd.length >= 3) {
       try {
         out = out.replace(new RegExp(escapeRe(this.cwd), "g"), "<vault>");
-      } catch (_) { /* bad path; skip */ }
+      } catch { /* bad path; skip */ }
     }
     // Redact any sk-ant-* fragment that CC ever echoes in debug
     // output (low risk today; defense-in-depth for future CC builds).
@@ -1365,7 +1505,7 @@ class ClaudeCodeProvider {
     return out;
   }
 
-  _handleProcessError(err: any) {
+  _handleProcessError(err: NodeJS.ErrnoException) {
     this.alive = false;
     this._cleanupSpawnFiles();
     // Log the full spawn context on any proc error. EINVAL in particular
@@ -1375,7 +1515,7 @@ class ClaudeCodeProvider {
     // unactionable. This is the diagnostic that turns the next
     // repro-in-the-wild into a fixable ticket.
     try {
-      const args = this._lastSpawnDiagnostic || {};
+      const args: Partial<SpawnDiagnostic> = this._lastSpawnDiagnostic || {};
       console.error(
         "[gryphon/cli] process error:",
         {
@@ -1396,7 +1536,7 @@ class ClaudeCodeProvider {
           hookSettingsFile: args.hookSettingsFile,
         },
       );
-    } catch (_) { /* logging must never throw */ }
+    } catch { /* logging must never throw */ }
     if (this.pendingReject) {
       this.pendingReject(err);
       this.pendingResolve = null;
@@ -1413,7 +1553,7 @@ class ClaudeCodeProvider {
    * swallowed.
    */
   _cleanupSpawnFiles() {
-    for (const key of ["_hookSettingsFile", "_mcpConfigFile", "_memoryFile"]) {
+    for (const key of ["_hookSettingsFile", "_mcpConfigFile", "_memoryFile"] as const) {
       const file = this[key];
       if (!file) continue;
       this[key] = null;
@@ -1427,7 +1567,7 @@ class ClaudeCodeProvider {
 
   abort() {
     if (this.process) {
-      try { this.process.stdin.end(); } catch {}
+      try { this.process.stdin.end(); } catch { /* best-effort */ }
       // Tree-kill: take down claude AND its MCP-server grandchildren, not
       // just the direct pid. SIGTERM first, SIGKILL the group after 5s if
       // it's still alive.
@@ -1437,8 +1577,8 @@ class ClaudeCodeProvider {
       // below and strand a process the caller has already dropped its
       // reference to (killProcessTree is internally non-throwing, but the
       // caller's best-effort catch makes this defence load-bearing).
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
-      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* best-effort */ }
+      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* best-effort */ } }, 5000);
       this.process = null;
     }
     this.alive = false;

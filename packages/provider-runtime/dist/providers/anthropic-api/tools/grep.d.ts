@@ -10,6 +10,18 @@
  *   "files_with_matches" — paths only, one per line
  *   "count"              — match count per file
  */
+interface GrepInput {
+    pattern?: string;
+    path?: string;
+    glob?: string;
+    output_mode?: string;
+    "-i"?: boolean;
+    "-n"?: boolean;
+    head_limit?: number | string;
+}
+interface GrepToolContext {
+    vaultRoot: string;
+}
 declare const SCHEMA: {
     name: string;
     description: string;
@@ -49,10 +61,10 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<{
+declare function execute(input: GrepInput, ctx: GrepToolContext): Promise<{
     content: {
         type: string;
-        text: any;
+        text: string;
     }[];
     isError: boolean;
 }>;

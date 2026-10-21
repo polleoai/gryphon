@@ -17,7 +17,7 @@ const os = require("node:os");
 const path = require("node:path");
 const Module = require("module");
 
-// CodexProvider transitively loads `obsidian` (via @gryphon/protect). Stub it
+// CodexProvider transitively loads `obsidian` (via @polleoai/gryphon-protect). Stub it
 // the same way cli-providers-factory.test.ts does so the provider-boundary
 // test below can run in the bare Node test runner.
 const _obsidianStub = require.resolve("./_stubs/obsidian.js");
@@ -205,14 +205,14 @@ test("resolveCliBinary: empty config self-heals to the detected newest (R1/R4)",
   utils.clearBinaryDiscoveryCache();
   const dir = tmpDir();
   const detected = fakeCli(dir, "claude", "2.1.181 (Claude Code)");
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => detected;
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => detected;
   try {
     const res = utils.resolveCliBinary("claude-code", "");
     assert.equal(res.ok, true);
     assert.equal(res.path, detected);
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
@@ -220,27 +220,27 @@ test("resolveCliBinary: missing configured path self-heals to detector (R4)", { 
   utils.clearBinaryDiscoveryCache();
   const dir = tmpDir();
   const detected = fakeCli(dir, "claude", "2.1.181 (Claude Code)");
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => detected;
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => detected;
   try {
     const res = utils.resolveCliBinary("claude-code", "/does/not/exist/claude");
     assert.equal(res.ok, true);
     assert.equal(res.path, detected);
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
 test("resolveCliBinary: nothing found → typed not-found failure (R5)", () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => null;
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => null;
   try {
     const res = utils.resolveCliBinary("claude-code", "");
     assert.equal(res.ok, false);
     assert.equal(res.error, "not-found");
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
@@ -263,8 +263,8 @@ test("findClaudeBinary picks the NEWEST installed, not the first-listed (R2)", {
 
 test("CodexProvider.send rejects fast when no CLI resolves (R1/R5)", async () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findCodexBinary;
-  utils.findCodexBinary = () => null; // nothing detected anywhere
+  const orig = utils.binaryFinders.findCodexBinary;
+  utils.binaryFinders.findCodexBinary = () => null; // nothing detected anywhere
   try {
     const { CodexProvider } = require("../src/providers/codex-cli/codex-cli");
     const provider = new CodexProvider("", "/tmp", {});
@@ -276,27 +276,27 @@ test("CodexProvider.send rejects fast when no CLI resolves (R1/R5)", async () =>
     );
     assert.ok(Date.now() - started < 5000, "must fail fast (<5s), not reach the connection timeout");
   } finally {
-    utils.findCodexBinary = orig;
+    utils.binaryFinders.findCodexBinary = orig;
   }
 });
 
 test("GeminiCliProvider.send rejects fast when no CLI resolves (R1/R5)", async () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findGeminiBinary;
-  utils.findGeminiBinary = () => null;
+  const orig = utils.binaryFinders.findGeminiBinary;
+  utils.binaryFinders.findGeminiBinary = () => null;
   try {
     const { GeminiCliProvider } = require("../src/providers/gemini-cli/gemini-cli");
     const provider = new GeminiCliProvider("", "/tmp", {});
     await assert.rejects(() => provider.send("hi", {}), /Gemini CLI not found/);
   } finally {
-    utils.findGeminiBinary = orig;
+    utils.binaryFinders.findGeminiBinary = orig;
   }
 });
 
 test("AntigravityCliProvider.send rejects fast when no CLI resolves (R1/R5, issue #19)", async () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findAntigravityBinary;
-  utils.findAntigravityBinary = () => null;
+  const orig = utils.binaryFinders.findAntigravityBinary;
+  utils.binaryFinders.findAntigravityBinary = () => null;
   try {
     const { AntigravityCliProvider } = require("../src/providers/antigravity-cli/antigravity-cli");
     const provider = new AntigravityCliProvider("", "/tmp", {});
@@ -308,7 +308,7 @@ test("AntigravityCliProvider.send rejects fast when no CLI resolves (R1/R5, issu
     );
     assert.ok(Date.now() - started < 5000, "must fail fast (<5s), not reach the connection timeout");
   } finally {
-    utils.findAntigravityBinary = orig;
+    utils.binaryFinders.findAntigravityBinary = orig;
   }
 });
 
@@ -346,8 +346,8 @@ test("resolveCliBinary: only a below-floor binary present → typed too-old with
   utils.clearBinaryDiscoveryCache();
   const dir = tmpDir();
   const old = fakeCli(dir, "claude", "1.0.108 (Claude Code)");
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => old; // detection finds only the stale one
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => old; // detection finds only the stale one
   try {
     const res = utils.resolveCliBinary("claude-code", "", "2.0.0"); // impose a floor
     assert.equal(res.ok, false);
@@ -355,7 +355,7 @@ test("resolveCliBinary: only a below-floor binary present → typed too-old with
     assert.match(res.detail, /1\.0\.108/);
     assert.match(res.detail, /2\.0\.0/);
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
@@ -366,10 +366,10 @@ test("resolveCliBinary self-heals per kind (codex + gemini): empty config → de
   const dir = tmpDir();
   const codex = fakeCli(dir, "codex", "0.45.0");
   const gemini = fakeCli(dir, "gemini", "1.2.3");
-  const oc = utils.findCodexBinary;
-  const og = utils.findGeminiBinary;
-  utils.findCodexBinary = () => codex;
-  utils.findGeminiBinary = () => gemini;
+  const oc = utils.binaryFinders.findCodexBinary;
+  const og = utils.binaryFinders.findGeminiBinary;
+  utils.binaryFinders.findCodexBinary = () => codex;
+  utils.binaryFinders.findGeminiBinary = () => gemini;
   try {
     const rc = utils.resolveCliBinary("codex-cli", "");
     assert.equal(rc.ok, true);
@@ -378,8 +378,8 @@ test("resolveCliBinary self-heals per kind (codex + gemini): empty config → de
     assert.equal(rg.ok, true);
     assert.equal(rg.path, gemini);
   } finally {
-    utils.findCodexBinary = oc;
-    utils.findGeminiBinary = og;
+    utils.binaryFinders.findCodexBinary = oc;
+    utils.binaryFinders.findGeminiBinary = og;
   }
 });
 
@@ -398,34 +398,34 @@ test("resolveCliBinary self-heals for antigravity-cli: empty config → detected
   utils.clearBinaryDiscoveryCache();
   const dir = tmpDir();
   const agy = fakeCli(dir, "agy", "0.3.1");
-  const orig = utils.findAntigravityBinary;
-  utils.findAntigravityBinary = () => agy;
+  const orig = utils.binaryFinders.findAntigravityBinary;
+  utils.binaryFinders.findAntigravityBinary = () => agy;
   try {
     const res = utils.resolveCliBinary("antigravity-cli", "");
     assert.equal(res.ok, true);
     assert.equal(res.path, agy);
   } finally {
-    utils.findAntigravityBinary = orig;
+    utils.binaryFinders.findAntigravityBinary = orig;
   }
 });
 
 test("resolveCliBinary: antigravity-cli nothing found → typed not-found failure (R5)", () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findAntigravityBinary;
-  utils.findAntigravityBinary = () => null;
+  const orig = utils.binaryFinders.findAntigravityBinary;
+  utils.binaryFinders.findAntigravityBinary = () => null;
   try {
     const res = utils.resolveCliBinary("antigravity-cli", "");
     assert.equal(res.ok, false);
     assert.equal(res.error, "not-found");
   } finally {
-    utils.findAntigravityBinary = orig;
+    utils.binaryFinders.findAntigravityBinary = orig;
   }
 });
 
 test("ClaudeCodeProvider.send rejects with the actionable message (not a null-stdin TypeError) when no CLI resolves (R1/R5)", async () => {
   utils.clearBinaryDiscoveryCache();
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => null;
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => null;
   try {
     const { ClaudeCodeProvider } = require("../src/providers/claude-code/claude-code");
     const provider = new ClaudeCodeProvider("", "/tmp", {});
@@ -438,7 +438,7 @@ test("ClaudeCodeProvider.send rejects with the actionable message (not a null-st
       },
     );
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
@@ -560,14 +560,14 @@ test("resolveCliBinary rejects a configured claude path that isn't the CLI (issu
   const dir = tmpDir();
   const app = fakeCli(dir, "claude-app", "2.19675.1");
   const cli = fakeCli(dir, "claude", "2.1.290 (Claude Code)");
-  const orig = utils.findClaudeBinary;
-  utils.findClaudeBinary = () => cli;
+  const orig = utils.binaryFinders.findClaudeBinary;
+  utils.binaryFinders.findClaudeBinary = () => cli;
   try {
     const res = utils.resolveCliBinary("claude-code", app);
     assert.equal(res.ok, true);
     assert.equal(res.path, cli, "falls through to the detected CLI");
   } finally {
-    utils.findClaudeBinary = orig;
+    utils.binaryFinders.findClaudeBinary = orig;
   }
 });
 
@@ -580,15 +580,15 @@ test("R43-11: a self-healed (detected) binary inside the vault is refused", { sk
   const bin = path.join(vault, ".bin", "codex");
   fs.mkdirSync(path.dirname(bin), { recursive: true });
   fs.writeFileSync(bin, "#!/bin/sh\necho codex-cli 0.145.0\n", { mode: 0o755 });
-  const orig = utils.findCodexBinary;
-  utils.findCodexBinary = () => bin;
+  const orig = utils.binaryFinders.findCodexBinary;
+  utils.binaryFinders.findCodexBinary = () => bin;
   try {
     const r = utils.resolveCliBinary("codex-cli", "/no/such/codex", undefined, { vaultRoot: vault });
     assert.equal(r.ok, false, `spawned ${r.path}`);
     const free = utils.resolveCliBinary("codex-cli", "/no/such/codex");
     assert.equal(free.ok, true, "without a vault root the old behaviour stands");
   } finally {
-    utils.findCodexBinary = orig;
+    utils.binaryFinders.findCodexBinary = orig;
     fs.rmSync(vault, { recursive: true, force: true });
     utils.clearBinaryDiscoveryCache();
   }
@@ -603,13 +603,13 @@ test("R44 (security F2): a configured binary inside the vault is refused at spaw
   const bin = path.join(vault, ".bin", "codex");
   fs.mkdirSync(path.dirname(bin), { recursive: true });
   fs.writeFileSync(bin, "#!/bin/sh\necho codex-cli 0.145.0\n", { mode: 0o755 });
-  const orig = utils.findCodexBinary;
-  utils.findCodexBinary = () => null;
+  const orig = utils.binaryFinders.findCodexBinary;
+  utils.binaryFinders.findCodexBinary = () => null;
   try {
     const r = utils.resolveCliBinary("codex-cli", bin, undefined, { vaultRoot: vault });
     assert.equal(r.ok, false, `spawned ${r.path}`);
   } finally {
-    utils.findCodexBinary = orig;
+    utils.binaryFinders.findCodexBinary = orig;
     fs.rmSync(vault, { recursive: true, force: true });
     utils.clearBinaryDiscoveryCache();
   }

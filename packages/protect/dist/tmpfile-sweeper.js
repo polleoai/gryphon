@@ -1,6 +1,47 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.CHAT_HISTORY_TMP_RE = exports.PROVENANCE_TMP_RE = exports.SOCKET_RE = exports.MCP_CONFIG_RE = exports.HOOK_SETTINGS_RE = void 0;
+exports.sweepGryphonOrphans = sweepGryphonOrphans;
+exports.sweepHookSettingsOrphans = sweepHookSettingsOrphans;
+exports.sweepSocketOrphans = sweepSocketOrphans;
+exports.sweepProvenanceTmpOrphans = sweepProvenanceTmpOrphans;
+exports.sweepChatHistoryTmpOrphans = sweepChatHistoryTmpOrphans;
+exports.truncateHookTraceLog = truncateHookTraceLog;
+exports._isPidAlive = _isPidAlive;
 /**
  * Gryphon orphan-file sweeper (v0.6.0 Stage-8 QA follow-up).
  *
@@ -32,20 +73,25 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *      call their own sweep when it matters to them (e.g. the
  *      provenance store sweeps its own tmpdir before every load).
  */
-const fs = require("fs");
-const pathMod = require("path");
-const os = require("os");
+const fs = __importStar(require("fs"));
+const pathMod = __importStar(require("path"));
+const os = __importStar(require("os"));
 const HOOK_SETTINGS_RE = /^gryphon-cc-settings-\d+-\d+-[0-9a-f]+\.json$/;
+exports.HOOK_SETTINGS_RE = HOOK_SETTINGS_RE;
 // Issue #25: the claude-code provider's per-spawn --mcp-config file. Same
 // lifecycle as the settings file (unlinked on CLI close), so a crash leaves
 // it behind the same way — and it can carry MCP server env (tokens).
 const MCP_CONFIG_RE = /^gryphon-cc-mcp-\d+-\d+-\d+\.json$/;
+exports.MCP_CONFIG_RE = MCP_CONFIG_RE;
 // Issue #27: the consumer memory file (--append-system-prompt-file). Same
 // lifecycle again; holds the consumer's CLAUDE.md text.
 const MEMORY_FILE_RE = /^gryphon-cc-memory-\d+-\d+-[0-9a-f]+\.md$/;
 const SOCKET_RE = /^gryphon-(\d+)-[0-9a-f]+\.sock$/;
+exports.SOCKET_RE = SOCKET_RE;
 const PROVENANCE_TMP_RE = /^provenance\.json\.\d+\.[0-9a-f]+\.tmp$/;
+exports.PROVENANCE_TMP_RE = PROVENANCE_TMP_RE;
 const CHAT_HISTORY_TMP_RE = /^chat-history\.json\.tmp-(\d+)-\d+-[0-9a-z]+$/;
+exports.CHAT_HISTORY_TMP_RE = CHAT_HISTORY_TMP_RE;
 const DEFAULT_SETTINGS_CUTOFF_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PROVENANCE_TMP_CUTOFF_MS = 60 * 1000;
 const HOOK_TRACE_LOG_NAME = "gryphon-hook-trace.log";
@@ -55,7 +101,7 @@ function _tryUnlink(full) {
         fs.unlinkSync(full);
         return true;
     }
-    catch (_) {
+    catch {
         return false;
     }
 }
@@ -83,7 +129,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
     try {
         entries = fs.readdirSync(dir);
     }
-    catch (_) {
+    catch {
         return { removed: [] };
     }
     const removed = [];
@@ -96,7 +142,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
             if (stat.mtimeMs < cutoff && _tryUnlink(full))
                 removed.push(full);
         }
-        catch (_) { /* best-effort */ }
+        catch { /* best-effort */ }
     }
     return { removed };
 }
@@ -108,7 +154,7 @@ function sweepSocketOrphans({ tmpDir } = {}) {
     try {
         entries = fs.readdirSync(dir);
     }
-    catch (_) {
+    catch {
         return { removed: [] };
     }
     const removed = [];
@@ -133,7 +179,7 @@ function sweepProvenanceTmpOrphans({ pluginDir, cutoffMs = DEFAULT_PROVENANCE_TM
     try {
         entries = fs.readdirSync(pluginDir);
     }
-    catch (_) {
+    catch {
         return { removed: [] };
     }
     const removed = [];
@@ -146,7 +192,7 @@ function sweepProvenanceTmpOrphans({ pluginDir, cutoffMs = DEFAULT_PROVENANCE_TM
             if (stat.mtimeMs < cutoff && _tryUnlink(full))
                 removed.push(full);
         }
-        catch (_) { /* best-effort */ }
+        catch { /* best-effort */ }
     }
     return { removed };
 }
@@ -157,7 +203,7 @@ function sweepChatHistoryTmpOrphans({ pluginDir } = {}) {
     try {
         entries = fs.readdirSync(pluginDir);
     }
-    catch (_) {
+    catch {
         return { removed: [] };
     }
     const removed = [];
@@ -188,7 +234,7 @@ function truncateHookTraceLog({ tmpDir } = {}) {
             fs.truncateSync(full, 0);
         return { truncated: true, path: full };
     }
-    catch (_) {
+    catch {
         return { truncated: false, path: full };
     }
 }
@@ -219,17 +265,3 @@ function sweepGryphonOrphans(opts = {}) {
             summary.chatHistoryTmp.removed.length;
     return summary;
 }
-module.exports = {
-    sweepGryphonOrphans,
-    sweepHookSettingsOrphans,
-    sweepSocketOrphans,
-    sweepProvenanceTmpOrphans,
-    sweepChatHistoryTmpOrphans,
-    truncateHookTraceLog,
-    _isPidAlive,
-    HOOK_SETTINGS_RE,
-    MCP_CONFIG_RE,
-    SOCKET_RE,
-    PROVENANCE_TMP_RE,
-    CHAT_HISTORY_TMP_RE,
-};

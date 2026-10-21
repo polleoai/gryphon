@@ -17,25 +17,89 @@
  * `scripts/probe-model.sh anthropic <id>` for any newly-added model id.
  */
 
-const Anthropic = require("@anthropic-ai/sdk").default;
-const { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } = require("./tool-loop") as typeof import("./tool-loop");
-const { getToolSchemas } = require("./tools/tool-registry") as typeof import("./tools/tool-registry");
+import type AnthropicClient from "@anthropic-ai/sdk";
+import type { MessageStream } from "@anthropic-ai/sdk/lib/MessageStream";
+import { runToolLoop, GRYPHON_SDK_SYSTEM_PROMPT } from "./tool-loop";
+import { getToolSchemas } from "./tools/tool-registry";
+import { pricing } from "@polleoai/gryphon-provider-config";
+import { HeadlessHostAdapter } from "../../host-adapter";
 
-// Pricing + alias resolution lives in @gryphon/provider-config (v2.2).
+// The SDK is loaded on first use, not at module load (gryphon-dev#38):
+// importing this module (the factory does, and Settings' "Test key" does on
+// click) must not pay the SDK's parse + init cost at plugin start. Every
+// reference goes through `loadSdk()`, so the process holds one SDK copy.
+// `_sdk` is set once the import resolves; error classification reads it
+// synchronously — an SDK error can only exist after the SDK has loaded.
+type AnthropicSdk = typeof import("@anthropic-ai/sdk");
+let _sdk: AnthropicSdk | null = null;
+async function loadSdk(): Promise<AnthropicSdk> {
+  return (_sdk ??= await import("@anthropic-ai/sdk"));
+}
+
+// Pricing + alias resolution lives in @polleoai/gryphon-provider-config (v2.2).
 // We import the helpers and re-export the names this module's consumers
 // rely on (notably `resolveModel`, which the factory imports).
 const {
-  MODEL_PRICES,
-  MODEL_ALIAS,
-  DEFAULT_MODEL,
   resolveModel,
-  priceFor,
   computeCost,
-} = require("@gryphon/provider-config").pricing.anthropic;
+} = pricing.anthropic;
+
+type ToolLoopArgs = Parameters<typeof runToolLoop>[0];
+type ToolLoopContext = ToolLoopArgs["ctx"];
+type AnthropicMessageStream = MessageStream;
+
+interface AnthropicProviderOptions {
+  hostAdapter?: unknown;
+  client?: AnthropicClient;
+  initialHistory?: AnthropicClient.MessageParam[];
+  model?: string | null;
+  permissionMode?: string;
+  plugin?: unknown;
+  security?: unknown;
+  [key: string]: unknown;
+}
+
+interface AnthropicSendOptions {
+  maxUsdBudget?: number | null;
+  structuredOutput?: { name: string; schema: Record<string, unknown> } | null;
+  [key: string]: unknown;
+}
+
+interface AnthropicTurnResult {
+  text: string;
+  cost: number;
+  cumulativeCost: number;
+  sessionId: string;
+  duration: number;
+  contextTokens: number;
+  thinking?: string[];
+  json?: unknown;
+}
 
 class AnthropicAPIProvider {
-  [key: string]: any;
-  constructor(apiKey: any, cwd: any, options: Record<string, any> = {}) {
+  // `declare` fields: typed for the compiler, no emitted class-field
+  // initializers (the constructor assigns them exactly as before).
+  declare apiKey: string;
+  declare cwd: string;
+  declare options: AnthropicProviderOptions;
+  declare hostAdapter: unknown;
+  declare client: AnthropicClient | null;
+  declare history: AnthropicClient.MessageParam[];
+  declare sessionId: string;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare cumulativeCost: number;
+  declare startTime: number;
+  declare activeStream: AnthropicMessageStream | null;
+  declare pending: boolean;
+  declare destroyed: boolean;
+  declare onMessage: ((text: string, type: string) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: AnthropicTurnResult) => void) | null;
+  declare _countTokensCache: { key: string; value: number | null } | null | undefined;
+  declare _needsHistoryReset: boolean | undefined;
+
+  constructor(apiKey: string, cwd: string, options: AnthropicProviderOptions = {}) {
     if (!apiKey) {
       throw new Error("AnthropicAPIProvider: apiKey is required");
     }
@@ -43,26 +107,11 @@ class AnthropicAPIProvider {
     this.cwd = cwd;  // unused in Phase 2 — relevant once tools land
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
 
-    // dangerouslyAllowBrowser: required because Obsidian's renderer process
-    // exposes the `window` global, which the SDK treats as "browser-like"
-    // and refuses by default. The SDK's threat model (API key leaking via
-    // XSS or devtools shipped to end users) doesn't apply to Obsidian
-    // plugins — the key lives in plugin data.json on the user's own disk
-    // and is never sent anywhere except Anthropic's API.
-    //
-    // maxRetries: the SDK automatically retries on 408/409/429/>=500 with
-    // exponential backoff (respecting Retry-After headers). Default is 2;
-    // we raise to 3 so transient rate-limits during a long agentic turn
-    // don't surface to the user as hard errors. A full tool-use loop can
-    // issue ~10-25 API calls and rate-limits hit more often than single-
-    // shot chats, so the extra retry buys real reliability.
-    this.client = new Anthropic({
-      apiKey,
-      dangerouslyAllowBrowser: true,
-      maxRetries: 3,
-    });
+    // Test seam: callers may inject a client. Otherwise the real SDK client
+    // is built on first use by `_ensureClient()` (the SDK loads lazily).
+    this.client = options.client || null;
 
     // Seed from persisted history if the caller (chat-view after reload)
     // supplies it. Defensive copy — provider mutates history in place and
@@ -95,6 +144,36 @@ class AnthropicAPIProvider {
   isAlive() { return !this.destroyed; }
 
   /**
+   * The SDK client, built on first use. Loads the SDK (once per process)
+   * unless a client was injected or already built.
+   */
+  async _ensureClient(): Promise<AnthropicClient> {
+    if (this.client) return this.client;
+    const Anthropic = (await loadSdk()).default;
+    // A concurrent first call may have built one while we awaited.
+    if (this.client) return this.client;
+    // dangerouslyAllowBrowser: required because Obsidian's renderer process
+    // exposes the `window` global, which the SDK treats as "browser-like"
+    // and refuses by default. The SDK's threat model (API key leaking via
+    // XSS or devtools shipped to end users) doesn't apply to Obsidian
+    // plugins — the key lives in plugin data.json on the user's own disk
+    // and is never sent anywhere except Anthropic's API.
+    //
+    // maxRetries: the SDK automatically retries on 408/409/429/>=500 with
+    // exponential backoff (respecting Retry-After headers). Default is 2;
+    // we raise to 3 so transient rate-limits during a long agentic turn
+    // don't surface to the user as hard errors. A full tool-use loop can
+    // issue ~10-25 API calls and rate-limits hit more often than single-
+    // shot chats, so the extra retry buys real reliability.
+    this.client = new Anthropic({
+      apiKey: this.apiKey,
+      dangerouslyAllowBrowser: true,
+      maxRetries: 3,
+    });
+    return this.client;
+  }
+
+  /**
    * Build the request body for `messages.countTokens` — authoritative
    * pre-send count of input tokens for the NEXT turn if it were sent
    * with `prospectiveInput` as the user message.
@@ -113,16 +192,16 @@ class AnthropicAPIProvider {
    * @param {string} prospectiveInput  — text the user has typed but not sent
    * @returns {object} — `{ model, system, tools, messages }`
    */
-  _buildCountTokensRequest(prospectiveInput: any) {
+  _buildCountTokensRequest(prospectiveInput: unknown) {
     const text = (typeof prospectiveInput === "string" && prospectiveInput.length > 0)
       ? prospectiveInput
       : " ";
-    const messages = [
+    const messages: AnthropicClient.MessageParam[] = [
       ...this.history,
       { role: "user", content: text },
     ];
-    const tools = getToolSchemas({ allowWrite: true, allowWeb: true, allowBash: true });
-    const body: Record<string, any> = {
+    const tools = getToolSchemas({ allowWrite: true, allowWeb: true, allowBash: true }) as AnthropicClient.Tool[];
+    const body: AnthropicClient.MessageCountTokensParams = {
       model: this.resolvedModel,
       system: GRYPHON_SDK_SYSTEM_PROMPT,
       messages,
@@ -146,7 +225,7 @@ class AnthropicAPIProvider {
    * @param {string} prospectiveInput
    * @returns {Promise<number|null>}  input_tokens, or null on failure
    */
-  async countTokensForNext(prospectiveInput: any) {
+  async countTokensForNext(prospectiveInput: string | null | undefined) {
     // Cache key — keyed on history length (cheap proxy for content
     // identity) and the prospective input itself. Two consecutive calls
     // with the same prefix while the user pauses typing return cached;
@@ -157,12 +236,13 @@ class AnthropicAPIProvider {
     }
     try {
       const body = this._buildCountTokensRequest(prospectiveInput);
-      const result = await this.client.messages.countTokens(body);
+      const client = await this._ensureClient();
+      const result = await client.messages.countTokens(body);
       const tokens = (result && typeof result.input_tokens === "number")
         ? result.input_tokens : null;
       this._countTokensCache = { key: cacheKey, value: tokens };
       return tokens;
-    } catch (_) {
+    } catch {
       // Caller's fallback path uses the heuristic estimator. Don't
       // surface the error — countTokens failing shouldn't block typing.
       this._countTokensCache = { key: cacheKey, value: null };
@@ -171,7 +251,7 @@ class AnthropicAPIProvider {
   }
 
   // Anthropic API mode: cost is computed locally from token usage × pricing
-  // imported from @gryphon/provider-config.pricing.anthropic (derived from
+  // imported from @polleoai/gryphon-provider-config.pricing.anthropic (derived from
   // the canonical registry). Prices may drift between Gryphon releases, and
   // cache discounts are estimated (we assume 5-min ephemeral cache: 1.25×
   // write, 0.10× read). UI labels SDK costs as "(est.)" so users know to
@@ -180,7 +260,7 @@ class AnthropicAPIProvider {
 
   abort() {
     if (this.activeStream) {
-      try { this.activeStream.abort(); } catch {}
+      try { this.activeStream.abort(); } catch { /* stream already settled */ }
       this.activeStream = null;
     }
     this.pending = false;
@@ -192,7 +272,7 @@ class AnthropicAPIProvider {
     this.destroyed = true;
   }
 
-  async send(prompt: any, options: Record<string, any> = {}) {
+  async send(prompt: string, options: AnthropicSendOptions = {}) {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -222,7 +302,7 @@ class AnthropicAPIProvider {
     if (this.onMessage) this.onMessage("", "init");
 
     const turnStart = Date.now();
-    const ctx: Record<string, any> = {
+    const ctx: ToolLoopContext = {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
@@ -236,7 +316,7 @@ class AnthropicAPIProvider {
     // this send() call so the loop can compute a per-call running total.
     ctx.maxUsdBudget = options && typeof options.maxUsdBudget === "number" ? options.maxUsdBudget : null;
     ctx.priorCumulativeCost = this.cumulativeCost;
-    ctx.computeIterationCost = (usage: any) => computeCost(usage, this.resolvedModel);
+    ctx.computeIterationCost = (usage) => computeCost(usage as Record<string, unknown>, this.resolvedModel);
 
     // L6 structured output: tool-use coercion. Declare a single forced tool
     // whose input_schema is the caller's schema. The model must call it — which
@@ -246,28 +326,29 @@ class AnthropicAPIProvider {
       ctx.coercionTool = {
         name: options.structuredOutput.name,
         description: "Return the structured response.",
-        input_schema: options.structuredOutput.schema,
+        input_schema: options.structuredOutput.schema as AnthropicClient.Tool.InputSchema,
       };
       ctx.toolChoice = { type: "tool", name: options.structuredOutput.name };
     }
 
     try {
+      const client = await this._ensureClient();
       const { turnText, finalMessage, totalUsage, peakUsage, thinkingBlocks } = await runToolLoop({
-        client: this.client,
+        client,
         model: this.resolvedModel,
         history: this.history,
         ctx,
         callbacks: {
-          onMessage: (text: any, type: any) => {
+          onMessage: (text: string, type: string) => {
             if (this.onMessage) this.onMessage(text, type);
           },
-          onTool: (name: any) => {
+          onTool: (name: string) => {
             if (this.onMessage) this.onMessage(name, "tool");
           },
-          onError: (text: any) => {
+          onError: (text: string) => {
             if (this.onError) this.onError(text);
           },
-          onStream: (stream: any) => {
+          onStream: (stream: AnthropicMessageStream) => {
             this.activeStream = stream;
           },
         },
@@ -283,16 +364,17 @@ class AnthropicAPIProvider {
       // tool_result block.
       const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
       const turnSlice = this.history.slice(historyCheckpoint);
-      const hadProtectedDeny = turnSlice.some((m: any) => {
+      const hadProtectedDeny = turnSlice.some((m) => {
         if (!m || m.role !== "user" || !Array.isArray(m.content)) return false;
-        return m.content.some((blk: any) => {
+        return m.content.some((blk) => {
           if (!blk || blk.type !== "tool_result") return false;
           const c = blk.content;
           if (typeof c === "string") return c.includes(_GRYPHON_DENY_MARKER);
           if (Array.isArray(c)) {
-            return c.some((sub) =>
-              sub && typeof sub.text === "string" && sub.text.includes(_GRYPHON_DENY_MARKER)
-            );
+            return c.some((sub) => {
+              const subText = sub && (sub as { text?: unknown }).text;
+              return typeof subText === "string" && subText.includes(_GRYPHON_DENY_MARKER);
+            });
           }
           return false;
         });
@@ -322,7 +404,7 @@ class AnthropicAPIProvider {
       // _extractText sweeps every block that has a `.text` field so the
       // UI shows something rather than a blank "(No response)".
       const extracted = this._extractText(finalMessage && finalMessage.content);
-      const result: Record<string, any> = {
+      const result: AnthropicTurnResult = {
         text: turnText || extracted,
         cost: turnCost,
         cumulativeCost: this.cumulativeCost,
@@ -339,8 +421,9 @@ class AnthropicAPIProvider {
       // block's `input` is already-parsed JSON — assign it to result.json
       // and serialize result.text for consumer consistency.
       if (ctx.coercionTool && finalMessage && Array.isArray(finalMessage.content)) {
+        const coercionName = ctx.coercionTool.name;
         const coercionBlock = finalMessage.content.find(
-          (b: any) => b && b.type === "tool_use" && b.name === ctx.coercionTool.name,
+          (b): b is AnthropicClient.ToolUseBlock => !!b && b.type === "tool_use" && b.name === coercionName,
         );
         if (coercionBlock) {
           result.json = coercionBlock.input;
@@ -349,10 +432,10 @@ class AnthropicAPIProvider {
           // The model was forced via tool_choice but returned stop_reason
           // without invoking the coercion tool — surface a clear error so
           // callers get an actionable code rather than result.json === undefined.
-          const err: any = new Error(
+          const err = new Error(
             `structuredOutput: Anthropic returned stop_reason "${finalMessage.stop_reason}" ` +
-            `without invoking the forced "${ctx.coercionTool.name}" tool — coercion failed.`,
-          );
+            `without invoking the forced "${coercionName}" tool — coercion failed.`,
+          ) as Error & { code?: string };
           err.code = "STRUCTURED_OUTPUT_COERCION_FAILED";
           throw err;
         }
@@ -373,15 +456,15 @@ class AnthropicAPIProvider {
     }
   }
 
-  _extractText(content: any) {
+  _extractText(content: unknown) {
     if (!Array.isArray(content)) return "";
     // Primary: pick known `text` blocks. Secondary: any block that
     // carries a `.text` string — covers forward-compatible block shapes
     // (thinking/redacted_thinking, future block types) so the UI doesn't
     // render "(No response)" when the API actually returned content we
     // just don't recognize by discriminator.
-    const parts = [];
-    for (const b of content) {
+    const parts: string[] = [];
+    for (const b of content as Array<{ type?: string; text?: unknown } | null | undefined>) {
       if (!b) continue;
       if (b.type === "text" && typeof b.text === "string") parts.push(b.text);
       else if (b.type !== "tool_use" && typeof b.text === "string") parts.push(b.text);
@@ -389,8 +472,10 @@ class AnthropicAPIProvider {
     return parts.join("");
   }
 
-  _formatError(err: any) {
-    if (err instanceof Anthropic.APIError) {
+  _formatError(err: unknown) {
+    // No SDK loaded → no SDK error can exist; skip the class checks.
+    const Anthropic = _sdk && _sdk.default;
+    if (Anthropic && err instanceof Anthropic.APIError) {
       if (err instanceof Anthropic.AuthenticationError) {
         return "Invalid API key. Check Settings → Gryphon → Anthropic API key.";
       }
@@ -409,7 +494,7 @@ class AnthropicAPIProvider {
       }
       return `Anthropic API error (${err.status || "?"}): ${err.message}`;
     }
-    return String(err?.message || err);
+    return String((err as Error | null | undefined)?.message || err);
   }
 }
 
@@ -417,9 +502,11 @@ class AnthropicAPIProvider {
  * Validate an API key by making a trivial /messages call. Used by the
  * "Test key" button in settings. Returns { ok, message }.
  */
-async function testApiKey(apiKey: any) {
+async function testApiKey(apiKey: string | null | undefined) {
   if (!apiKey) return { ok: false, message: "No API key provided" };
+  let Anthropic: AnthropicSdk["default"] | null = null;
   try {
+    Anthropic = (await loadSdk()).default;
     const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     await client.messages.create({
       model: "claude-haiku-4-5",
@@ -428,11 +515,11 @@ async function testApiKey(apiKey: any) {
     });
     return { ok: true, message: "Key works" };
   } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) {
+    if (Anthropic && err instanceof Anthropic.AuthenticationError) {
       return { ok: false, message: "Invalid API key" };
     }
-    if (err instanceof Anthropic.APIError) {
-      return { ok: false, message: `API error (${(err as any).status || "?"}): ${(err as Error).message}` };
+    if (Anthropic && err instanceof Anthropic.APIError) {
+      return { ok: false, message: `API error (${err.status || "?"}): ${err.message}` };
     }
     return { ok: false, message: String((err as Error)?.message || err) };
   }

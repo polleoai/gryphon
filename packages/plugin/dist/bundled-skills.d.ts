@@ -9,4 +9,5 @@
  * from autocomplete; it will be recreated on the next plugin reload
  * (we don't track a seen-list in v1).
  */
-export {};
+declare const BUNDLED_SKILLS: Record<string, string>;
+export default BUNDLED_SKILLS;

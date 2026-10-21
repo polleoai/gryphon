@@ -25,7 +25,8 @@
  * CLIs throw none).
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-const { CliStructuredOutputError } = require("./cli-structured-output");
+exports.classifyProviderFailure = classifyProviderFailure;
+const cli_structured_output_1 = require("./cli-structured-output");
 // Order of these checks is load-bearing (see classifyProviderFailure).
 //
 // no-api-key: the key was never supplied. SDKs that defer the check throw
@@ -56,6 +57,17 @@ function _statusOf(err) {
 function _avail(reason) {
     return { kind: "availability", reason };
 }
+/** String(v), spelled out per type: what the classifier matches against
+ *  must stay byte-identical to the text it always saw. */
+function _asString(v) {
+    if (typeof v === "string")
+        return v;
+    if (typeof v === "object" && v !== null)
+        return v.toString();
+    if (typeof v === "function")
+        return v.toString();
+    return String(v);
+}
 /**
  * Classify a provider failure.
  *
@@ -71,8 +83,9 @@ function classifyProviderFailure(errOrNull) {
     // safe-to-retry availability failure.
     if (errOrNull == null)
         return _avail("construct-null");
-    const status = _statusOf(errOrNull);
-    const msg = String((errOrNull && errOrNull.message) || errOrNull || "");
+    const errLike = errOrNull;
+    const status = _statusOf(errLike);
+    const msg = _asString((errLike && errLike.message) || errOrNull || "");
     // Priority order matters: message-specific overrides are checked ahead of
     // raw status so OpenAI's insufficient_quota-as-429 lands on billing, and a
     // "key not set" never reads as a generic auth failure.
@@ -89,9 +102,8 @@ function classifyProviderFailure(errOrNull) {
     // Everything else: a working provider that errored. Distinguish content
     // (bad output) from runtime (network/timeout/5xx/unknown) for the reported
     // signal; neither triggers failover.
-    if (errOrNull instanceof CliStructuredOutputError || CONTENT_RE.test(msg)) {
+    if (errOrNull instanceof cli_structured_output_1.CliStructuredOutputError || CONTENT_RE.test(msg)) {
         return { kind: "content", reason: null };
     }
     return { kind: "runtime", reason: null };
 }
-module.exports = { classifyProviderFailure };

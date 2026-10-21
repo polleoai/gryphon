@@ -10,9 +10,18 @@
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as path from "path";
+import { resolveVaultPath, PathOutsideVaultError } from "@polleoai/gryphon-protect";
+
+interface GlobInput {
+  pattern?: string;
+  path?: string;
+}
+
+interface GlobToolContext {
+  vaultRoot: string;
+}
 
 const SCHEMA = {
   name: "Glob",
@@ -39,7 +48,7 @@ const SCHEMA = {
 const DEFAULT_LIMIT = 250;
 const MAX_DESCEND_ENTRIES = 50000;  // safety cap on directory walk
 
-async function execute(input: any, ctx: any) {
+async function execute(input: GlobInput, ctx: GlobToolContext) {
   const pattern = input.pattern;
   if (!pattern) return _error("Missing required parameter: pattern");
 
@@ -65,7 +74,7 @@ async function execute(input: any, ctx: any) {
   const matches: string[] = [];
   let walkedCount = 0;
 
-  function walk(dir: any) {
+  function walk(dir: string) {
     if (walkedCount >= MAX_DESCEND_ENTRIES) return;
     let entries;
     try {
@@ -93,7 +102,7 @@ async function execute(input: any, ctx: any) {
   // Sort by mtime desc
   const withMtime = matches.map((p) => {
     let mtime = 0;
-    try { mtime = fs.statSync(p).mtimeMs; } catch {}
+    try { mtime = fs.statSync(p).mtimeMs; } catch { /* vanished/unreadable — sort as oldest */ }
     return { path: p, mtime };
   });
   withMtime.sort((a, b) => b.mtime - a.mtime);
@@ -119,7 +128,7 @@ const IGNORED_DIRS = new Set([
   ".kb-trash",
 ]);
 
-function _isIgnoredDir(name: any) {
+function _isIgnoredDir(name: string) {
   return IGNORED_DIRS.has(name) || name.startsWith(".cache");
 }
 
@@ -129,7 +138,7 @@ function _isIgnoredDir(name: any) {
  *
  * Anchored to full-string match.
  */
-function _globToRegex(glob: any): RegExp {
+function _globToRegex(glob: string): RegExp {
   // First expand braces: foo.{js,ts} → (foo.js|foo.ts)
   const expanded = _expandBraces(glob);
   if (expanded.length > 1) {
@@ -139,19 +148,19 @@ function _globToRegex(glob: any): RegExp {
   return new RegExp("^" + _singleGlobToRegexBody(expanded[0]) + "$");
 }
 
-function _expandBraces(glob: any): string[] {
+function _expandBraces(glob: string): string[] {
   const m = glob.match(/^(.*?)\{([^{}]+)\}(.*)$/);
   if (!m) return [glob];
   const [, before, inner, after] = m;
   const options = inner.split(",");
-  const out = [];
+  const out: string[] = [];
   for (const opt of options) {
     out.push(...(_expandBraces(before + opt + after)));
   }
   return out;
 }
 
-function _singleGlobToRegexBody(glob: any): string {
+function _singleGlobToRegexBody(glob: string): string {
   let out = "";
   let i = 0;
   while (i < glob.length) {
@@ -192,11 +201,11 @@ function _singleGlobToRegexBody(glob: any): string {
   return out;
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

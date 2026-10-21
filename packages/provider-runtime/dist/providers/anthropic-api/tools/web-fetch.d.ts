@@ -10,15 +10,17 @@
  * Permission: read-only network operation. Refused only in plan mode;
  * allowed in default / acceptEdits / bypassPermissions without prompt.
  *
- * SSRF hardening (post-v0.2.0):
- *   - `redirect: "manual"` — we follow redirects ourselves so each hop's
- *     hostname/IP gets re-validated. `fetch`'s default `"follow"` silently
- *     chases a 302 → http://127.0.0.1/admin without any re-check.
- *   - DNS pre-resolution with undici.Agent connect pinning — reject any
- *     hostname that resolves to a private/loopback IP, and pin the TCP
- *     connect to the resolved address so DNS rebinding (TTL=0 attacker
- *     DNS that flips from public to 127.0.0.1 between our check and
- *     undici's own resolution) can't bypass the guard.
+ * SSRF hardening:
+ *   - The URL's hostname is refused if it is a private / loopback /
+ *     link-local literal, or if DNS resolves it to one (checked before the
+ *     request).
+ *   - Headless hosts (HeadlessHostAdapter → nodeFetch) also get
+ *     `blockAddress`: every redirect hop's hostname and every address DNS
+ *     resolves it to are checked at connect time, so a redirect to an
+ *     internal address and DNS rebinding are both refused.
+ *   - Known gap (Obsidian): requestUrl follows redirects itself and ignores
+ *     `blockAddress`, so there a redirect hop to a private address isn't
+ *     re-checked and the connection isn't pinned to the checked address.
  */
 declare const SCHEMA: {
     name: string;
@@ -38,13 +40,35 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<{
+interface WebFetchInput {
+    url?: unknown;
+    prompt?: string;
+}
+interface HostResponse {
+    status: number;
+    headers?: Record<string, string>;
+    text?: unknown;
+    arrayBuffer?: ArrayBuffer;
+}
+interface WebFetchHostAdapter {
+    fetch(url: string, opts: {
+        method: string;
+        headers: Record<string, string>;
+        throw: boolean;
+        blockAddress?: (hostOrIp: string) => boolean;
+    }): Promise<HostResponse>;
+}
+interface WebFetchToolContext {
+    permissionMode?: string;
+    hostAdapter: WebFetchHostAdapter;
+}
+declare function execute(input: WebFetchInput, ctx: WebFetchToolContext): Promise<{
     content: {
         type: string;
-        text: any;
+        text: string;
     }[];
     isError: boolean;
 }>;
-declare function _isPrivateHost(hostname: any): boolean;
-declare function _isAllowedContentType(contentType: any): boolean;
+declare function _isPrivateHost(hostname: string | null | undefined): boolean;
+declare function _isAllowedContentType(contentType: string | null | undefined): boolean;
 export { SCHEMA, execute, _isPrivateHost, _isAllowedContentType };

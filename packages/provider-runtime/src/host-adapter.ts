@@ -15,21 +15,40 @@
  * Per L1 in docs/consumer-requirements.md.
  */
 
+import { nodeFetch } from "./node-fetch";
+import type { NodeFetchInit } from "./node-fetch";
+
+/** The response surface callers use (nodeFetch and a WHATWG Response both satisfy it). */
+interface FetchResponse {
+  status: number;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+}
+/** A fetch-like function; the default is nodeFetch (node http/https). */
+type FetchImpl = (url: string, opts?: RequestInit) => Promise<FetchResponse>;
+
 class HeadlessHostAdapter {
+  private readonly _fetchImpl: FetchImpl | null;
+
+  /** `fetchImpl` replaces the default fetch (embedders with their own client, tests). */
+  constructor(options: { fetchImpl?: FetchImpl } = {}) {
+    this._fetchImpl = options.fetchImpl || null;
+  }
+
   notify(message: unknown, opts?: { level?: string; timeoutMs?: number }) {
     opts = opts || {};
     const level = opts.level || "info";
-    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-    fn(`[gryphon] ${message}`);
+    // Info goes to console.debug — the same stdout line under node, and
+    // Obsidian's quiet-console rule inside the app.
+    const fn = level === "error" ? console.error : level === "warn" ? console.warn : console.debug;
+    fn(`[gryphon] ${message as string}`);
   }
 
-  async fetch(url: string, opts?: RequestInit) {
+  async fetch(url: string, opts?: RequestInit): Promise<FetchResponse> {
     opts = opts || {};
-    // Bare global `fetch` (Node 18+ and the renderer both provide it). This
-    // HeadlessHostAdapter runs in a Node subprocess (hooks/IPC) where there is
-    // no window/activeWindow, so the obsidianmd window-global guidance doesn't
-    // apply. The unqualified call resolves to the global, not this method.
-    return fetch(url, opts);
+    if (this._fetchImpl) return this._fetchImpl(url, opts);
+    // node's own http/https (see node-fetch.ts for why not the global fetch).
+    return nodeFetch(url, opts as NodeFetchInit);
   }
 }
 

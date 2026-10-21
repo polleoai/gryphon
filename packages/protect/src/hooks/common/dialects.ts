@@ -57,7 +57,7 @@ const ANTIGRAVITY_PATH_FIELDS = [
 /** Field names Antigravity uses for a shell command string. */
 const ANTIGRAVITY_COMMAND_FIELDS = ["CommandLine", "Command", "Script", "Input"];
 
-const ARG_MAPPERS: Record<string, (args: Record<string, any>) => Record<string, unknown>> = {
+const ARG_MAPPERS: Record<string, (args: Record<string, unknown>) => Record<string, unknown>> = {
   run_command: (args) => ({
     ...args,
     command: args.CommandLine,
@@ -115,15 +115,29 @@ const ARG_MAPPERS: Record<string, (args: Record<string, any>) => Record<string, 
  * Returns null for input that carries no tool call at all. Never throws —
  * the caller is a fail-closed hook and must be able to deny cleanly.
  */
-function normalizeAntigravityInput(input: any) {
+// The parts of Antigravity's camelCase hook payload read below.
+interface AntigravityHookPayload {
+  toolCall?: unknown;
+  workspacePaths?: unknown;
+  conversationId?: unknown;
+}
+
+interface AntigravityToolCall {
+  name?: unknown;
+  args?: unknown;
+}
+
+function normalizeAntigravityInput(input: unknown) {
   if (!input || typeof input !== "object") return null;
-  const call = input.toolCall;
+  const payload = input as AntigravityHookPayload;
+  const call = payload.toolCall;
   if (!call || typeof call !== "object") return null;
 
-  const name = call.name;
-  const rawArgs = (call.args && typeof call.args === "object") ? call.args : {};
+  const toolCall = call as AntigravityToolCall;
+  const name = toolCall.name;
+  const rawArgs = ((toolCall.args && typeof toolCall.args === "object") ? toolCall.args : {}) as Record<string, unknown>;
   const mapper = typeof name === "string" ? ARG_MAPPERS[name] : null;
-  const toolInput: Record<string, any> = mapper ? mapper(rawArgs) : { ...rawArgs };
+  const toolInput: Record<string, unknown> = mapper ? mapper(rawArgs) : { ...rawArgs };
 
   // Generic fallback for tools we have no explicit mapper for.
   //
@@ -161,13 +175,13 @@ function normalizeAntigravityInput(input: any) {
   // A tool's own working directory is more specific than the workspace
   // root — `agy` runs commands from its own scratch dir by default, and a
   // path rule evaluated against the wrong cwd resolves the wrong file.
-  const workspace = Array.isArray(input.workspacePaths) ? input.workspacePaths[0] : null;
+  const workspace: unknown = Array.isArray(payload.workspacePaths) ? payload.workspacePaths[0] : null;
   const cwd = (rawArgs && rawArgs.Cwd) || workspace || null;
 
   return {
     tool_name: name,
     tool_input: toolInput,
-    session_id: input.conversationId || null,
+    session_id: payload.conversationId || null,
     cwd,
     // Antigravity has no per-call permission-mode field; the plugin's own
     // setting governs. Left null so `classify` falls back to it.
@@ -217,7 +231,7 @@ function buildHookDecision(dialect: string | null | undefined, decision: string,
   };
 }
 
-module.exports = {
+export {
   normalizeAntigravityInput,
   buildAntigravityDecision,
   buildHookDecision,

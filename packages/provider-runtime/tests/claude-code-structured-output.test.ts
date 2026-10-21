@@ -22,11 +22,11 @@ Module._resolveFilename = function (req, ...args) {
   return origResolve.call(this, req, ...args);
 };
 
-// Stub @gryphon/protect and @gryphon/provider-config so the provider module
+// Stub @polleoai/gryphon-protect and @polleoai/gryphon-provider-config so the provider module
 // loads without the real Obsidian plugin infra.
 const origLoad = Module._load;
 Module._load = function (request, ...args) {
-  if (request === "@gryphon/protect") {
+  if (request === "@polleoai/gryphon-protect") {
     return {
       buildDisallowedTools: () => [],
       winSpawn: { isWindowsShim: () => false, wrapForCmdShim: (cmd, a) => ({ command: cmd, args: a, options: {} }) },
@@ -34,7 +34,7 @@ Module._load = function (request, ...args) {
       GRYPHON_FALLBACK_DENY_HINT: "[gryphon-fallback]",
     };
   }
-  if (request === "@gryphon/provider-config") {
+  if (request === "@polleoai/gryphon-provider-config") {
     return { filterExtraArgs: (a) => ({ filtered: a, dropped: [] }) };
   }
   return origLoad.call(this, request, ...args);

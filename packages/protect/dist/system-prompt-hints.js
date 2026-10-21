@@ -1,6 +1,7 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GRYPHON_SDK_COMPOUND_REQUEST_RULE = exports.GRYPHON_FALLBACK_DENY_HINT = exports.GRYPHON_SYSTEM_PROMPT_HINT = void 0;
 /**
  * Shared Gryphon system-prompt hints.
  *
@@ -125,6 +126,7 @@ const GRYPHON_SYSTEM_PROMPT_HINT = "IMPORTANT — you are running inside the Gry
     "tool (e.g. \"delete X\" with no other sub-task), then there is no " +
     "safe part to complete — output the deny reason alone, verbatim, " +
     "with no preamble or epilogue (the original verbatim-only rule).";
+exports.GRYPHON_SYSTEM_PROMPT_HINT = GRYPHON_SYSTEM_PROMPT_HINT;
 const GRYPHON_FALLBACK_DENY_HINT = "· Additional guidance for THIS session: tool refusals in this " +
     "session come from the user's protected-pattern deny-list. The " +
     "tool result's `reason` field is normally a COMPLETE deny copy " +
@@ -151,6 +153,7 @@ const GRYPHON_FALLBACK_DENY_HINT = "· Additional guidance for THIS session: too
     "double-check the path — none of those are the real reason. The " +
     "real reason is always: the user's own protected-pattern list " +
     "matched the operation.";
+exports.GRYPHON_FALLBACK_DENY_HINT = GRYPHON_FALLBACK_DENY_HINT;
 /**
  * SDK-flavored compound-request rule. Same intent as the CLI
  * COMPOUND REQUESTS clause inside GRYPHON_SYSTEM_PROMPT_HINT, but
@@ -206,8 +209,4 @@ const GRYPHON_SDK_COMPOUND_REQUEST_RULE = " · CRITICAL — COMPOUND REQUESTS WI
     "is a SINGLE request that maps entirely to a refused tool (e.g. " +
     "\"delete X\" with no other sub-task), there is no safe part — " +
     "output the deny reason alone, no preamble or epilogue.";
-module.exports = {
-    GRYPHON_SYSTEM_PROMPT_HINT,
-    GRYPHON_FALLBACK_DENY_HINT,
-    GRYPHON_SDK_COMPOUND_REQUEST_RULE,
-};
+exports.GRYPHON_SDK_COMPOUND_REQUEST_RULE = GRYPHON_SDK_COMPOUND_REQUEST_RULE;

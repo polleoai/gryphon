@@ -19,16 +19,27 @@
  * call sites.
  */
 declare class CliStructuredOutputError extends Error {
-    [key: string]: any;
+    reason: string | undefined;
+    attempts: number | undefined;
+    lastOutput: string | null | undefined;
     constructor(message: string, { reason, attempts, lastOutput }?: {
         reason?: string;
         attempts?: number;
-        lastOutput?: string;
+        lastOutput?: string | null;
     });
 }
 declare function injectSchemaHint(basePrompt: string, structuredOutput: {
     name: string;
     schema: object;
 }): string;
-declare function parseAndValidate(text: string, schema: any): unknown;
+/** The JSON Schema subset `validate` understands (see module header). */
+interface SchemaNode {
+    enum?: unknown[];
+    type?: string;
+    properties?: Record<string, SchemaNode>;
+    required?: string[];
+    additionalProperties?: boolean;
+    items?: SchemaNode;
+}
+declare function parseAndValidate(text: string, schema: SchemaNode): unknown;
 export { injectSchemaHint, parseAndValidate, CliStructuredOutputError, };

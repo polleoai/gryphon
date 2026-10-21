@@ -17,15 +17,35 @@
  * valid markdown but its dead references stop loading.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { escapeVaultPath } = require("./context-budget");
+import * as fs from "fs";
+import * as path from "path";
+import { escapeVaultPath } from "./context-budget";
+
+interface MemoryFile {
+  name: string;
+  path: string;
+  size: number;
+  mtimeMs: number;
+  ageDays: number;
+}
+
+interface MemoryMove {
+  name: string;
+  from: string;
+  to: string;
+}
+
+interface MemoryIndexUpdate {
+  commented: number;
+  uncommented: number;
+  indexWriteError?: string;
+}
 
 const MEMORY_INDEX_NAME = "MEMORY.md";
 const ARCHIVE_DIRNAME = "memory-archive";
 const DEFAULT_ARCHIVE_AGE_DAYS = 90;
 
-function findMemoryDir({ vaultPath, homeDir }) {
+function findMemoryDir({ vaultPath, homeDir }: { vaultPath?: unknown; homeDir?: unknown }): string | null {
   if (typeof vaultPath !== "string" || !vaultPath) return null;
   if (typeof homeDir !== "string" || !homeDir) return null;
   const escaped = escapeVaultPath(vaultPath);
@@ -39,21 +59,21 @@ function findMemoryDir({ vaultPath, homeDir }) {
   }
 }
 
-function listMemoryFiles({ memoryDir, nowMs }) {
+function listMemoryFiles({ memoryDir, nowMs }: { memoryDir?: unknown; nowMs?: unknown }): MemoryFile[] {
   if (typeof memoryDir !== "string" || !memoryDir) return [];
   const now = typeof nowMs === "number" ? nowMs : Date.now();
-  let entries;
+  let entries: string[];
   try {
     entries = fs.readdirSync(memoryDir);
   } catch {
     return [];
   }
-  const out = [];
+  const out: MemoryFile[] = [];
   for (const name of entries) {
     if (!name.endsWith(".md")) continue;
     if (name.startsWith(".")) continue;
     const full = path.join(memoryDir, name);
-    let st;
+    let st: fs.Stats;
     try { st = fs.statSync(full); } catch { continue; }
     if (!st.isFile()) continue;
     const ageDays = Math.max(0, Math.floor((now - st.mtimeMs) / (1000 * 60 * 60 * 24)));
@@ -69,9 +89,12 @@ function listMemoryFiles({ memoryDir, nowMs }) {
   return out;
 }
 
-function classifyMemoryFiles(files, { ageDaysThreshold = DEFAULT_ARCHIVE_AGE_DAYS } = {}) {
-  const candidates = [];
-  const recent = [];
+function classifyMemoryFiles(
+  files: MemoryFile[] | null | undefined,
+  { ageDaysThreshold = DEFAULT_ARCHIVE_AGE_DAYS }: { ageDaysThreshold?: number } = {},
+): { candidates: MemoryFile[]; recent: MemoryFile[] } {
+  const candidates: MemoryFile[] = [];
+  const recent: MemoryFile[] = [];
   for (const f of (files || [])) {
     if (f.name === MEMORY_INDEX_NAME) {
       recent.push(f);
@@ -83,12 +106,14 @@ function classifyMemoryFiles(files, { ageDaysThreshold = DEFAULT_ARCHIVE_AGE_DAY
   return { candidates, recent };
 }
 
-function archiveMemoryFiles({ memoryDir, files }) {
+function archiveMemoryFiles(
+  { memoryDir, files }: { memoryDir?: unknown; files?: Array<Partial<MemoryFile> | null | undefined> | null },
+): MemoryMove[] {
   if (typeof memoryDir !== "string" || !memoryDir) return [];
   if (!Array.isArray(files) || files.length === 0) return [];
   const archiveDir = path.join(memoryDir, ARCHIVE_DIRNAME);
   fs.mkdirSync(archiveDir, { recursive: true });
-  const moved = [];
+  const moved: MemoryMove[] = [];
   for (const f of files) {
     if (!f || typeof f.path !== "string" || !f.path) continue;
     if (typeof f.name !== "string" || !f.name) continue;
@@ -104,9 +129,11 @@ function archiveMemoryFiles({ memoryDir, files }) {
   return moved;
 }
 
-function unarchiveMemoryFiles(moves) {
+function unarchiveMemoryFiles(
+  moves: Array<Partial<MemoryMove> | null | undefined> | null | undefined,
+): Array<{ name: string | undefined }> {
   if (!Array.isArray(moves) || moves.length === 0) return [];
-  const restored = [];
+  const restored: Array<{ name: string | undefined }> = [];
   for (const m of moves) {
     if (!m || typeof m.from !== "string" || typeof m.to !== "string") continue;
     try {
@@ -119,18 +146,20 @@ function unarchiveMemoryFiles(moves) {
   return restored;
 }
 
-function updateMemoryIndex({ memoryDir, archivedNames, restoredNames }) {
+function updateMemoryIndex(
+  { memoryDir, archivedNames, restoredNames }: { memoryDir?: unknown; archivedNames?: unknown; restoredNames?: unknown },
+): MemoryIndexUpdate {
   if (typeof memoryDir !== "string" || !memoryDir) return { commented: 0, uncommented: 0 };
   const indexPath = path.join(memoryDir, MEMORY_INDEX_NAME);
-  let text;
+  let text: string;
   try {
     text = fs.readFileSync(indexPath, "utf8");
   } catch {
     return { commented: 0, uncommented: 0 };
   }
   const lines = text.split("\n");
-  const archivedSet = new Set(Array.isArray(archivedNames) ? archivedNames : []);
-  const restoredSet = new Set(Array.isArray(restoredNames) ? restoredNames : []);
+  const archivedSet = new Set<string>(Array.isArray(archivedNames) ? (archivedNames as string[]) : []);
+  const restoredSet = new Set<string>(Array.isArray(restoredNames) ? (restoredNames as string[]) : []);
   let commented = 0;
   let uncommented = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -151,7 +180,8 @@ function updateMemoryIndex({ memoryDir, archivedNames, restoredNames }) {
   }
   try {
     fs.writeFileSync(indexPath, lines.join("\n"));
-  } catch (e) {
+  } catch (e: unknown) {
+    const err = e as Error | null | undefined;
     // Index write failed — files are still moved on disk, but the
     // index still references them. CC will 404 those names on every
     // future turn until the user fixes the index manually or re-runs
@@ -160,13 +190,13 @@ function updateMemoryIndex({ memoryDir, archivedNames, restoredNames }) {
     return {
       commented,
       uncommented,
-      indexWriteError: (e && e.message) || String(e),
+      indexWriteError: (err && err.message) || String(err),
     };
   }
   return { commented, uncommented };
 }
 
-function _lineRefersToAny(line, nameSet) {
+function _lineRefersToAny(line: unknown, nameSet: Set<string> | null | undefined): boolean {
   if (!nameSet || nameSet.size === 0) return false;
   if (typeof line !== "string" || !line) return false;
   for (const name of nameSet) {
@@ -178,7 +208,7 @@ function _lineRefersToAny(line, nameSet) {
   return false;
 }
 
-module.exports = {
+export {
   MEMORY_INDEX_NAME,
   ARCHIVE_DIRNAME,
   DEFAULT_ARCHIVE_AGE_DAYS,

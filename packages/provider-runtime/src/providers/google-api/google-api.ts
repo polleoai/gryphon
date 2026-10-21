@@ -19,12 +19,67 @@
  * cachedContentTokenCount; pricing.js computeCost() converts to USD.
  */
 
-const { GoogleGenAI } = require("@google/genai");
-const { runGeminiToolLoop } = require("./tool-loop") as typeof import("./tool-loop");
-const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.google;
-const { testApiKey } = require("./test-key") as typeof import("./test-key");
+import type { Content, GoogleGenAI as GoogleGenAIClient, Part } from "@google/genai";
+import { runGeminiToolLoop } from "./tool-loop";
+import { pricing } from "@polleoai/gryphon-provider-config";
+import { HeadlessHostAdapter } from "../../host-adapter";
+import { testApiKey } from "./test-key";
+import { GRYPHON_SDK_COMPOUND_REQUEST_RULE } from "@polleoai/gryphon-protect";
 
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
+// The SDK is loaded on first use, not at module load (gryphon-dev#38):
+// importing this module (the factory does) must not pay the SDK's parse +
+// init cost at plugin start. Every reference goes through `loadSdk()`, so
+// the process holds one SDK copy. The key test (`./test-key`) is a plain
+// HTTP call and never loads the SDK.
+type GenAISdk = typeof import("@google/genai");
+let _sdk: GenAISdk | null = null;
+async function loadSdk(): Promise<GenAISdk> {
+  return (_sdk ??= await import("@google/genai"));
+}
+const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = pricing.google;
+
+type GeminiToolLoopArgs = Parameters<typeof runGeminiToolLoop>[0];
+type GeminiToolLoopContext = GeminiToolLoopArgs["ctx"];
+
+// What abort() needs from the active stream (an async generator).
+interface GeminiAbortableStream {
+  return?: (value?: unknown) => unknown;
+}
+
+interface GoogleProviderOptions {
+  hostAdapter?: unknown;
+  client?: GoogleGenAIClient;
+  initialHistory?: IncomingHistoryEntry[];
+  model?: string | null;
+  permissionMode?: string;
+  plugin?: unknown;
+  security?: unknown;
+  [key: string]: unknown;
+}
+
+interface GoogleSendOptions {
+  maxUsdBudget?: number | null;
+  structuredOutput?: { name: string; schema: Record<string, unknown> } | null;
+  [key: string]: unknown;
+}
+
+interface GoogleTurnResult {
+  text: string;
+  cost: number;
+  cumulativeCost: number;
+  sessionId: string;
+  duration: number;
+  contextTokens: number;
+  json?: unknown;
+}
+
+// Loose shape of an incoming history entry (Gemini- or Anthropic/OpenAI-shaped).
+type IncomingHistoryEntry = {
+  role?: unknown;
+  parts?: unknown;
+  content?: unknown;
+  text?: unknown;
+} | null | undefined;
 const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
@@ -61,8 +116,28 @@ const GRYPHON_GEMINI_SYSTEM_PROMPT =
   GRYPHON_GEMINI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 
 class GoogleProvider {
-  [key: string]: any;
-  constructor(apiKey: any, cwd: any, options: Record<string, any> = {}) {
+  // `declare` fields: typed for the compiler, no emitted class-field
+  // initializers (the constructor assigns them exactly as before).
+  declare apiKey: string;
+  declare cwd: string;
+  declare options: GoogleProviderOptions;
+  declare hostAdapter: unknown;
+  declare client: GoogleGenAIClient | null;
+  declare history: Content[];
+  declare sessionId: string;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare cumulativeCost: number;
+  declare startTime: number;
+  declare activeStream: GeminiAbortableStream | null;
+  declare pending: boolean;
+  declare destroyed: boolean;
+  declare onMessage: ((text: string, type: string) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: GoogleTurnResult) => void) | null;
+  declare _needsHistoryReset: boolean | undefined;
+
+  constructor(apiKey: string, cwd: string, options: GoogleProviderOptions = {}) {
     if (!apiKey) {
       throw new Error("GoogleProvider: apiKey is required");
     }
@@ -70,12 +145,13 @@ class GoogleProvider {
     this.cwd = cwd;
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
 
-    // Test seam: callers may inject a mock client. Otherwise construct
-    // the real Gemini SDK client. The API surface used here is
+    // Test seam: callers may inject a mock client. Otherwise the real
+    // Gemini SDK client is built on first use by `_ensureClient()` (the SDK
+    // loads lazily). The API surface used here is
     // `client.models.generateContentStream({...})`.
-    this.client = options.client || new GoogleGenAI({ apiKey });
+    this.client = options.client || null;
 
     // Gemini's chat history shape: alternating Content { role, parts }.
     // role is "user" | "model" (NOT "assistant").
@@ -103,6 +179,19 @@ class GoogleProvider {
 
   isAlive() { return !this.destroyed; }
 
+  /**
+   * The SDK client, built on first use. Loads the SDK (once per process)
+   * unless a client was injected or already built.
+   */
+  async _ensureClient(): Promise<GoogleGenAIClient> {
+    if (this.client) return this.client;
+    const { GoogleGenAI } = await loadSdk();
+    // A concurrent first call may have built one while we awaited.
+    if (this.client) return this.client;
+    this.client = new GoogleGenAI({ apiKey: this.apiKey });
+    return this.client;
+  }
+
   // Gemini mode: cost is computed locally from token usage × MODEL_PRICES.
   // The price table may drift from Google's published pricing between
   // Gryphon releases. Cached-token discounts are tracked but not applied
@@ -120,7 +209,7 @@ class GoogleProvider {
         if (typeof this.activeStream.return === "function") {
           this.activeStream.return();
         }
-      } catch {}
+      } catch { /* iterator already finished */ }
       this.activeStream = null;
     }
     this.pending = false;
@@ -136,7 +225,7 @@ class GoogleProvider {
    * `historyCheckpoint` — the second send's user message could be truncated
    * by the first send's error rollback. Inherited from openai-api / anthropic-api.
    */
-  async send(prompt: any, options: Record<string, any> = {}) {
+  async send(prompt: string, options: GoogleSendOptions = {}) {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -164,7 +253,7 @@ class GoogleProvider {
     if (this.onMessage) this.onMessage("", "init");
 
     const turnStart = Date.now();
-    const ctx: Record<string, any> = {
+    const ctx: GeminiToolLoopContext = {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
@@ -192,29 +281,30 @@ class GoogleProvider {
     // post-turn (subprocess owns mid-stream).
     ctx.maxUsdBudget = options && typeof options.maxUsdBudget === "number" ? options.maxUsdBudget : null;
     ctx.priorCumulativeCost = this.cumulativeCost;
-    ctx.computeIterationCost = (usage: any) => {
-      const { cost } = computeCost(usage, this.resolvedModel);
+    ctx.computeIterationCost = (usage) => {
+      const { cost } = computeCost(usage as Record<string, unknown>, this.resolvedModel);
       return cost;
     };
 
     try {
+      const client = await this._ensureClient();
       const { turnText, finalMessage, totalUsage, peakUsage } = await runGeminiToolLoop({
-        client: this.client,
+        client,
         model: this.resolvedModel,
         systemPrompt: GRYPHON_GEMINI_SYSTEM_PROMPT,
         history: this.history,
         ctx,
         callbacks: {
-          onMessage: (text: any, type: any) => {
+          onMessage: (text: string, type: string) => {
             if (this.onMessage) this.onMessage(text, type);
           },
-          onTool: (name: any) => {
+          onTool: (name: string) => {
             if (this.onMessage) this.onMessage(name, "tool");
           },
-          onError: (text: any) => {
+          onError: (text: string) => {
             if (this.onError) this.onError(text);
           },
-          onStream: (stream: any) => {
+          onStream: (stream) => {
             this.activeStream = stream;
           },
         },
@@ -231,11 +321,11 @@ class GoogleProvider {
       // functionResponse.response payload.
       const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
       const turnSlice = this.history.slice(historyCheckpoint);
-      const hadProtectedDeny = turnSlice.some((m: any) => {
+      const hadProtectedDeny = turnSlice.some((m) => {
         if (!m || !Array.isArray(m.parts)) return false;
-        return m.parts.some((p: any) => {
+        return m.parts.some((p: Part) => {
           if (!p || !p.functionResponse) return false;
-          const resp = p.functionResponse.response;
+          const resp: unknown = p.functionResponse.response;
           if (typeof resp === "string") return resp.includes(_GRYPHON_DENY_MARKER);
           if (resp && typeof resp === "object") {
             const json = JSON.stringify(resp);
@@ -259,7 +349,7 @@ class GoogleProvider {
       this.contextTokens = (peak && peak.promptTokenCount) || 0;
 
       const rawText = turnText || _extractFinalText(finalMessage) || "";
-      const result: Record<string, any> = {
+      const result: GoogleTurnResult = {
         text: rawText,
         cost: turnCost,
         cumulativeCost: this.cumulativeCost,
@@ -277,7 +367,9 @@ class GoogleProvider {
           result.json = JSON.parse(rawText);
           result.text = JSON.stringify(result.json);
         } catch (parseErr) {
-          const err: any = new Error(`structuredOutput: failed to parse model output as JSON: ${(parseErr as Error).message}`);
+          const err = new Error(
+            `structuredOutput: failed to parse model output as JSON: ${(parseErr as Error).message}`,
+          ) as Error & { code?: string; cause?: unknown; lastOutput?: string };
           err.code = "STRUCTURED_OUTPUT_PARSE_FAILED";
           err.cause = parseErr;
           err.lastOutput = rawText;
@@ -297,12 +389,13 @@ class GoogleProvider {
     }
   }
 
-  _formatError(err: any) {
+  _formatError(err: unknown) {
     // Gemini SDK errors don't have a stable class hierarchy — sniff via
     // status code + message keywords. The most common case (bad key) is
     // a 400 with API_KEY_INVALID in the message.
-    const status = err && (err.status || err.statusCode);
-    const msg = String((err && err.message) || err);
+    const e = err as { status?: number; statusCode?: number; message?: string } | null | undefined;
+    const status = e && (e.status || e.statusCode);
+    const msg = String((e && e.message) || err);
 
     if (/API[_ ]KEY[_ ]INVALID|Invalid API key/i.test(msg) || status === 401 || status === 403) {
       return "Invalid API key. Check Settings → Gryphon → Google API key.";
@@ -330,7 +423,7 @@ class GoogleProvider {
  * pass through deep-cloned. Mixed shapes (a `parts` array on a "assistant"
  * role, etc.) are normalized too — `assistant` always rewrites to `model`.
  */
-function cloneGeminiContent(content: any) {
+function cloneGeminiContent(content: IncomingHistoryEntry): Content {
   // Map role: "assistant" → "model"; "user" stays "user"; anything else
   // falls through to "user" (defensive — better than emitting an unknown
   // role which Gemini would reject with the same 400).
@@ -339,15 +432,16 @@ function cloneGeminiContent(content: any) {
              : rawRole === "assistant" ? "model"
              : "user";
 
-  let parts;
-  if (Array.isArray(content && content.parts) && content.parts.length > 0) {
-    parts = JSON.parse(JSON.stringify(content.parts));
+  // The casts below only restate what each guard just checked.
+  let parts: Part[];
+  if (Array.isArray(content && content.parts) && (content as { parts: unknown[] }).parts.length > 0) {
+    parts = JSON.parse(JSON.stringify((content as { parts: unknown[] }).parts)) as Part[];
   } else if (typeof (content && content.content) === "string") {
     // Anthropic/OpenAI-shape: { role, content: <text> } → wrap in a text part.
-    parts = [{ text: content.content }];
+    parts = [{ text: (content as { content: string }).content }];
   } else if (typeof (content && content.text) === "string") {
     // Defensive: { role, text } variant.
-    parts = [{ text: content.text }];
+    parts = [{ text: (content as { text: string }).text }];
   } else {
     parts = [];
   }
@@ -355,10 +449,10 @@ function cloneGeminiContent(content: any) {
   return { role, parts };
 }
 
-function _extractFinalText(finalMessage: any) {
+function _extractFinalText(finalMessage: Content | null | undefined) {
   if (!finalMessage || !Array.isArray(finalMessage.parts)) return "";
   return finalMessage.parts
-    .map((p: any) => (typeof p.text === "string" ? p.text : ""))
+    .map((p: Part) => (typeof p.text === "string" ? p.text : ""))
     .join("");
 }
 

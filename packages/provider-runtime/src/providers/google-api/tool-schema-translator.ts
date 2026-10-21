@@ -21,17 +21,31 @@
  * returned object without affecting the source registry.
  */
 
-function translateSchemaToGemini(schema: any) {
-  if (!schema || typeof schema !== "object") {
+// Anthropic-shape tool SCHEMA as registered by Gryphon's tools.
+interface AnthropicToolSchema {
+  name?: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+}
+
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+function translateSchemaToGemini(input: unknown): GeminiFunctionDeclaration {
+  if (!input || typeof input !== "object") {
     throw new Error("translateSchemaToGemini: SCHEMA must be an object");
   }
+  const schema = input as AnthropicToolSchema;
   if (!schema.name) {
     throw new Error("translateSchemaToGemini: SCHEMA.name is required");
   }
   if (!schema.input_schema) {
     throw new Error("translateSchemaToGemini: SCHEMA.input_schema is required");
   }
-  const parameters = stripAdditionalProperties(schema.input_schema);
+  const parameters = stripAdditionalProperties(schema.input_schema) as Record<string, unknown>;
   _validateGeminiSchemaDialect(parameters, schema.name);
   return {
     name: schema.name,
@@ -40,7 +54,7 @@ function translateSchemaToGemini(schema: any) {
   };
 }
 
-function translateSchemasToGemini(schemas: any) {
+function translateSchemasToGemini(schemas: unknown): { functionDeclarations: GeminiFunctionDeclaration[] } {
   if (!Array.isArray(schemas)) {
     throw new Error("translateSchemasToGemini: expected an array of SCHEMA objects");
   }
@@ -54,10 +68,10 @@ function translateSchemasToGemini(schemas: any) {
  * at every depth. Arrays + primitive values pass through unchanged
  * structurally; only object keys are filtered.
  */
-function stripAdditionalProperties(value: any): any {
+function stripAdditionalProperties(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stripAdditionalProperties);
   if (value && typeof value === "object") {
-    const out: Record<string, any> = {};
+    const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       if (k === "additionalProperties") continue;
       out[k] = stripAdditionalProperties(v);
@@ -73,18 +87,19 @@ function stripAdditionalProperties(value: any): any {
  * strings (Gemini's JSON Schema dialect rejects integer/number enums on
  * function-call parameters).
  */
-function _validateGeminiSchemaDialect(node: any, toolName: any, path = "") {
+function _validateGeminiSchemaDialect(node: unknown, toolName: string, path = ""): void {
   if (Array.isArray(node)) {
     node.forEach((v, i) => _validateGeminiSchemaDialect(v, toolName, `${path}[${i}]`));
     return;
   }
   if (!node || typeof node !== "object") return;
-  if (Array.isArray(node.enum)) {
-    const badIndex = node.enum.findIndex((v: any) => typeof v !== "string");
+  const enumValues = (node as { enum?: unknown }).enum;
+  if (Array.isArray(enumValues)) {
+    const badIndex = enumValues.findIndex((v: unknown) => typeof v !== "string");
     if (badIndex >= 0) {
       throw new Error(
         `translateSchemaToGemini(${toolName}): non-string enum value at ${path || "<root>"}` +
-        ` — Gemini's JSON Schema dialect only accepts string enums. Got ${typeof node.enum[badIndex]}.`,
+        ` — Gemini's JSON Schema dialect only accepts string enums. Got ${typeof enumValues[badIndex]}.`,
       );
     }
   }

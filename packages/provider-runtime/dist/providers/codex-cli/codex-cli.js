@@ -28,6 +28,39 @@
  *   { type: "item.completed", item: { id, type, text? } }     — agent_message holds final text
  *   { type: "turn.completed", usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_MODEL = exports.SESSION_PREFIX = exports.CodexProvider = void 0;
 exports._mapPermissionToSandbox = _mapPermissionToSandbox;
@@ -42,12 +75,20 @@ exports._scrubInternalLeaks = _scrubInternalLeaks;
 // accepts timer names that resolve to a local binding; window.* would throw in
 // the headless paths.
 const setTimeoutFn = setTimeout;
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry");
-const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
-const { computeCost, coerceToVendorModel, coerceToCodexCliModel, CODEX_CLI_DEFAULT_MODEL, DEFAULT_MODEL, } = require("@gryphon/provider-config").pricing.openai;
+const subprocess_registry_1 = require("../../subprocess-registry");
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const os = __importStar(require("os"));
+const utils_1 = require("../../utils");
+const gryphon_protect_2 = require("@polleoai/gryphon-protect");
+const gryphon_provider_config_2 = require("@polleoai/gryphon-provider-config");
+const cli_structured_output_1 = require("../../cli-structured-output");
+const budget_error_1 = require("../../budget-error");
+const host_adapter_1 = require("../../host-adapter");
+const { computeCost, coerceToCodexCliModel } = gryphon_provider_config_1.pricing.openai;
+// The registry's default model id (typed loosely upstream).
+const DEFAULT_MODEL = gryphon_provider_config_1.pricing.openai.DEFAULT_MODEL;
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
-const { hookDispatcher: dispatcher } = require("@gryphon/protect");
-const { winSpawn } = require("@gryphon/protect");
 /**
  * Detect whether the host kernel supports Codex's sandbox modes that
  * require landlock (workspace-write, read-only). Codex's Linux sandbox
@@ -66,7 +107,6 @@ const { winSpawn } = require("@gryphon/protect");
  * a privileged read on some distros and we can't add that dependency.
  * Version parsing is good enough — landlock has been stable in 5.13+.
  */
-const os = require("os");
 let _landlockSupportCache = null;
 function _supportsLandlockSandbox() {
     if (_landlockSupportCache !== null)
@@ -86,7 +126,7 @@ function _supportsLandlockSandbox() {
         const minor = parseInt(m[2], 10);
         _landlockSupportCache = major > 5 || (major === 5 && minor >= 13);
     }
-    catch (_) {
+    catch {
         _landlockSupportCache = false;
     }
     return _landlockSupportCache;
@@ -101,12 +141,12 @@ function _supportsLandlockSandbox() {
 function _ensureProjectUntrusted(hookExtras, cwd) {
     if (hookExtras.env && hookExtras.env.CODEX_HOME)
         return;
-    const { codexTrustOnlyOverlay } = require("@gryphon/protect");
-    const t = codexTrustOnlyOverlay({ projectDir: cwd });
+    const t = (0, gryphon_protect_2.codexTrustOnlyOverlay)({ projectDir: cwd });
     hookExtras.env = { ...(hookExtras.env || {}), ...t.env };
     const prev = hookExtras.cleanup;
     hookExtras.cleanup = () => { try {
-        prev && prev();
+        if (prev)
+            prev();
     }
     finally {
         t.cleanup();
@@ -323,6 +363,8 @@ class CodexProvider {
                 _spawnOverride: bag._spawnOverride,
             };
         }
+        // Bag form is resolved above; any other object here is passed through
+        // untouched, as before (the assertions only narrow the static type).
         this.codexPath = codexPath;
         this.cwd = cwd;
         this.options = options;
@@ -330,7 +372,7 @@ class CodexProvider {
         // contextTokens, ...}> injected by tests to replace the real CLI spawn.
         this._spawnOverride = options._spawnOverride || null;
         this.hostAdapter = options.hostAdapter ||
-            new (require("../../host-adapter").HeadlessHostAdapter)();
+            new host_adapter_1.HeadlessHostAdapter();
         this.process = null;
         this.alive = false;
         // Wrap the resumed id so chat-view sees the prefixed form regardless
@@ -375,7 +417,7 @@ class CodexProvider {
         // Resume the prior thread if we captured one; else start fresh. The
         // CLI expects a raw UUID — strip our synthetic "codex-cli-" prefix.
         if (resuming) {
-            args.push("resume", _unwrapSession(this.sessionId));
+            args.push("resume", _unwrapSession(this.sessionId)); // resuming ⇒ sessionId set
         }
         // Flags valid on both `exec` and `exec resume`.
         args.push("--json", "--skip-git-repo-check");
@@ -399,8 +441,7 @@ class CodexProvider {
         // so a multi-provider consumer can pass a shared extraArgs without
         // failing the codex spawn with "unexpected argument."
         if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-            const { filterExtraArgs } = require("@gryphon/provider-config");
-            const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "codex-cli");
+            const { filtered, dropped } = (0, gryphon_provider_config_2.filterExtraArgs)(this.options.extraArgs, "codex-cli");
             if (dropped.length > 0) {
                 // Round 4 review (SFH-1): use console.error not warn — see
                 // claude-code.js for the rationale. Louder is better when the
@@ -430,7 +471,7 @@ class CodexProvider {
                 options.signal.addEventListener("abort", () => { try {
                     this.abort();
                 }
-                catch { } }, { once: true });
+                catch { /* best-effort */ } }, { once: true });
             }
         }
         // L6.1 — structured-output retry budget for CLI providers.
@@ -439,9 +480,8 @@ class CodexProvider {
         // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
         // path (no option) falls through to _spawnTurn unchanged.
         if (options && options.structuredOutput) {
-            const { injectSchemaHint, parseAndValidate, CliStructuredOutputError, } = require("../../cli-structured-output");
             const maxRetries = options.structuredOutput.maxRetries ?? 3;
-            const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
+            const enrichedPrompt = (0, cli_structured_output_1.injectSchemaHint)(prompt, options.structuredOutput);
             const savedOnDone = this.onDone;
             // Suppress the per-turn onDone from _handleClose — we call it
             // ourselves on success with the enriched result (json + text).
@@ -465,12 +505,12 @@ class CodexProvider {
                         if (options && typeof options.maxUsdBudget === "number") {
                             const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
                             if (cumCost === null) {
-                                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
+                                if (this.hostAdapter && this.hostAdapter.notify)
+                                    this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
                             }
                             const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
                             if (perCallSpent >= options.maxUsdBudget) {
-                                const { BudgetExceededError } = require("../../budget-error");
-                                throw new BudgetExceededError({
+                                throw new budget_error_1.BudgetExceededError({
                                     budget: options.maxUsdBudget,
                                     spent: perCallSpent,
                                     lastTurnCost: turnResult.cost || 0,
@@ -478,7 +518,8 @@ class CodexProvider {
                             }
                         }
                         try {
-                            const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+                            // structuredOutput was checked truthy before the loop started.
+                            const json = (0, cli_structured_output_1.parseAndValidate)(turnResult.text, options.structuredOutput.schema);
                             const result = { ...turnResult, json, text: JSON.stringify(json) };
                             this.onDone = savedOnDone;
                             if (this.onDone)
@@ -486,16 +527,16 @@ class CodexProvider {
                             return result;
                         }
                         catch (e) {
-                            if (!(e instanceof CliStructuredOutputError))
+                            if (!(e instanceof cli_structured_output_1.CliStructuredOutputError))
                                 throw e;
                             lastError = e;
                             try {
                                 this.hostAdapter.notify(`[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`, { level: "warn" });
                             }
-                            catch (_) { /* notify must never block */ }
+                            catch { /* notify must never block */ }
                         }
                     }
-                    throw new CliStructuredOutputError(`structured-output budget exhausted after ${maxRetries} attempts on codex-cli: ${lastError && lastError.message}`, {
+                    throw new cli_structured_output_1.CliStructuredOutputError(`structured-output budget exhausted after ${maxRetries} attempts on codex-cli: ${lastError && lastError.message}`, {
                         reason: "budget-exhausted",
                         attempts: maxRetries,
                         lastOutput: lastError && lastError.lastOutput,
@@ -524,13 +565,13 @@ class CodexProvider {
                     this.lastCumulativeCost = result.cumulativeCost || 0;
                 const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
                 if (cumCost === null) {
-                    this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
+                    if (this.hostAdapter && this.hostAdapter.notify)
+                        this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
                 }
                 const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
                 if (perCallSpent >= options.maxUsdBudget) {
-                    const { BudgetExceededError } = require("../../budget-error");
-                    throw new BudgetExceededError({
-                        budget: options.maxUsdBudget,
+                    throw new budget_error_1.BudgetExceededError({
+                        budget: options.maxUsdBudget, // checked as a number before .then
                         spent: perCallSpent,
                         lastTurnCost: result.cost || 0,
                     });
@@ -554,7 +595,7 @@ class CodexProvider {
         // a stale/empty configured path, or fail fast with an actionable message
         // rather than spawning an unresolved path and hanging to the timeout.
         {
-            const resolved = resolveCliBinary("codex-cli", this.codexPath, undefined, { vaultRoot: this.cwd });
+            const resolved = (0, utils_1.resolveCliBinary)("codex-cli", this.codexPath, undefined, { vaultRoot: this.cwd });
             if (!resolved.ok) {
                 const msg = resolved.error === "too-old"
                     ? `Found ${resolved.detail}. Update the Codex CLI, or set a newer path in Settings → Gryphon → Codex CLI path.`
@@ -569,9 +610,9 @@ class CodexProvider {
             // to take over cleanly.
             if (this.alive && this.process) {
                 try {
-                    killProcessTree(this.process, "SIGTERM");
+                    (0, subprocess_registry_1.killProcessTree)(this.process, "SIGTERM");
                 }
-                catch { }
+                catch { /* best-effort */ }
                 if (this._currentReject) {
                     const r = this._currentReject;
                     this._currentReject = null;
@@ -625,7 +666,7 @@ class CodexProvider {
             // makes Codex pick up our hook config. On degraded result we fall
             // through with no hooks and a console warning — the spawn still
             // proceeds so the user isn't blocked by transient setup issues.
-            const hookExtras = dispatcher.prepareSpawn({
+            const hookExtras = gryphon_protect_1.hookDispatcher.prepareSpawn({
                 kind: "codex-cli",
                 plugin: this.options.plugin,
                 options: { ...this.options, projectDir: this.cwd },
@@ -644,7 +685,7 @@ class CodexProvider {
                 cwd: this.cwd,
                 env: {
                     ...process.env,
-                    PATH: buildEnhancedPath(),
+                    PATH: (0, utils_1.buildEnhancedPath)(),
                     ...(hookExtras.env || {}),
                 },
                 stdio: ["ignore", "pipe", "pipe"],
@@ -658,22 +699,24 @@ class CodexProvider {
             // (POSIX) path is unchanged.
             let spawnCommand = this.codexPath;
             let spawnArgs = args;
-            if (winSpawn.isWindowsShim(this.codexPath)) {
-                const wrapped = winSpawn.wrapForCmdShim(this.codexPath, args);
+            if (gryphon_protect_1.winSpawn.isWindowsShim(this.codexPath)) {
+                const wrapped = gryphon_protect_1.winSpawn.wrapForCmdShim(this.codexPath, args);
                 spawnCommand = wrapped.command;
                 spawnArgs = wrapped.args;
                 Object.assign(spawnOpts, wrapped.options);
             }
             let proc;
             try {
-                proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
+                // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+                proc = (0, subprocess_registry_1.managedSpawn)(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
             }
             catch (err) {
                 if (this._hookCleanup) {
                     this._hookCleanup();
                     this._hookCleanup = null;
                 }
-                reject(err);
+                // spawn throws Errors; anything else is wrapped so callers always get one.
+                reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err) ?? "spawn failed"));
                 return;
             }
             this.process = proc;
@@ -826,9 +869,9 @@ class CodexProvider {
         // Kill the failed exec (if still running).
         if (this.process) {
             try {
-                killProcessTree(this.process, "SIGTERM");
+                (0, subprocess_registry_1.killProcessTree)(this.process, "SIGTERM");
             }
-            catch { }
+            catch { /* best-effort */ }
             this.process = null;
         }
         this.alive = false;
@@ -838,7 +881,7 @@ class CodexProvider {
             try {
                 this._hookCleanup();
             }
-            catch { }
+            catch { /* best-effort */ }
             this._hookCleanup = null;
         }
         // Drop the stale session id. Future _buildArgs calls will produce
@@ -852,7 +895,7 @@ class CodexProvider {
             try {
                 this.onSessionExpired();
             }
-            catch { }
+            catch { /* best-effort */ }
         }
         // Re-send the user's prompt. send() supersede-kills any in-flight
         // process (already null'd above) and starts fresh. The pending
@@ -890,7 +933,7 @@ class CodexProvider {
             // resolving/rejecting the same outer Promise on completion.
             // Use a small async dispatch so we return cleanly from the
             // event handler before re-entering spawn logic.
-            Promise.resolve().then(() => {
+            void Promise.resolve().then(() => {
                 try {
                     this._respawnFresh(prompt);
                 }
@@ -917,8 +960,7 @@ class CodexProvider {
      * MUST already be set to the original send()'s callbacks.
      */
     _respawnFresh(prompt) {
-        const { hookDispatcher: dispatcher } = require("@gryphon/protect");
-        const hookExtras = dispatcher.prepareSpawn({
+        const hookExtras = gryphon_protect_1.hookDispatcher.prepareSpawn({
             kind: "codex-cli",
             plugin: this.options.plugin,
             options: { ...this.options, projectDir: this.cwd },
@@ -943,7 +985,7 @@ class CodexProvider {
             cwd: this.cwd,
             env: {
                 ...process.env,
-                PATH: buildEnhancedPath(),
+                PATH: (0, utils_1.buildEnhancedPath)(),
                 ...(hookExtras.env || {}),
             },
             stdio: ["ignore", "pipe", "pipe"],
@@ -951,15 +993,16 @@ class CodexProvider {
         // Same Windows .cmd shim handling as send() — see wrapForCmdShim docs.
         let spawnCommand = this.codexPath;
         let spawnArgs = args;
-        if (winSpawn.isWindowsShim(this.codexPath)) {
-            const wrapped = winSpawn.wrapForCmdShim(this.codexPath, args);
+        if (gryphon_protect_1.winSpawn.isWindowsShim(this.codexPath)) {
+            const wrapped = gryphon_protect_1.winSpawn.wrapForCmdShim(this.codexPath, args);
             spawnCommand = wrapped.command;
             spawnArgs = wrapped.args;
             Object.assign(spawnOpts, wrapped.options);
         }
         let proc;
         try {
-            proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
+            // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+            proc = (0, subprocess_registry_1.managedSpawn)(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
         }
         catch (err) {
             if (this._hookCleanup) {
@@ -1099,6 +1142,7 @@ class CodexProvider {
             "rejected by the sandbox, or a transient API error. Try again, or " +
             "run `codex exec --json -- 'hello'` in a terminal to verify the CLI " +
             "is working.";
+        // Set together with resolve, which was checked above.
         reject(new Error(header + details + hint));
     }
     _handleProcessError(err) {
@@ -1108,7 +1152,7 @@ class CodexProvider {
             try {
                 this._hookCleanup();
             }
-            catch (_) { /* swallow — best effort */ }
+            catch { /* swallow — best effort */ }
             this._hookCleanup = null;
         }
         const reject = this._currentReject;
@@ -1123,13 +1167,13 @@ class CodexProvider {
             // Tree-kill: codex's child tree (incl. any MCP grandchildren) — not
             // just the direct pid. SIGKILL the group after 5s if still alive.
             try {
-                killProcessTree(proc, "SIGTERM");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGTERM");
             }
-            catch { }
+            catch { /* best-effort */ }
             setTimeoutFn(() => { try {
-                killProcessTree(proc, "SIGKILL");
+                (0, subprocess_registry_1.killProcessTree)(proc, "SIGKILL");
             }
-            catch { } }, 5000);
+            catch { /* best-effort */ } }, 5000);
             this.process = null;
         }
         this.alive = false;
@@ -1137,7 +1181,7 @@ class CodexProvider {
             try {
                 this._hookCleanup();
             }
-            catch (_) { /* swallow — best effort */ }
+            catch { /* swallow — best effort */ }
             this._hookCleanup = null;
         }
         const reject = this._currentReject;

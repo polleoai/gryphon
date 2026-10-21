@@ -9,7 +9,7 @@
  *
  * Happy path stays quiet: a usable provider renders no chip.
  *
- * The chip text reads from the @gryphon/provider-runtime readiness kernel
+ * The chip text reads from the @polleoai/gryphon-provider-runtime readiness kernel
  * (describeProviderReadiness + humanizeFailureReason), so it can never drift
  * from createProvider's real selection logic. Rendered with createSpan and
  * the existing host-contract typeof-guard discipline — no new hard Obsidian

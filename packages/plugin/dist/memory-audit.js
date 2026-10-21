@@ -17,19 +17,62 @@
  * comments out the archived entries in `MEMORY.md` so the index stays
  * valid markdown but its dead references stop loading.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const fs = require("fs");
-const path = require("path");
-const { escapeVaultPath } = require("./context-budget");
+exports.DEFAULT_ARCHIVE_AGE_DAYS = exports.ARCHIVE_DIRNAME = exports.MEMORY_INDEX_NAME = void 0;
+exports.findMemoryDir = findMemoryDir;
+exports.listMemoryFiles = listMemoryFiles;
+exports.classifyMemoryFiles = classifyMemoryFiles;
+exports.archiveMemoryFiles = archiveMemoryFiles;
+exports.unarchiveMemoryFiles = unarchiveMemoryFiles;
+exports.updateMemoryIndex = updateMemoryIndex;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const context_budget_1 = require("./context-budget");
 const MEMORY_INDEX_NAME = "MEMORY.md";
+exports.MEMORY_INDEX_NAME = MEMORY_INDEX_NAME;
 const ARCHIVE_DIRNAME = "memory-archive";
+exports.ARCHIVE_DIRNAME = ARCHIVE_DIRNAME;
 const DEFAULT_ARCHIVE_AGE_DAYS = 90;
+exports.DEFAULT_ARCHIVE_AGE_DAYS = DEFAULT_ARCHIVE_AGE_DAYS;
 function findMemoryDir({ vaultPath, homeDir }) {
     if (typeof vaultPath !== "string" || !vaultPath)
         return null;
     if (typeof homeDir !== "string" || !homeDir)
         return null;
-    const escaped = escapeVaultPath(vaultPath);
+    const escaped = (0, context_budget_1.escapeVaultPath)(vaultPath);
     const dir = path.join(homeDir, ".claude", "projects", escaped, "memory");
     try {
         const stat = fs.statSync(dir);
@@ -174,6 +217,7 @@ function updateMemoryIndex({ memoryDir, archivedNames, restoredNames }) {
         fs.writeFileSync(indexPath, lines.join("\n"));
     }
     catch (e) {
+        const err = e;
         // Index write failed — files are still moved on disk, but the
         // index still references them. CC will 404 those names on every
         // future turn until the user fixes the index manually or re-runs
@@ -182,7 +226,7 @@ function updateMemoryIndex({ memoryDir, archivedNames, restoredNames }) {
         return {
             commented,
             uncommented,
-            indexWriteError: (e && e.message) || String(e),
+            indexWriteError: (err && err.message) || String(err),
         };
     }
     return { commented, uncommented };
@@ -203,14 +247,3 @@ function _lineRefersToAny(line, nameSet) {
     }
     return false;
 }
-module.exports = {
-    MEMORY_INDEX_NAME,
-    ARCHIVE_DIRNAME,
-    DEFAULT_ARCHIVE_AGE_DAYS,
-    findMemoryDir,
-    listMemoryFiles,
-    classifyMemoryFiles,
-    archiveMemoryFiles,
-    unarchiveMemoryFiles,
-    updateMemoryIndex,
-};

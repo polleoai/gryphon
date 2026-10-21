@@ -36,15 +36,64 @@
  *
  * The Gryphon-plugin-only zone (Security / Protected-Mode / provenance /
  * diagnostics) stays in `GryphonSettingTab` — it depends on `provenanceStore`,
- * `@gryphon/protect`, and REST internals a generic host does not have.
+ * `@polleoai/gryphon-protect`, and REST internals a generic host does not have.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const { Setting, Notice } = require("obsidian");
-const securityUi = require("./security-settings");
-const { MODELS, EFFORTS, PERMS, PROVIDER_PREFS, FALLBACK_PROVIDER_PREFS, visibleProviderPrefs, resolveConnectionTimeoutMs } = require("./constants");
-const { testApiKey: testAnthropicApiKey } = require("../../provider-runtime/src/providers/anthropic-api/anthropic-api");
-const { testApiKey: testOpenAIApiKey } = require("../../provider-runtime/src/providers/openai-api/openai-api");
-const { testApiKey: testGoogleApiKey } = require("../../provider-runtime/src/providers/google-api/test-key");
+exports.renderGryphonSettings = renderGryphonSettings;
+exports.buildProviderUnreadyNotice = buildProviderUnreadyNotice;
+exports.disposeHoverTooltip = disposeHoverTooltip;
+exports.renderSetupPanel = renderSetupPanel;
+exports.renderFallbackRows = renderFallbackRows;
+exports.renderAdvancedPanel = renderAdvancedPanel;
+exports.renderDefaultsPanel = renderDefaultsPanel;
+exports._credentialFieldsFor = _credentialFieldsFor;
+exports._resetModelForProvider = _resetModelForProvider;
+exports._fallbackModelOptions = _fallbackModelOptions;
+exports._defaultFallbackModel = _defaultFallbackModel;
+exports.renderSectionHeading = renderSectionHeading;
+exports.descToTooltip = descToTooltip;
+exports.renderUnconfirmedSecurityRow = renderUnconfirmedSecurityRow;
+const obsidian_1 = require("obsidian");
+const securityUi = __importStar(require("./security-settings"));
+const constants_1 = require("./constants");
+const runtime = __importStar(require("@polleoai/gryphon-provider-runtime"));
+const gryphon_provider_runtime_1 = require("@polleoai/gryphon-provider-runtime");
+const settings_tabs_1 = require("./settings-tabs");
+const mcp_approval_ui_1 = require("./mcp-approval-ui");
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
 /**
  * Pick a sensible default model id for the active provider when the
  * persisted settings.model is not recognized by that provider's model
@@ -57,17 +106,16 @@ const { testApiKey: testGoogleApiKey } = require("../../provider-runtime/src/pro
  * valid for the active provider). Caller is responsible for persisting.
  */
 function _resetModelForProvider(plugin) {
-    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
     const settings = plugin.settings || {};
     const current = settings.model;
-    const kind = getActiveProviderKind(plugin) || settings.providerPreference;
+    const kind = (0, gryphon_provider_runtime_1.getActiveProviderKind)(plugin) || settings.providerPreference;
     if (kind === "openai-api" || kind === "codex-cli") {
         // codex-cli's ChatGPT-account auth supports a smaller subset
         // (see CODEX_CLI_SUPPORTED_MODELS); openai-api supports the full
         // dropdown. Pick the right resolver + default per provider so a stale
         // persisted id (e.g. gpt-5-mini after switching from openai-api to
         // codex-cli) is corrected to a working default.
-        const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+        const openaiPricing = runtime.pricing.openai;
         const isCodex = kind === "codex-cli";
         const options = isCodex
             ? openaiPricing.getCodexCliModelDropdownOptions()
@@ -80,7 +128,7 @@ function _resetModelForProvider(plugin) {
     if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
         // All three reuse Google's pricing tables, but antigravity-cli serves
         // only the ids agy's own catalog accepts — same shape as codex-cli above.
-        const googlePricing = require("@gryphon/provider-runtime").pricing.google;
+        const googlePricing = runtime.pricing.google;
         const isAgy = kind === "antigravity-cli";
         const options = isAgy
             ? googlePricing.getAntigravityCliModelDropdownOptions()
@@ -89,7 +137,7 @@ function _resetModelForProvider(plugin) {
         return options.some((o) => o.id === current) ? current : fallback;
     }
     // claude-code / anthropic-api / null → Anthropic MODELS list.
-    return MODELS.some((m) => m.value === current) ? current : "claude-sonnet-5-5";
+    return constants_1.MODELS.some((m) => m.value === current) ? current : "claude-sonnet-5-5";
 }
 /**
  * Model dropdown options ([{id, label}]) for a fallback provider KIND (issue
@@ -97,7 +145,6 @@ function _resetModelForProvider(plugin) {
  * Fallback-model picker offers exactly the models that kind can serve.
  */
 function _fallbackModelOptions(kind) {
-    const runtime = require("@gryphon/provider-runtime");
     if (kind === "openai-api") {
         return runtime.pricing.openai.getModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
     }
@@ -111,7 +158,7 @@ function _fallbackModelOptions(kind) {
         return runtime.pricing.google.getModelDropdownOptions().map((o) => ({ id: o.id, label: o.label }));
     }
     // anthropic-api / claude-code → Anthropic MODELS list.
-    return MODELS.map((m) => ({ id: m.value, label: m.label }));
+    return constants_1.MODELS.map((m) => ({ id: m.value, label: m.label }));
 }
 /**
  * Model to pre-select for a fallback provider: that kind's own default when
@@ -120,7 +167,7 @@ function _fallbackModelOptions(kind) {
  * for Codex, a model older clients reject.
  */
 function _defaultFallbackModel(kind, opts) {
-    const preferred = require("@gryphon/provider-runtime").defaultModelForKind(kind);
+    const preferred = runtime.defaultModelForKind(kind);
     if (preferred && opts.some((o) => o.id === preferred))
         return preferred;
     return opts[0] ? opts[0].id : "";
@@ -146,46 +193,20 @@ function _credentialFieldsFor(pref) {
         default: return null;
     }
 }
-// ---------------------------------------------------------------------------
-// Per-credential row renderers (bodies copied verbatim from renderGryphonSettings;
-// originals stay in place until Task 6). Container variable → passed panelEl;
-// API-key rows call refreshChip() instead of updateProviderReadiness().
-// ---------------------------------------------------------------------------
-/**
- * Shared CLI-path settings row — the single pattern ALL three CLI providers
- * (Claude / Codex / Gemini) use, so the rows can never drift apart again (the
- * drift that hid the gemini-detection bug). Renders: an inline detection status
- * pill on the row name (✓ detected at <path> / ⚠ not detected, with Flatpak
- * guidance), a path text field, and a Re-detect button that clears the binary
- * discovery cache and re-probes.
- *
- * Issue #30: the path is machine-scoped. The field shows and writes THIS
- * machine's confirmed location for the renderer's `securityHostId` (an
- * embedder's own id, or "gryphon" standalone), never the vault's data.json;
- * a path inside the vault, relative, missing or not executable is refused
- * inline. The pill shows the binary a spawn would actually run.
- *
- * @param opts.settingsKey  the store key (claudePath / codexPath / geminiCliPath / antigravityPath)
- * @param opts.findKey      provider-runtime export name (findClaudeBinary / …)
- * @param opts.cliLabel     human label for the pill tooltip ("Gemini CLI")
- * @param opts.installHint  not-detected tooltip (non-Flatpak)
- * @param opts.flatpakHint  short install pointer shown in the Flatpak tooltip
- */
 function renderCliPathRow(host, panelEl, opts, sec) {
     const { name, tooltip, settingsKey, findKey, defaultPlaceholder, cliLabel, installHint, flatpakHint } = opts;
     const kind = securityUi.cliKindForPathKey(settingsKey);
     const secOpts = _securityOpts(sec);
-    const cliSetting = descToTooltip(new Setting(panelEl).setName(name), tooltip);
-    const cliStatusPill = cliSetting.nameEl.createEl("span", { cls: "gryphon-cli-status-pill" });
+    const cliSetting = descToTooltip(new obsidian_1.Setting(panelEl).setName(name), tooltip);
+    const cliStatusPill = cliSetting.nameEl.createSpan({ cls: "gryphon-cli-status-pill" });
     let rejectedText = "";
-    const resolved = () => require("@gryphon/protect").resolveCliPath(kind, {
+    const resolved = () => (0, gryphon_protect_1.resolveCliPath)(kind, {
         app: host.app, hostPlugin: host, hostId: secOpts.hostId,
         overrides: { paths: (secOpts.overrides && secOpts.overrides.paths) || {} },
     });
     const renderCliStatus = () => {
         cliStatusPill.empty();
         cliStatusPill.className = "gryphon-cli-status-pill";
-        const runtime = require("@gryphon/provider-runtime");
         const flatpak = runtime.detectFlatpakSandbox();
         const r = resolved();
         if (rejectedText) {
@@ -218,7 +239,6 @@ function renderCliPathRow(host, panelEl, opts, sec) {
     };
     cliSetting
         .addText((text) => {
-        const runtime = require("@gryphon/provider-runtime");
         const detected = runtime[findKey]();
         const eff = securityUi.effectiveSecurityFor(host, secOpts);
         return text
@@ -233,7 +253,8 @@ function renderCliPathRow(host, panelEl, opts, sec) {
                 // Refused (relative, missing, inside the vault, …): nothing is
                 // saved, and the row says why. Typing a path passes through
                 // invalid prefixes, so this is inline rather than a Notice.
-                rejectedText = (e && e.message) || String(e);
+                const err = e;
+                rejectedText = (err && err.message) || String(err);
             }
             host._resetActiveSessions?.();
             renderCliStatus();
@@ -243,7 +264,7 @@ function renderCliPathRow(host, panelEl, opts, sec) {
         .setButtonText("Re-detect")
         .setTooltip("Clear the discovery cache and probe again")
         .onClick(() => {
-        require("@gryphon/provider-runtime").clearBinaryDiscoveryCache();
+        runtime.clearBinaryDiscoveryCache();
         // Re-detect may resolve a DIFFERENT binary (e.g. a freshly-installed
         // newer version) than the live session is bound to. Retire active
         // sessions so the next message rebinds — same teardown the path-field
@@ -271,7 +292,7 @@ function renderClaudePathRow(host, panelEl, sec) {
 }
 function renderAnthropicKeyRow(host, panelEl, refreshChip) {
     let keyStatusEl = null;
-    descToTooltip(new Setting(panelEl).setName("Anthropic API key"), "Required for Anthropic API mode. Paste your key here — stored in plugin " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Anthropic API key"), "Required for Anthropic API mode. Paste your key here — stored in plugin " +
         "data.json. (Advanced: ANTHROPIC_API_KEY env var also works, but " +
         "only if Obsidian was launched from a shell that has the variable. " +
         "macOS GUI launches via Finder/Dock/Spotlight do NOT see ~/.zshrc " +
@@ -297,13 +318,14 @@ function renderAnthropicKeyRow(host, panelEl, refreshChip) {
         const key = (host.settings.anthropicApiKey || "").trim() ||
             process.env.ANTHROPIC_API_KEY ||
             "";
-        const { ok, message } = await testAnthropicApiKey(key);
+        const { testApiKey } = (await Promise.resolve().then(() => __importStar(require("@polleoai/gryphon-provider-runtime/providers/anthropic-api/anthropic-api"))));
+        const { ok, message } = await testApiKey(key);
         btn.setDisabled(false).setButtonText("Test key");
         if (keyStatusEl) {
             keyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
             keyStatusEl.setCssStyles({ color: ok ? "var(--color-green)" : "var(--color-red)" });
         }
-        new Notice(`Anthropic API key: ${ok ? "OK" : message}`);
+        new obsidian_1.Notice(`Anthropic API key: ${ok ? "OK" : message}`);
     }))
         .then((setting) => {
         keyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
@@ -312,7 +334,7 @@ function renderAnthropicKeyRow(host, panelEl, refreshChip) {
 }
 function renderOpenAIKeyRow(host, panelEl, refreshChip) {
     let openaiKeyStatusEl = null;
-    descToTooltip(new Setting(panelEl).setName("OpenAI API key"), "Required for OpenAI API mode (v1.2.0). Paste your key here — " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("OpenAI API key"), "Required for OpenAI API mode (v1.2.0). Paste your key here — " +
         "stored in plugin data.json. (Advanced: OPENAI_API_KEY env var " +
         "also works, but only if Obsidian was launched from a shell that " +
         "has the variable.)")
@@ -337,13 +359,14 @@ function renderOpenAIKeyRow(host, panelEl, refreshChip) {
         const key = (host.settings.openaiApiKey || "").trim() ||
             process.env.OPENAI_API_KEY ||
             "";
-        const { ok, message } = await testOpenAIApiKey(key);
+        const { testApiKey } = (await Promise.resolve().then(() => __importStar(require("@polleoai/gryphon-provider-runtime/providers/openai-api/openai-api"))));
+        const { ok, message } = await testApiKey(key);
         btn.setDisabled(false).setButtonText("Test key");
         if (openaiKeyStatusEl) {
             openaiKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
             openaiKeyStatusEl.setCssStyles({ color: ok ? "var(--color-green)" : "var(--color-red)" });
         }
-        new Notice(`OpenAI API key: ${ok ? "OK" : message}`);
+        new obsidian_1.Notice(`OpenAI API key: ${ok ? "OK" : message}`);
     }))
         .then((setting) => {
         openaiKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
@@ -352,7 +375,7 @@ function renderOpenAIKeyRow(host, panelEl, refreshChip) {
 }
 function renderGoogleKeyRow(host, panelEl, refreshChip) {
     let googleKeyStatusEl = null;
-    descToTooltip(new Setting(panelEl).setName("Google API key"), "Required for Google Gemini API mode (v1.2.0). Paste your key " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Google API key"), "Required for Google Gemini API mode (v1.2.0). Paste your key " +
         "here — stored in plugin data.json. Get one free at " +
         "aistudio.google.com/apikey. (Advanced: GOOGLE_API_KEY env var " +
         "also works, but only if Obsidian was launched from a shell that " +
@@ -378,13 +401,14 @@ function renderGoogleKeyRow(host, panelEl, refreshChip) {
         const key = (host.settings.googleApiKey || "").trim() ||
             process.env.GOOGLE_API_KEY ||
             "";
-        const { ok, message } = await testGoogleApiKey(key, host.hostAdapter);
+        const { testApiKey } = (await Promise.resolve().then(() => __importStar(require("@polleoai/gryphon-provider-runtime/providers/google-api/test-key"))));
+        const { ok, message } = await testApiKey(key, host.hostAdapter);
         btn.setDisabled(false).setButtonText("Test key");
         if (googleKeyStatusEl) {
             googleKeyStatusEl.setText(ok ? `✓ ${message}` : `✗ ${message}`);
             googleKeyStatusEl.setCssStyles({ color: ok ? "var(--color-green)" : "var(--color-red)" });
         }
-        new Notice(`Google API key: ${ok ? "OK" : message}`);
+        new obsidian_1.Notice(`Google API key: ${ok ? "OK" : message}`);
     }))
         .then((setting) => {
         googleKeyStatusEl = setting.descEl.createDiv({ cls: "setting-item-description" });
@@ -492,14 +516,13 @@ function renderSetupPanel(hostPlugin, panelEl, ctx, sec) {
     const updateProviderReadiness = () => {
         if (!providerSelectEl)
             return;
-        const { describeProviderReadiness, humanizeFailureReason } = require("@gryphon/provider-runtime");
-        const { ready, reason } = describeProviderReadiness(hostPlugin);
+        const { ready, reason } = (0, gryphon_provider_runtime_1.describeProviderReadiness)(hostPlugin);
         const bad = !ready && !!reason;
         if (typeof providerSelectEl.toggleClass === "function") {
             providerSelectEl.toggleClass("gryphon-input-error", bad);
         }
         if (bad) {
-            const why = humanizeFailureReason(reason);
+            const why = (0, gryphon_provider_runtime_1.humanizeFailureReason)(reason);
             const detail = `${why.charAt(0).toUpperCase()}${why.slice(1)} — this provider can't run, ` +
                 `so it won't be used for your requests. Fix it above, or choose a ` +
                 `different provider.`;
@@ -510,13 +533,13 @@ function renderSetupPanel(hostPlugin, panelEl, ctx, sec) {
             providerSelectEl._gryphonTip = "";
         }
     };
-    descToTooltip(new Setting(panelEl).setName("Provider"), "SDK uses the Anthropic API directly (recommended — pay-per-token, " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Provider"), "SDK uses the Anthropic API directly (recommended — pay-per-token, " +
         "unambiguously covered by your Anthropic API agreement). CLI spawns " +
         "a locally-installed `claude` binary as a subprocess — confirm your " +
         "usage complies with Anthropic's terms before enabling.")
         .addDropdown((drop) => {
         providerSelectEl = drop.selectEl;
-        for (const p of visibleProviderPrefs(PROVIDER_PREFS, hostPlugin.settings.providerPreference)) {
+        for (const p of (0, constants_1.visibleProviderPrefs)(constants_1.PROVIDER_PREFS, hostPlugin.settings.providerPreference)) {
             drop.addOption(p.value, `${p.label} — ${p.desc}`);
         }
         drop.setValue(hostPlugin.settings.providerPreference || "auto");
@@ -560,12 +583,12 @@ function renderSetupPanel(hostPlugin, panelEl, ctx, sec) {
  * so the conditional Fallback-model row appears/updates.
  */
 function renderFallbackRows(hostPlugin, panelEl, ctx) {
-    descToTooltip(new Setting(panelEl).setName("Fallback provider"), "When the active provider can't serve a request — no key/CLI, invalid " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Fallback provider"), "When the active provider can't serve a request — no key/CLI, invalid " +
         "key, no credit, quota, or rate-limit — Gryphon retries once with this " +
         "provider and reports which one answered. Genuine content errors never " +
         "trigger failover. 'No fallback' surfaces a clear error instead.")
         .addDropdown((drop) => {
-        for (const p of visibleProviderPrefs(FALLBACK_PROVIDER_PREFS, hostPlugin.settings.fallbackProviderPreference)) {
+        for (const p of (0, constants_1.visibleProviderPrefs)(constants_1.FALLBACK_PROVIDER_PREFS, hostPlugin.settings.fallbackProviderPreference)) {
             drop.addOption(p.value, `${p.label} — ${p.desc}`);
         }
         drop.setValue(hostPlugin.settings.fallbackProviderPreference || "none");
@@ -590,9 +613,9 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
         const fbModels = _fallbackModelOptions(fbPref);
         if (fbModels.length && !fbModels.some((o) => o.id === hostPlugin.settings.fallbackModel)) {
             hostPlugin.settings.fallbackModel = _defaultFallbackModel(fbPref, fbModels);
-            hostPlugin.saveSettings();
+            void hostPlugin.saveSettings();
         }
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Fallback model")
             .addDropdown((drop) => {
             for (const m of fbModels)
@@ -613,7 +636,7 @@ function renderFallbackRows(hostPlugin, panelEl, ctx) {
 // suppression, and settings-container clipping.
 let _hoverTipEl = null;
 function _hoverTip() {
-    const doc = (typeof activeDocument !== "undefined" ? activeDocument : document);
+    const doc = typeof activeDocument !== "undefined" ? activeDocument : document;
     if (!_hoverTipEl || !(doc.body && doc.body.contains(_hoverTipEl))) {
         // Visibility is class-driven (.is-visible); position is set dynamically
         // via setCssStyles — both keep `element.style.* =` out of the code per the
@@ -656,7 +679,7 @@ function attachHoverTooltip(el, text) {
         tip.setText(el._gryphonTip);
         tip.addClass("is-visible");
         const r = el.getBoundingClientRect();
-        const win = (typeof activeWindow !== "undefined" ? activeWindow : window);
+        const win = typeof activeWindow !== "undefined" ? activeWindow : window;
         const tipW = tip.offsetWidth || 0;
         let left = r.left;
         const max = (win.innerWidth || 0) - tipW - 8;
@@ -680,14 +703,14 @@ function attachHoverTooltip(el, text) {
  * affordance is consistent across the whole settings tab.
  */
 function descToTooltip(setting, tooltipText) {
-    if (!setting || !tooltipText)
+    if (setting == null || !tooltipText)
         return setting;
     setting.setDesc("");
-    const info = setting.nameEl.createEl("span", {
+    const info = setting.nameEl.createSpan({
         cls: "gryphon-info-icon gryphon-info-icon-inline",
         attr: { tabindex: "0" },
     });
-    info.createEl("span", { text: "i", cls: "gryphon-info-icon-glyph" });
+    info.createSpan({ text: "i", cls: "gryphon-info-icon-glyph" });
     attachHoverTooltip(info, tooltipText);
     return setting;
 }
@@ -702,19 +725,19 @@ function descToTooltip(setting, tooltipText) {
 function renderSectionHeading(parentEl, opts, plugin) {
     const { title, tooltip, toggleKey, onToggle } = opts;
     if (!toggleKey) {
-        const wrap = parentEl.createEl("div", { cls: "gryphon-section-heading" });
-        wrap.createEl("div", { text: title, cls: "gryphon-section-heading-label" });
+        const wrap = parentEl.createDiv({ cls: "gryphon-section-heading" });
+        wrap.createDiv({ text: title, cls: "gryphon-section-heading-label" });
         if (tooltip) {
-            const info = wrap.createEl("span", {
+            const info = wrap.createSpan({
                 cls: "gryphon-info-icon",
                 attr: { tabindex: "0" },
             });
-            info.createEl("span", { text: "i", cls: "gryphon-info-icon-glyph" });
+            info.createSpan({ text: "i", cls: "gryphon-info-icon-glyph" });
             attachHoverTooltip(info, tooltip);
         }
         return wrap;
     }
-    const setting = new Setting(parentEl).setName(title);
+    const setting = new obsidian_1.Setting(parentEl).setName(title);
     setting.settingEl.classList.add("gryphon-section-heading", "gryphon-section-heading-row");
     if (tooltip)
         descToTooltip(setting, tooltip);
@@ -784,15 +807,15 @@ function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
     const { scope } = securityUi.securityScopeFor(hostPlugin, opts);
     const eff = securityUi.effectiveSecurityFor(hostPlugin, opts);
     if (eff.source[key] === "override") {
-        return new Setting(panelEl).setDesc(`Set by ${securityUi.hostDisplayName(hostPlugin, opts.hostId)}.`);
+        return new obsidian_1.Setting(panelEl).setDesc(`Set by ${securityUi.hostDisplayName(hostPlugin, opts.hostId)}.`);
     }
     if (!scope) {
-        return new Setting(panelEl).setDesc("⚠ Protections forced on: Gryphon couldn't identify this vault/host, so this can't be changed here.");
+        return new obsidian_1.Setting(panelEl).setDesc("⚠ Protections forced on: Gryphon couldn't identify this vault/host, so this can't be changed here.");
     }
     if (!eff.unconfirmed.includes(key))
         return null;
     const requested = securityUi.describeSecurityValue(key, hostPlugin.settings && hostPlugin.settings[key]);
-    const row = new Setting(panelEl).setDesc(`⚠ Vault file requests ${requested}, not confirmed on this machine for ` +
+    const row = new obsidian_1.Setting(panelEl).setDesc(`⚠ Vault file requests ${requested}, not confirmed on this machine for ` +
         `${securityUi.hostDisplayName(hostPlugin, scope.hostId)}.`);
     row.addButton((btn) => btn.setButtonText("Confirm…").onClick(() => {
         securityUi.maybePromptVaultSecurity(hostPlugin.app, hostPlugin, {
@@ -823,7 +846,6 @@ function renderUnconfirmedSecurityRow(panelEl, hostPlugin, key, sec) {
 function renderGryphonSettings(hostPlugin, containerEl, options) {
     options = options || {};
     const sec = { securityOverrides: options.securityOverrides, securityHostId: options.securityHostId };
-    const { renderTabbedSettings } = require("./settings-tabs");
     const extraTabs = Array.isArray(options.extraTabs) ? options.extraTabs : [];
     const tabs = [
         // "Models" combines provider selection + scoped credentials + fallback
@@ -851,7 +873,7 @@ function renderGryphonSettings(hostPlugin, containerEl, options) {
         { id: "advanced", label: "Advanced", render: (panelEl, ctx) => renderAdvancedPanel(hostPlugin, panelEl, ctx, { ...sec, rerender: () => ctx && ctx.rerenderSelf && ctx.rerenderSelf() }) },
         ...extraTabs,
     ];
-    return renderTabbedSettings(containerEl, tabs, {
+    return (0, settings_tabs_1.renderTabbedSettings)(containerEl, tabs, {
         initialTabId: options.initialTabId,
         onTabChange: options.onTabChange,
     });
@@ -865,7 +887,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // Copy verbatim (originals remain in the flat renderGryphonSettings until
     // Task 6 deletes them), rendering into `panelEl` instead of `containerEl`.
     // No logic change.
-    descToTooltip(new Setting(panelEl).setName("Brave Search API key"), "Optional. Enables SDK-mode WebSearch. Free at brave.com/search/api/ " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Brave Search API key"), "Optional. Enables SDK-mode WebSearch. Free at brave.com/search/api/ " +
         "(2000 queries/month). Claude Code mode uses Anthropic's built-in search and " +
         "ignores this.")
         .addText((text) => {
@@ -884,7 +906,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // vault's own .claude/settings files never load (they can run commands),
     // and MCP is always an explicit list. The signature check in chat-view
     // respawns on next message.
-    descToTooltip(new Setting(panelEl).setName("Use my personal Claude Code configuration (plugins, hooks, MCP servers)"), "Claude Code mode only. Off (default): your personal plugins, hooks, " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Use my personal Claude Code configuration (plugins, hooks, MCP servers)"), "Claude Code mode only. Off (default): your personal plugins, hooks, " +
         "MCP servers and auto-memory stay out of the chat, and so do your " +
         "personal permission allow/deny rules; Gryphon's protected patterns " +
         "still apply. On: chats load your personal Claude Code settings and " +
@@ -907,8 +929,8 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     renderUnconfirmedSecurityRow(panelEl, hostPlugin, "claudeCodeInheritUserConfig", sec);
     // Issue #25 rev 2: vault .mcp.json servers run only once approved, and
     // the approvals live outside the vault. List + revoke for this vault.
-    require("./mcp-approval-ui").renderApprovedServersSetting(hostPlugin, panelEl, descToTooltip);
-    descToTooltip(new Setting(panelEl).setName("Auto-compact at 95% (SDK mode)"), "Automatically summarize and reset the conversation when context " +
+    (0, mcp_approval_ui_1.renderApprovedServersSetting)(hostPlugin, panelEl, descToTooltip);
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Auto-compact at 95% (SDK mode)"), "Automatically summarize and reset the conversation when context " +
         "fills up. Disable to get an explicit \"context full\" warning at " +
         "95% and run /compact manually instead. Claude Code mode handles " +
         "its own auto-compaction and ignores this.")
@@ -920,7 +942,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // default — automatic retries can pile up unintended cost on
     // metered APIs. When on, a single retry fires after the parsed
     // retry-after window (capped at 60s); a second 429 does not chain.
-    descToTooltip(new Setting(panelEl).setName("Auto-retry on rate-limit"), "When a send fails with a rate-limit error and the response " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Auto-retry on rate-limit"), "When a send fails with a rate-limit error and the response " +
         "includes a precise retry-after delay (≤60s), Gryphon will " +
         "automatically resubmit your prompt once after the window expires. " +
         "If turned off, your prompt is preserved in the input box and " +
@@ -936,7 +958,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // on. Users who prefer zero "background" network activity can
     // disable; the heuristic estimator handles both CLI mode and the
     // SDK-disabled path.
-    descToTooltip(new Setting(panelEl).setName("Use exact token counts (SDK mode)"), "When using the Anthropic API provider, Gryphon calls the free " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Use exact token counts (SDK mode)"), "When using the Anthropic API provider, Gryphon calls the free " +
         "messages.countTokens endpoint on debounced typing pauses to show " +
         "an exact projected context size before send. Anthropic does not " +
         "charge for this endpoint. Disable to keep all pre-send context " +
@@ -951,7 +973,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // model's window. Default on. Users who push the limit on purpose
     // (one-shot long-context prompts where they know what they're doing)
     // can disable so the modal doesn't get in the way.
-    descToTooltip(new Setting(panelEl).setName("Confirm before overflow sends"), "When the projected context for the next send is at or above " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Confirm before overflow sends"), "When the projected context for the next send is at or above " +
         "95% of the model's window, Gryphon shows a confirmation modal " +
         "with recovery suggestions (switch model / /compact / /clear). " +
         "Disable to send without confirmation even when overflow is likely.")
@@ -967,7 +989,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
     // Users who actually want REST integration can flip this on per
     // session via the chat toolbar chip; the setting here defines the
     // start-of-session default.
-    descToTooltip(new Setting(panelEl).setName("Block Obsidian REST API access"), "When on (default), Gryphon denies WebFetch calls to the Obsidian " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Block Obsidian REST API access"), "When on (default), Gryphon denies WebFetch calls to the Obsidian " +
         "REST API plugin on loopback. This prevents the language model " +
         "from enumerating the vault via REST when a single grep would " +
         "answer the same question. Turn off to let the model reach " +
@@ -1009,7 +1031,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
         if (!timeoutStatusEl)
             return;
         const trimmed = (rawInput || "").trim();
-        const effectiveMs = resolveConnectionTimeoutMs({
+        const effectiveMs = (0, constants_1.resolveConnectionTimeoutMs)({
             override: hostPlugin.settings.connectionTimeoutMs,
             model: hostPlugin.settings.model,
         });
@@ -1034,7 +1056,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
         timeoutStatusEl.setText(prefix);
         timeoutStatusEl.setCssStyles({ color });
     };
-    descToTooltip(new Setting(panelEl).setName("Connection timeout (seconds)"), "How long to wait for the model's first token before treating " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Connection timeout (seconds)"), "How long to wait for the model's first token before treating " +
         "the request as stuck. Leave empty for the model-adaptive " +
         "default (Haiku 30s, Sonnet 60s, Opus 120s, Opus 1M 180s; " +
         "non-Anthropic providers 60s). Set 5–600 to override for slow " +
@@ -1078,7 +1100,7 @@ function renderAdvancedPanel(hostPlugin, panelEl, ctx, sec) {
             : "";
         updateTimeoutStatus(initialDisplay);
     });
-    descToTooltip(new Setting(panelEl).setName("Max file size (MB)"), "Upper bound on the size of a single file that Read or Edit " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Max file size (MB)"), "Upper bound on the size of a single file that Read or Edit " +
         "will load. Larger files are refused with a pointer to " +
         "offset/limit or Grep. Default 10 MB — raise with caution; " +
         "very large files can slow Obsidian.")
@@ -1106,8 +1128,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
     // Use the resolved active provider (auto-fallthrough), not the literal
     // preference — so an Auto user with only an OpenAI key sees OpenAI's
     // model list here, matching what the chat-view toolbar shows.
-    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
-    const activePref = getActiveProviderKind(hostPlugin) ||
+    const activePref = (0, gryphon_provider_runtime_1.getActiveProviderKind)(hostPlugin) ||
         hostPlugin.settings.providerPreference || "auto";
     if (activePref === "google-api" || activePref === "gemini-cli" ||
         activePref === "antigravity-cli") {
@@ -1115,7 +1136,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
         // dropdown with the same auto-correct pattern as the OpenAI branch:
         // if the persisted settings.model isn't a Gemini id (e.g. cross-vendor
         // carryover), persist a sensible Gemini default before display.
-        const { getModelDropdownOptions: getGeminiOptions, resolveModel: resolveGeminiModel, DEFAULT_MODEL: GEMINI_DEFAULT_MODEL, } = require("@gryphon/provider-runtime").pricing.google;
+        const { getModelDropdownOptions: getGeminiOptions, resolveModel: resolveGeminiModel, DEFAULT_MODEL: GEMINI_DEFAULT_MODEL, } = runtime.pricing.google;
         const geminiModels = getGeminiOptions();
         const isKnown = geminiModels.some((o) => o.id === hostPlugin.settings.model);
         if (!isKnown) {
@@ -1124,10 +1145,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
             const persistTarget = fitsDropdown ? resolved : GEMINI_DEFAULT_MODEL;
             if (hostPlugin.settings.model !== persistTarget) {
                 hostPlugin.settings.model = persistTarget;
-                hostPlugin.saveSettings();
+                void hostPlugin.saveSettings();
             }
         }
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default model")
             .addDropdown((drop) => {
             for (const m of geminiModels)
@@ -1139,10 +1160,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
                 hostPlugin._resetActiveSessions?.();
             });
         });
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default effort")
             .addDropdown((drop) => {
-            for (const e of EFFORTS)
+            for (const e of constants_1.EFFORTS)
                 drop.addOption(e.value, `${e.label} — ${e.desc}`);
             drop.setValue(hostPlugin.settings.effort);
             drop.onChange(async (value) => {
@@ -1165,7 +1186,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
         // 400 at request time. Filter the dropdown + use the codex-specific
         // resolver/default so users on codex-cli see only the empirically-
         // supported subset (see CODEX_CLI_SUPPORTED_MODELS).
-        const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+        const openaiPricing = runtime.pricing.openai;
         const isCodex = activePref === "codex-cli";
         const openaiModels = isCodex
             ? openaiPricing.getCodexCliModelDropdownOptions()
@@ -1196,10 +1217,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
                 hostPlugin.settings.model = persistTarget;
                 // fire-and-forget save during render is safe — saveSettings is
                 // idempotent + the UI re-renders below with the new value.
-                hostPlugin.saveSettings();
+                void hostPlugin.saveSettings();
             }
         }
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default model")
             .addDropdown((drop) => {
             for (const m of openaiModels)
@@ -1211,10 +1232,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
                 hostPlugin._resetActiveSessions?.();
             });
         });
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default effort")
             .addDropdown((drop) => {
-            for (const e of EFFORTS)
+            for (const e of constants_1.EFFORTS)
                 drop.addOption(e.value, `${e.label} — ${e.desc}`);
             drop.setValue(hostPlugin.settings.effort);
             drop.onChange(async (value) => {
@@ -1225,10 +1246,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
         });
     }
     else {
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default model")
             .addDropdown((drop) => {
-            for (const m of MODELS)
+            for (const m of constants_1.MODELS)
                 drop.addOption(m.value, `${m.label} — ${m.desc}`);
             drop.setValue(hostPlugin.settings.model);
             drop.onChange(async (value) => {
@@ -1237,10 +1258,10 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
                 hostPlugin._resetActiveSessions?.();
             });
         });
-        new Setting(panelEl)
+        new obsidian_1.Setting(panelEl)
             .setName("Default effort")
             .addDropdown((drop) => {
-            for (const e of EFFORTS)
+            for (const e of constants_1.EFFORTS)
                 drop.addOption(e.value, `${e.label} — ${e.desc}`);
             drop.setValue(hostPlugin.settings.effort);
             drop.onChange(async (value) => {
@@ -1250,12 +1271,12 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
             });
         });
     }
-    new Setting(panelEl)
+    new obsidian_1.Setting(panelEl)
         .setName("Default permissions")
         .addDropdown((drop) => {
         // Issue #29: the effective mode; a pick writes the machine store.
         const eff = securityUi.effectiveSecurityFor(hostPlugin, _securityOpts(sec));
-        for (const p of PERMS)
+        for (const p of constants_1.PERMS)
             drop.addOption(p.value, `${p.label} — ${p.desc}`);
         drop.setValue(eff.permissionMode);
         drop.setDisabled(eff.source.permissionMode === "override");
@@ -1268,7 +1289,7 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
         });
     });
     renderUnconfirmedSecurityRow(panelEl, hostPlugin, "permissionMode", sec);
-    descToTooltip(new Setting(panelEl).setName("Open in main tab"), "Open chat in the main editor area instead of the sidebar " +
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Open in main tab"), "Open chat in the main editor area instead of the sidebar " +
         "(takes effect next time the chat is opened).")
         .addToggle((toggle) => toggle.setValue(hostPlugin.settings.openInMainTab).onChange(async (value) => {
         hostPlugin.settings.openInMainTab = value;
@@ -1284,33 +1305,15 @@ function renderDefaultsPanel(hostPlugin, panelEl, _ctx, sec) {
  * hide()`) wraps it in `new Notice(...)`.
  */
 function buildProviderUnreadyNotice(plugin) {
-    const { describeProviderReadiness, humanizeFailureReason, friendlyProviderLabel } = require("@gryphon/provider-runtime");
-    const { ready, reason } = describeProviderReadiness(plugin);
+    const { ready, reason } = (0, gryphon_provider_runtime_1.describeProviderReadiness)(plugin);
     if (ready || !reason)
         return null;
     const pref = (plugin && plugin.settings && plugin.settings.providerPreference) || "auto";
-    const why = humanizeFailureReason(reason);
+    const why = (0, gryphon_provider_runtime_1.humanizeFailureReason)(reason);
     if (pref === "auto") {
         return `⚠ Gryphon has no usable provider (${why}). It won't run until you ` +
             `configure one in Settings → Gryphon.`;
     }
-    return `⚠ ${friendlyProviderLabel(pref)} — ${why}: it won't be used for your ` +
+    return `⚠ ${(0, gryphon_provider_runtime_1.friendlyProviderLabel)(pref)} — ${why}: it won't be used for your ` +
         `requests. Open Settings → Gryphon to fix it or pick another provider.`;
 }
-module.exports = {
-    renderGryphonSettings,
-    buildProviderUnreadyNotice,
-    disposeHoverTooltip,
-    renderSetupPanel,
-    renderFallbackRows,
-    renderAdvancedPanel,
-    renderDefaultsPanel,
-    _credentialFieldsFor,
-    // Exported for unit testing only.
-    _resetModelForProvider,
-    _fallbackModelOptions,
-    _defaultFallbackModel,
-    renderSectionHeading,
-    descToTooltip,
-    renderUnconfirmedSecurityRow,
-};

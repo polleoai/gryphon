@@ -61,9 +61,9 @@
  * mitigation already reduces race probability by ~1000x.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const crypto = require("crypto") as typeof import("crypto");
+import * as fs from "fs";
+import * as path from "path";
+import * as crypto from "crypto";
 
 const STORE_VERSION = 1;
 const FILENAME = "provenance.json";
@@ -161,30 +161,30 @@ class ProvenanceStore {
       // months of accumulated tags.
       this._loadError = e instanceof Error ? e : new Error(String(e));
       this._loaded = true;
-      try { console.warn(`[gryphon/provenance] load failed (writes blocked until cleared): ${this._loadError.message}`); } catch (_) {}
+      try { console.warn(`[gryphon/provenance] load failed (writes blocked until cleared): ${this._loadError.message}`); } catch { /* ignore */ }
       return false;
     }
 
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = JSON.parse(raw) as { version?: unknown; paths?: unknown } | null;
       if (parsed && typeof parsed === "object" && parsed.paths && typeof parsed.paths === "object") {
         this._data = {
           version: typeof parsed.version === "number" ? parsed.version : STORE_VERSION,
-          paths: parsed.paths,
+          paths: parsed.paths as Record<string, unknown>,
         };
       } else {
         // File parsed but didn't have expected shape — treat like a
         // corrupt file: leave the on-disk content alone, don't accept
         // mutations.
         this._loadError = new Error("provenance.json: missing or non-object 'paths' field");
-        try { console.warn(`[gryphon/provenance] ${this._loadError.message}`); } catch (_) {}
+        try { console.warn(`[gryphon/provenance] ${this._loadError.message}`); } catch { /* ignore */ }
       }
     } catch (e) {
       // Malformed JSON. Same posture as unreadable file — block writes
       // so we don't lose the on-disk content the user might want to
       // recover by hand.
       this._loadError = e instanceof Error ? e : new Error(String(e));
-      try { console.warn(`[gryphon/provenance] load failed (JSON parse): ${this._loadError.message}`); } catch (_) {}
+      try { console.warn(`[gryphon/provenance] load failed (JSON parse): ${this._loadError.message}`); } catch { /* ignore */ }
     }
     this._loaded = true;
     return this._loadError === null;
@@ -224,7 +224,7 @@ class ProvenanceStore {
     let entries;
     try {
       entries = fs.readdirSync(dir);
-    } catch (_) {
+    } catch {
       return;  // Plugin dir unreadable — nothing we can do here.
     }
     for (const name of entries) {
@@ -235,7 +235,7 @@ class ProvenanceStore {
         if (stat.mtimeMs < cutoff) {
           fs.unlinkSync(full);
         }
-      } catch (_) { /* best-effort */ }
+      } catch { /* best-effort */ }
     }
   }
 
@@ -399,7 +399,7 @@ class ProvenanceStore {
         const fd = fs.openSync(this._lockFile, "wx");
         try {
           fs.writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
-        } catch (_) { /* best-effort payload */ }
+        } catch { /* best-effort payload */ }
         fs.closeSync(fd);
         acquired = true;
       } catch (e) {
@@ -408,10 +408,10 @@ class ProvenanceStore {
         try {
           const stat = fs.statSync(this._lockFile);
           if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-            try { fs.unlinkSync(this._lockFile); } catch (_) { /* another writer unlinked first */ }
+            try { fs.unlinkSync(this._lockFile); } catch { /* another writer unlinked first */ }
             continue;  // try again immediately
           }
-        } catch (_) { /* lockfile vanished between EEXIST and stat → loop retries */ }
+        } catch { /* lockfile vanished between EEXIST and stat → loop retries */ }
         if (Date.now() >= deadline) {
           throw new Error(
             `ProvenanceStore: could not acquire lock within ${LOCK_TIMEOUT_MS}ms ` +
@@ -428,7 +428,7 @@ class ProvenanceStore {
     try {
       fn();
     } finally {
-      try { fs.unlinkSync(this._lockFile); } catch (_) { /* ignore — stale-lock logic handles */ }
+      try { fs.unlinkSync(this._lockFile); } catch { /* ignore — stale-lock logic handles */ }
     }
   }
 
@@ -464,8 +464,8 @@ class ProvenanceStore {
       fd = null;
       fs.renameSync(tmp, this._file);
     } catch (e) {
-      if (fd != null) { try { fs.closeSync(fd); } catch (_) { /* ignore */ } }
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch (_) { /* ignore */ }
+      if (fd != null) { try { fs.closeSync(fd); } catch { /* ignore */ } }
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* ignore */ }
       throw e;
     }
   }
@@ -482,8 +482,8 @@ function _normaliseKey(p: unknown): string | null {
   return trimmed.replace(/\\/g, "/").replace(/^\/+/, "");
 }
 
-module.exports = {
+export {
   ProvenanceStore,
   STORE_VERSION,
-  _normaliseKey,  // exported for tests
+  _normaliseKey, // exported for tests
 };

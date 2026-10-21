@@ -35,4 +35,4 @@ function hookCommandLine(nodePath: string, scriptPath: string, platform: string 
   return `${shQuote(nodePath)} ${shQuote(scriptPath)}`;
 }
 
-module.exports = { shQuote, psQuote, hookCommandLine };
+export { shQuote, psQuote, hookCommandLine };

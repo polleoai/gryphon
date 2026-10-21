@@ -11,10 +11,10 @@
  * escape hatch for a "re-detect" button or a settings-reload flow.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const { execFileSync } = require("child_process") as typeof import("child_process");
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import { execFileSync } from "child_process";
 
 // Module-level caches. `undefined` means "not yet probed"; a string or
 // null means "probed, got this result". Explicit-undefined sentinel lets
@@ -24,7 +24,7 @@ let _nodeBinaryCache: string | null | undefined;
 let _codexBinaryCache: string | null | undefined;
 let _geminiBinaryCache: string | null | undefined;
 let _antigravityBinaryCache: string | null | undefined;
-let _flatpakCache: { isFlatpak: boolean; appId: string | null } | null | undefined;
+let _flatpakCache: { isFlatpak: boolean; appId: string | null } | undefined;
 // Absolute-path → parsed [major,minor,patch] (or null = probe failed). Keyed
 // by path so repeated resolution across providers pays one --version spawn.
 let _versionCache: Record<string, number[] | null> = {};
@@ -184,7 +184,7 @@ function probeVersion(
   // (/opt/homebrew/bin/codex) and the path resolver probes its realpath;
   // without this every CLI ran `--version` twice (~1 s extra freeze).
   let realKey = binPath;
-  try { realKey = fs.realpathSync(binPath); } catch (_) { /* keep binPath */ }
+  try { realKey = fs.realpathSync(binPath); } catch { /* keep binPath */ }
   for (const k of [binPath, realKey]) {
     if (Object.prototype.hasOwnProperty.call(_versionCache, k)) return _versionCache[k];
   }
@@ -192,13 +192,14 @@ function probeVersion(
   try {
     const out = run(binPath);
     parsed = (!signature || signature.test(out)) ? parseVersion(out) : null;
-  } catch (e: any) {
+  } catch (e) {
     if (signature) return null;
     // execFileSync throws on nonzero exit / timeout but attaches the captured
     // streams; some CLIs print `--version` to stderr.
+    const err = e as { stdout?: Buffer | string | null; stderr?: Buffer | string | null } | null;
     const tail =
-      (e && e.stdout && e.stdout.toString()) ||
-      (e && e.stderr && e.stderr.toString()) ||
+      (err && err.stdout && err.stdout.toString()) ||
+      (err && err.stderr && err.stderr.toString()) ||
       "";
     parsed = parseVersion(tail);
   }
@@ -245,7 +246,7 @@ function _pickNewestValid(
  * Cached after the first call. Use `clearBinaryDiscoveryCache()` to
  * force a fresh probe (e.g. from a "re-detect" settings button).
  */
-function findClaudeBinary() {
+function _findClaudeBinaryCached() {
   // Only a successful (truthy) detection is cached; a null is a transient miss
   // (cold-start probe timeout) that must re-run next call so it self-heals.
   if (_claudeBinaryCache) return _claudeBinaryCache;
@@ -268,7 +269,7 @@ function _collectPresentBinaries(
   const add = (c: string | null | undefined) => {
     if (!c || seen.has(c)) return;
     if (_isAppBundleMainExecutable(c)) return;
-    try { fs.accessSync(c, fs.constants.X_OK); seen.add(c); present.push(c); } catch {}
+    try { fs.accessSync(c, fs.constants.X_OK); seen.add(c); present.push(c); } catch { /* best-effort probe */ }
   };
   for (const c of candidates) add(c);
   const exts = isWindows ? [".cmd", ".exe", ".bat", ""] : [""];
@@ -280,7 +281,7 @@ function _collectPresentBinaries(
   // Obsidian process PATH misses. Skip in Flatpak (sandbox shell can't see
   // host PATH) and on Windows (cmd/PowerShell don't source rc files; system
   // PATH is already visible to Node).
-  if (!(isWindows || detectFlatpakSandbox()!.isFlatpak)) add(_findViaLoginShell(binName));
+  if (!(isWindows || detectFlatpakSandbox().isFlatpak)) add(_findViaLoginShell(binName));
   return present;
 }
 
@@ -341,7 +342,7 @@ function _findClaudeBinaryUncached() {
  * silently fails. We probe common Node install locations, fall back to
  * PATH, and finally try the user's login shell.
  */
-function findNodeBinary() {
+function _findNodeBinaryCached() {
   if (_nodeBinaryCache !== undefined) return _nodeBinaryCache;
   _nodeBinaryCache = _findNodeBinaryUncached();
   return _nodeBinaryCache;
@@ -369,7 +370,7 @@ function _findNodeBinaryUncached() {
     try {
       const stat = fs.statSync(c);
       if (stat.isFile()) {
-        try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+        try { fs.accessSync(c, fs.constants.X_OK); return c; } catch { /* best-effort probe */ }
       } else if (stat.isDirectory()) {
         // nvm-style version manager: pick highest version dir that has
         // bin/node (POSIX) or node.exe (Windows).
@@ -379,20 +380,20 @@ function _findNodeBinaryUncached() {
           const cand = isWindows
             ? path.join(sub, "node.exe")
             : path.join(sub, "bin", "node");
-          try { fs.accessSync(cand, fs.constants.X_OK); return cand; } catch {}
+          try { fs.accessSync(cand, fs.constants.X_OK); return cand; } catch { /* best-effort probe */ }
         }
       }
-    } catch {}
+    } catch { /* best-effort probe */ }
   }
   const exts = isWindows ? [".exe", ".cmd", ""] : [""];
   for (const dir of (process.env.PATH || "").split(path.delimiter)) {
     if (!dir) continue;
     for (const ext of exts) {
       const c = path.join(dir, "node" + ext);
-      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch {}
+      try { fs.accessSync(c, fs.constants.X_OK); return c; } catch { /* best-effort probe */ }
     }
   }
-  if (isWindows || detectFlatpakSandbox()!.isFlatpak) return null;
+  if (isWindows || detectFlatpakSandbox().isFlatpak) return null;
   return _findViaLoginShell("node");
 }
 
@@ -447,12 +448,13 @@ function _findViaLoginShellUncached(
   let out: string;
   try {
     out = runner(shell, ["-lc", `command -v ${binName}`]);
-  } catch (e: any) {
+  } catch (e) {
     // Distinguish a clean "not found" from a transient failure. A non-zero
     // EXIT (e.status is a number) means the shell ran and `command -v` reported
     // the binary absent → DEFINITIVE (cacheable). A timeout / kill / spawn
     // error has no numeric exit status → TRANSIENT (cold start) → do NOT cache.
-    const cleanExit = e && typeof e.status === "number" && !e.killed && e.code !== "ETIMEDOUT";
+    const err = e as { status?: unknown; killed?: boolean; code?: string } | null;
+    const cleanExit = err && typeof err.status === "number" && !err.killed && err.code !== "ETIMEDOUT";
     return { path: null, definitive: !!cleanExit };
   }
   // `command -v` may print the alias form ("alias x='...'") if the binary is a
@@ -477,7 +479,7 @@ function _findViaLoginShellUncached(
  *
  * Returns absolute path or null. Cached.
  */
-function findCodexBinary() {
+function _findCodexBinaryCached() {
   if (_codexBinaryCache) return _codexBinaryCache;
   _codexBinaryCache = _findCodexBinaryUncached();
   return _codexBinaryCache;
@@ -520,7 +522,7 @@ function _findCodexBinaryUncached() {
  * Locate the Google Gemini CLI. Search pattern matches findClaudeBinary.
  * Returns absolute path or null. Cached.
  */
-function findGeminiBinary() {
+function _findGeminiBinaryCached() {
   if (_geminiBinaryCache) return _geminiBinaryCache;
   _geminiBinaryCache = _findGeminiBinaryUncached();
   return _geminiBinaryCache;
@@ -568,7 +570,7 @@ function _findGeminiBinaryUncached() {
  *
  * Returns absolute path or null. Cached.
  */
-function findAntigravityBinary() {
+function _findAntigravityBinaryCached() {
   // `!== undefined`, not truthiness: null is a CACHED MISS. A truthy check
   // re-runs the whole filesystem + login-shell PATH scan on every readiness
   // poll and factory call whenever `agy` isn't installed — which is the
@@ -623,7 +625,7 @@ function buildEnhancedPath() {
  * `claude` installed at /usr/bin is invisible to the plugin, and the
  * "not found" error should say why rather than be generic.
  */
-function detectFlatpakSandbox() {
+function detectFlatpakSandbox(): { isFlatpak: boolean; appId: string | null } {
   if (_flatpakCache !== undefined) return _flatpakCache;
   if (process.env.FLATPAK_ID) {
     _flatpakCache = { isFlatpak: true, appId: process.env.FLATPAK_ID };
@@ -634,7 +636,7 @@ function detectFlatpakSandbox() {
       _flatpakCache = { isFlatpak: true, appId: "(unknown)" };
       return _flatpakCache;
     }
-  } catch {}
+  } catch { /* best-effort probe */ }
   _flatpakCache = { isFlatpak: false, appId: null };
   return _flatpakCache;
 }
@@ -654,6 +656,8 @@ function detectFlatpakSandbox() {
  * results that could otherwise leak the OS username into README
  * screenshots and demo recordings.
  */
+function displayPath(p: string): string;
+function displayPath(p: unknown): unknown;
 function displayPath(p: unknown): unknown {
   if (typeof p !== "string" || !p) return p;
   const home = os.homedir();
@@ -681,15 +685,31 @@ const _LABEL_BY_KIND: Record<string, string> = {
   "antigravity-cli": "agy",
 };
 
-// Dispatch detection through module.exports (not the local fn refs) so the
-// finder stays patchable at runtime — tests reassign utils.findClaudeBinary,
-// and this picks up the override. Same rationale factory.ts documents for
-// re-reading require("./utils").find* fresh on each call.
+/**
+ * The binary finders every caller goes through: this module's own resolution
+ * (_detectFor) and other modules, via the exported wrappers below. It is the
+ * one replaceable seam — a test substitutes a finder here, because ESM exports
+ * are read-only bindings and can't be patched in place.
+ */
+const binaryFinders = {
+  findClaudeBinary: _findClaudeBinaryCached,
+  findCodexBinary: _findCodexBinaryCached,
+  findGeminiBinary: _findGeminiBinaryCached,
+  findAntigravityBinary: _findAntigravityBinaryCached,
+  findNodeBinary: _findNodeBinaryCached,
+};
+
+function findClaudeBinary(): string | null { return binaryFinders.findClaudeBinary(); }
+function findCodexBinary(): string | null { return binaryFinders.findCodexBinary(); }
+function findGeminiBinary(): string | null { return binaryFinders.findGeminiBinary(); }
+function findAntigravityBinary(): string | null { return binaryFinders.findAntigravityBinary(); }
+function findNodeBinary(): string | null { return binaryFinders.findNodeBinary(); }
+
 function _detectFor(kind: string): string | null {
-  if (kind === "claude-code") return module.exports.findClaudeBinary();
-  if (kind === "codex-cli") return module.exports.findCodexBinary();
-  if (kind === "gemini-cli") return module.exports.findGeminiBinary();
-  if (kind === "antigravity-cli") return module.exports.findAntigravityBinary();
+  if (kind === "claude-code") return binaryFinders.findClaudeBinary();
+  if (kind === "codex-cli") return binaryFinders.findCodexBinary();
+  if (kind === "gemini-cli") return binaryFinders.findGeminiBinary();
+  if (kind === "antigravity-cli") return binaryFinders.findAntigravityBinary();
   return null;
 }
 
@@ -715,16 +735,16 @@ function _fileIdOf(p: string): string | null {
   try {
     const st = fs.statSync(p, { bigint: true });
     return st.ino === BigInt(0) ? null : `${st.dev}:${st.ino}`;
-  } catch (_) {
+  } catch {
     return null;
   }
 }
 function _insideVault(p: string, vaultRoot: string): boolean {
   const norm = (x: string) => x.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
   const roots = [path.resolve(vaultRoot)];
-  try { roots.push(fs.realpathSync(vaultRoot)); } catch (_) { /* gone */ }
+  try { roots.push(fs.realpathSync(vaultRoot)); } catch { /* gone */ }
   const cands = [p];
-  try { cands.push(fs.realpathSync(p)); } catch (_) { /* missing */ }
+  try { cands.push(fs.realpathSync(p)); } catch { /* missing */ }
   for (const c of cands) {
     for (const r of roots) {
       const a = norm(c), b = norm(r);
@@ -769,7 +789,7 @@ function resolveCliBinary(
   }
   if (typeof configuredPath === "string" && configuredPath) {
     let executable = false;
-    try { fs.accessSync(configuredPath, fs.constants.X_OK); executable = true; } catch {}
+    try { fs.accessSync(configuredPath, fs.constants.X_OK); executable = true; } catch { /* best-effort probe */ }
     if (executable) {
       const v = probe(configuredPath);
       if (v && compareVersions(v, floor) >= 0) {
@@ -810,7 +830,8 @@ function resolveCliBinary(
   return { ok: false, error: "not-found", detail: label };
 }
 
-module.exports = {
+export {
+  binaryFinders,
   findClaudeBinary,
   findCodexBinary,
   findGeminiBinary,

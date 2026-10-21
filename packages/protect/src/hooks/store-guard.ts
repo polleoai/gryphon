@@ -13,7 +13,7 @@
  * builtins, so it works in a host with no IPC server and no `hooks/` on disk
  * (an embedder installed from the community directory ships `main.js` only).
  * The build bundles it into one file, embedded as a string in
- * @gryphon/protect and written under the approvals dir before each spawn.
+ * @polleoai/gryphon-protect and written under the approvals dir before each spawn.
  *
  * Invocation: `node store-guard.js <dialect> <approvalsDir>`. The dialect
  * and the dir are baked into the hook command, not inherited from the CLI's
@@ -26,8 +26,11 @@
  * an unreadable payload is a deny.
  */
 
-const { approvalsStoreVerdict } = require("../mcp-approvals");
-const { normalizeAntigravityInput, buildHookDecision } = require("./common/dialects");
+import { approvalsStoreVerdict } from "../mcp-approvals";
+import { normalizeAntigravityInput, buildHookDecision } from "./common/dialects";
+
+// The hook payload fields read below (after Antigravity normalisation).
+type HookPayload = { tool_name?: unknown; tool_input?: unknown; cwd?: unknown } | null | undefined;
 
 const DIALECTS = new Set(["claude", "codex", "gemini", "antigravity"]);
 const argDialect = process.argv[2];
@@ -59,18 +62,18 @@ function readStdin(): Promise<string> {
   return new Promise((resolve, reject) => {
     let buf = "";
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (c) => { buf += c; });
+    process.stdin.on("data", (c: string) => { buf += c; });
     process.stdin.on("end", () => resolve(buf));
     process.stdin.on("error", reject);
   });
 }
 
 async function main() {
-  let input: any;
+  let input: unknown;
   try {
     const raw = (await readStdin()).trim();
     input = raw ? JSON.parse(raw) : {};
-  } catch (_) {
+  } catch {
     emit("deny", "Gryphon's settings check could not parse the tool request.");
     return;
   }
@@ -84,16 +87,19 @@ async function main() {
     }
     input = normalized;
   }
-  const tool = input && input.tool_name;
-  const toolInput = input && input.tool_input;
+  const payload = input as HookPayload;
+  const tool = payload && payload.tool_name;
+  const toolInput = payload && payload.tool_input;
   if (typeof tool !== "string" || !toolInput || typeof toolInput !== "object") {
     emit("allow");
     return;
   }
-  const verdict = approvalsStoreVerdict(tool, toolInput, {
+  // `tool` is a string here, so `payload` is an object.
+  const payloadCwd = (payload as { cwd?: unknown }).cwd;
+  const verdict = approvalsStoreVerdict(tool, toolInput as Record<string, unknown>, {
     // CLIs run hooks from the agent's cwd; use it when the payload has none,
     // so a relative path still resolves somewhere.
-    cwd: typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd(),
+    cwd: typeof payloadCwd === "string" && payloadCwd ? payloadCwd : process.cwd(),
     extraDirs: guardedDir ? [guardedDir] : [],
     // E7-1: decide well inside the CLI's hook timeout — a killed hook is
     // "allow" in several CLIs. Past this the check refuses (fail closed).

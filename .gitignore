@@ -22,3 +22,13 @@ main.js
 
 
 # TypeScript build output
+
+# npm packaging (#26): `npm run pack` output, and the files each package's
+# prepack copies in from the repo root (canonical copies stay at the root).
+/artifacts/
+packages/*/LICENSE
+packages/plugin/styles.css
+
+# local scratch notes
+/agy.txt
+/warning.txt

@@ -14,7 +14,7 @@
 
 // Shared with every hook-command builder (R43-1): one quoting
 // implementation, including PowerShell's typographic single quotes.
-const { shQuote, psQuote } = require("../../../provider-runtime/dist/shell-quote");
+import { shQuote, psQuote } from "@polleoai/gryphon-provider-runtime/shell-quote";
 
 /** Seconds — the decision is immediate; this only bounds a stuck stdin. */
 const STORE_GUARD_TIMEOUT_S = 30;
@@ -39,4 +39,4 @@ function storeGuardCommand(
   return { command: argv.map(shQuote).join(" ") };
 }
 
-module.exports = { shQuote, psQuote, storeGuardArgv, storeGuardCommand, STORE_GUARD_TIMEOUT_S };
+export { shQuote, psQuote, storeGuardArgv, storeGuardCommand, STORE_GUARD_TIMEOUT_S };

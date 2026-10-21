@@ -32,9 +32,9 @@
  *      provenance store sweeps its own tmpdir before every load).
  */
 
-const fs = require("fs") as typeof import("fs");
-const pathMod = require("path") as typeof import("path");
-const os = require("os") as typeof import("os");
+import * as fs from "fs";
+import * as pathMod from "path";
+import * as os from "os";
 
 const HOOK_SETTINGS_RE = /^gryphon-cc-settings-\d+-\d+-[0-9a-f]+\.json$/;
 // Issue #25: the claude-code provider's per-spawn --mcp-config file. Same
@@ -55,7 +55,7 @@ const HOOK_TRACE_LOG_NAME = "gryphon-hook-trace.log";
 const IS_WINDOWS = process.platform === "win32";
 
 function _tryUnlink(full: string): boolean {
-  try { fs.unlinkSync(full); return true; } catch (_) { return false; }
+  try { fs.unlinkSync(full); return true; } catch { return false; }
 }
 
 /**
@@ -74,7 +74,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
   const dir = tmpDir || os.tmpdir();
   const cutoff = Date.now() - cutoffMs;
   let entries;
-  try { entries = fs.readdirSync(dir); } catch (_) { return { removed: [] }; }
+  try { entries = fs.readdirSync(dir); } catch { return { removed: [] }; }
   const removed = [];
   for (const name of entries) {
     if (!HOOK_SETTINGS_RE.test(name) && !MCP_CONFIG_RE.test(name) && !MEMORY_FILE_RE.test(name)) continue;
@@ -82,7 +82,7 @@ function sweepHookSettingsOrphans({ tmpDir, cutoffMs = DEFAULT_SETTINGS_CUTOFF_M
     try {
       const stat = fs.statSync(full);
       if (stat.mtimeMs < cutoff && _tryUnlink(full)) removed.push(full);
-    } catch (_) { /* best-effort */ }
+    } catch { /* best-effort */ }
   }
   return { removed };
 }
@@ -91,7 +91,7 @@ function sweepSocketOrphans({ tmpDir }: { tmpDir?: string } = {}) {
   if (IS_WINDOWS) return { removed: [] };
   const dir = tmpDir || os.tmpdir();
   let entries;
-  try { entries = fs.readdirSync(dir); } catch (_) { return { removed: [] }; }
+  try { entries = fs.readdirSync(dir); } catch { return { removed: [] }; }
   const removed = [];
   for (const name of entries) {
     const m = SOCKET_RE.exec(name);
@@ -108,7 +108,7 @@ function sweepProvenanceTmpOrphans({ pluginDir, cutoffMs = DEFAULT_PROVENANCE_TM
   if (!pluginDir) return { removed: [] };
   const cutoff = Date.now() - cutoffMs;
   let entries;
-  try { entries = fs.readdirSync(pluginDir); } catch (_) { return { removed: [] }; }
+  try { entries = fs.readdirSync(pluginDir); } catch { return { removed: [] }; }
   const removed = [];
   for (const name of entries) {
     if (!PROVENANCE_TMP_RE.test(name)) continue;
@@ -116,7 +116,7 @@ function sweepProvenanceTmpOrphans({ pluginDir, cutoffMs = DEFAULT_PROVENANCE_TM
     try {
       const stat = fs.statSync(full);
       if (stat.mtimeMs < cutoff && _tryUnlink(full)) removed.push(full);
-    } catch (_) { /* best-effort */ }
+    } catch { /* best-effort */ }
   }
   return { removed };
 }
@@ -124,7 +124,7 @@ function sweepProvenanceTmpOrphans({ pluginDir, cutoffMs = DEFAULT_PROVENANCE_TM
 function sweepChatHistoryTmpOrphans({ pluginDir }: { pluginDir?: string } = {}) {
   if (!pluginDir) return { removed: [] };
   let entries;
-  try { entries = fs.readdirSync(pluginDir); } catch (_) { return { removed: [] }; }
+  try { entries = fs.readdirSync(pluginDir); } catch { return { removed: [] }; }
   const removed = [];
   for (const name of entries) {
     const m = CHAT_HISTORY_TMP_RE.exec(name);
@@ -149,7 +149,7 @@ function truncateHookTraceLog({ tmpDir }: { tmpDir?: string } = {}) {
   try {
     if (fs.existsSync(full)) fs.truncateSync(full, 0);
     return { truncated: true, path: full };
-  } catch (_) {
+  } catch {
     return { truncated: false, path: full };
   }
 }
@@ -187,7 +187,7 @@ function sweepGryphonOrphans(opts: { pluginDir?: string; tmpDir?: string; trunca
   return summary;
 }
 
-module.exports = {
+export {
   sweepGryphonOrphans,
   sweepHookSettingsOrphans,
   sweepSocketOrphans,

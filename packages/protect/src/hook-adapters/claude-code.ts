@@ -9,12 +9,8 @@
  * into the HookDispatcher's contract.
  */
 
-const fs = require("fs") as typeof import("fs");
-const {
-  buildHookSettings,
-  buildPermissionsOnlySettings,
-  writeHookSettingsFile,
-} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+import * as fs from "fs";
+import { buildHookSettings, buildPermissionsOnlySettings, writeHookSettingsFile } from "@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder";
 
 const KIND = "claude-code";
 
@@ -76,4 +72,4 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, permissionsOnly 
   };
 }
 
-module.exports = { kind: KIND, buildSpawnExtras };
+export { KIND as kind, buildSpawnExtras };

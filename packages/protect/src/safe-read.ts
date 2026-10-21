@@ -19,7 +19,7 @@
  * descriptor, so the file can't be swapped between the check and the read.
  * Node builtins only: this module is bundled into the store-guard hook.
  */
-const fs = require("fs") as typeof import("fs");
+import * as fs from "fs";
 
 type SafeRead =
   | { raw: string; st: import("fs").Stats }
@@ -54,7 +54,7 @@ function readRegularFile(file: string, opts: { follow?: boolean } = {}): SafeRea
     const err = e as NodeJS.ErrnoException;
     return { raw: null, absent: err.code === "EISDIR", error: err };
   } finally {
-    try { fs.closeSync(fd); } catch (_) { /* already closed */ }
+    try { fs.closeSync(fd); } catch { /* already closed */ }
   }
 }
 
@@ -65,11 +65,11 @@ function readRegularFile(file: string, opts: { follow?: boolean } = {}): SafeRea
  */
 function clearNonFile(p: string): void {
   let st: import("fs").Stats;
-  try { st = fs.lstatSync(p); } catch (_) { return; }
+  try { st = fs.lstatSync(p); } catch { return; }
   if (st.isFile()) return;
-  try { fs.unlinkSync(p); return; } catch (_) { /* a directory */ }
-  try { fs.rmdirSync(p); return; } catch (_) { /* not empty */ }
-  try { fs.renameSync(p, `${p}.not-a-record-${process.pid}-${Date.now()}`); } catch (_) { /* left; the write reports it */ }
+  try { fs.unlinkSync(p); return; } catch { /* a directory */ }
+  try { fs.rmdirSync(p); return; } catch { /* not empty */ }
+  try { fs.renameSync(p, `${p}.not-a-record-${process.pid}-${Date.now()}`); } catch { /* left; the write reports it */ }
 }
 
-module.exports = { readRegularFile, clearNonFile };
+export { readRegularFile, clearNonFile };

@@ -27,7 +27,66 @@
  *   { type: "item.completed", item: { id, type, text? } }     — agent_message holds final text
  *   { type: "turn.completed", usage: { input_tokens, cached_input_tokens, output_tokens, reasoning_output_tokens } }
  */
-declare const DEFAULT_MODEL: any;
+import type { ChildProcessByStdio } from "child_process";
+import type { Readable } from "stream";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+declare const DEFAULT_MODEL: string;
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+    notify(message: string, opts?: {
+        level?: string;
+        timeoutMs?: number;
+    }): void;
+}
+/** The slice of the host plugin this provider reads (also handed to the hook dispatcher). */
+type CodexHostPlugin = {
+    consumeTaintedSession?: (sessionId: string) => boolean;
+    consumeForceFreshSpawn?: (kind: string) => boolean;
+    [key: string]: unknown;
+};
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+interface CodexOptions {
+    model?: string | null;
+    permissionMode?: string;
+    resumeSessionId?: string;
+    extraArgs?: string[];
+    plugin?: CodexHostPlugin | null;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride | null;
+    [key: string]: unknown;
+}
+/** Test-harness options-bag constructor form. */
+interface CodexBag {
+    codexPath?: string;
+    cwd?: string;
+    config?: {
+        model?: string;
+    } | null;
+    hostAdapter?: HostAdapterLike;
+    _spawnOverride?: SpawnOverride;
+}
+/** `codex exec` spawns with stdio ["ignore", "pipe", "pipe"]. */
+type CodexProc = ChildProcessByStdio<null, Readable, Readable>;
+interface CodexUsage {
+    input_tokens?: number;
+    output_tokens?: number;
+    cached_input_tokens?: number;
+}
+/** One `codex exec --json` stdout event (only the fields read here). */
+interface CodexEvent {
+    type?: string;
+    thread_id?: unknown;
+    item?: {
+        type?: unknown;
+        text?: unknown;
+    };
+    usage?: CodexUsage | null;
+    error?: {
+        message?: string;
+    } | null;
+    message?: string;
+}
 declare function _supportsLandlockSandbox(): boolean;
 /**
  * Hook-adapter args are Codex OPTIONS (e.g. `-c features.hooks=true`, R43-2),
@@ -58,10 +117,10 @@ declare function _insertBeforePrompt(args: string[], extra: string[]): void;
  * the alternative is "Codex CLI doesn't work on this host." A
  * one-time console warning surfaces the downgrade for diagnostics.
  */
-declare function _mapPermissionToSandbox(permissionMode: any): string;
+declare function _mapPermissionToSandbox(permissionMode: unknown): string;
 declare const SESSION_PREFIX = "codex-cli-";
-declare function _wrapSession(id: any): string | null;
-declare function _unwrapSession(id: any): any;
+declare function _wrapSession(id: unknown): string | null;
+declare function _unwrapSession(id: string | null): string | null;
 /**
  * Strip Codex-side internal-mechanism leaks from the model's
  * user-facing text so the chat UI matches Claude Code's clean style.
@@ -86,10 +145,34 @@ declare function _unwrapSession(id: any): any;
  * inside a code fence, and the trailing "Command: ..." echo Codex
  * sometimes appends.
  */
-declare function _scrubInternalLeaks(text: any): any;
+declare function _scrubInternalLeaks(text: string): string;
 declare class CodexProvider {
-    [key: string]: any;
-    constructor(codexPath: any, cwd: any, options?: Record<string, any>);
+    codexPath: string;
+    cwd: string;
+    options: CodexOptions;
+    _spawnOverride: SpawnOverride | null;
+    hostAdapter: HostAdapterLike;
+    process: CodexProc | null;
+    alive: boolean;
+    sessionId: string | null;
+    resolvedModel: string;
+    contextTokens: number;
+    lastCumulativeCost: number;
+    _buffer: string;
+    _stderrTail: string;
+    _turnText: string;
+    _lastUsage: CodexUsage | null;
+    _currentResolve: ((result: Result) => void) | null;
+    _currentReject: ((reason?: unknown) => void) | null;
+    onMessage: ((text: string, type: StreamMessageType) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: Result) => void) | null;
+    onSessionExpired: (() => void) | null;
+    _failed?: boolean;
+    _lastPrompt?: string;
+    _staleRecoveryFired?: boolean;
+    _hookCleanup?: (() => void) | null;
+    constructor(codexPath: string | CodexBag, cwd?: string, options?: CodexOptions);
     /**
      * Build the argv for one `codex exec` (or `codex exec resume`) spawn.
      * Each turn rebuilds args from scratch — the process is one-shot, so
@@ -102,17 +185,17 @@ declare class CodexProvider {
      * "unexpected argument '--sandbox' found". Fresh-session flags only
      * fire on the initial spawn (when `sessionId` is null).
      */
-    _buildArgs(prompt: any): string[];
-    send(prompt: any, options: any): any;
+    _buildArgs(prompt: string): string[];
+    send(prompt: string, options?: SendOptions): Promise<Result>;
     /**
      * Execute one codex exec turn and return a Promise that resolves with the
      * result object {text, cost, cumulativeCost, sessionId, duration,
      * contextTokens}. When _spawnOverride is set (test-harness injection),
      * delegates directly to the override function.
      */
-    _spawnTurn(prompt: any): any;
-    _handleStdout(data: any): void;
-    _processEvent(raw: any): void;
+    _spawnTurn(prompt: string): Promise<Result>;
+    _handleStdout(data: Buffer | string): void;
+    _processEvent(raw: CodexEvent | null): void;
     /**
      * Stale-session recovery: re-send the most recent prompt as a
      * FRESH Codex session after `codex exec resume <id>` reported "no
@@ -142,12 +225,12 @@ declare class CodexProvider {
      * The pending Promise hooks (_currentResolve / _currentReject)
      * MUST already be set to the original send()'s callbacks.
      */
-    _respawnFresh(prompt: any): void;
-    _handleStderr(data: any): void;
-    _handleClose(code: any): void;
-    _handleProcessError(err: any): void;
+    _respawnFresh(prompt: string): void;
+    _handleStderr(data: Buffer | string): void;
+    _handleClose(code: number | null): void;
+    _handleProcessError(err: Error): void;
     abort(): void;
-    isAlive(): any;
+    isAlive(): boolean;
     get costIsEstimate(): boolean;
 }
 export { CodexProvider, _mapPermissionToSandbox, _insertBeforePrompt, _supportsLandlockSandbox, _wrapSession, _unwrapSession, _scrubInternalLeaks, SESSION_PREFIX, DEFAULT_MODEL, };

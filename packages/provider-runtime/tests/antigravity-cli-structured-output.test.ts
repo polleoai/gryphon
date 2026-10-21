@@ -18,7 +18,7 @@ Module._resolveFilename = function (req, ...args) {
 
 const origLoad = Module._load;
 Module._load = function (request, ...args) {
-  if (request === "@gryphon/protect") {
+  if (request === "@polleoai/gryphon-protect") {
     return {
       hookDispatcher: {
         prepareSpawn: () => ({ ok: false, cleanup: () => {}, args: [], env: {}, degradationReason: "test-stub" }),
@@ -26,7 +26,7 @@ Module._load = function (request, ...args) {
       winSpawn: { isWindowsShim: () => false, wrapForCmdShim: (cmd: any, a: any) => ({ command: cmd, args: a, options: {} }) },
     };
   }
-  if (request === "@gryphon/provider-config") {
+  if (request === "@polleoai/gryphon-provider-config") {
     const pricing = {
       google: {
         computeCost: () => ({ cost: 0 }),

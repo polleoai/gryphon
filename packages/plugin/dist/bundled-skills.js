@@ -192,7 +192,7 @@ everything looks clean, say so explicitly — don't invent issues.
 
 {{args}}
 `;
-module.exports = {
+const BUNDLED_SKILLS = {
     "README.md": README,
     "tag-suggest.md": TAG_SUGGEST,
     "backlinks.md": BACKLINKS,
@@ -200,3 +200,4 @@ module.exports = {
     "summarize.md": SUMMARIZE,
     "lint-note.md": LINT_NOTE,
 };
+exports.default = BUNDLED_SKILLS;

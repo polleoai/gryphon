@@ -12,7 +12,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("module");
 
-// Stub obsidian + @gryphon/protect + @gryphon/provider-config before
+// Stub obsidian + @polleoai/gryphon-protect + @polleoai/gryphon-provider-config before
 // requiring any provider so the modules load without Obsidian infra.
 const stubPath = require.resolve("./_stubs/obsidian.js");
 const origResolve = Module._resolveFilename;
@@ -23,7 +23,7 @@ Module._resolveFilename = function (req, ...args) {
 
 const origLoad = Module._load;
 Module._load = function (request, ...args) {
-  if (request === "@gryphon/protect") {
+  if (request === "@polleoai/gryphon-protect") {
     return {
       buildDisallowedTools: () => [],
       winSpawn: { isWindowsShim: () => false, wrapForCmdShim: (cmd, a) => ({ command: cmd, args: a, options: {} }) },
@@ -34,7 +34,7 @@ Module._load = function (request, ...args) {
       },
     };
   }
-  if (request === "@gryphon/provider-config") {
+  if (request === "@polleoai/gryphon-provider-config") {
     return {
       filterExtraArgs: (a) => ({ filtered: a, dropped: [] }),
       pricing: {

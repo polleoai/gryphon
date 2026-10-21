@@ -28,7 +28,7 @@ function fakeSpawn(cmd: string, args: string[], opts: any) {
 }
 
 const { ClaudeCodeProvider } = require("../src/providers/claude-code/claude-code");
-const { securitySettings } = require("@gryphon/protect");
+const { securitySettings } = require("@polleoai/gryphon-protect");
 
 const NO_USER_CONFIG = path.join(os.tmpdir(), "g29-no-such-claude.json");
 const vault = () => fs.mkdtempSync(path.join(os.tmpdir(), "g29-cc-vault-"));

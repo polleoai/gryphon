@@ -1,10 +1,46 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ensureStoreGuardScript = ensureStoreGuardScript;
+exports.sweepStoreGuardScripts = sweepStoreGuardScripts;
+exports.storeGuardDir = storeGuardDir;
 /**
  * Store-guard script materialization (issue #30, G2).
  *
- * The store-guard hook ships as a string inside @gryphon/protect
+ * The store-guard hook ships as a string inside @polleoai/gryphon-protect
  * (generated/store-guard-bundle.ts), so a host that installs only `main.js`
  * still has it. Before each spawn that uses it, it's written to
  *
@@ -19,17 +55,18 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * Content-addressed names let two Gryphon versions (an embedder's bundled
  * copy and a standalone install) keep their own scripts side by side.
  */
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const { approvalsDir } = require("./mcp-approvals");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const crypto = __importStar(require("crypto"));
+const mcp_approvals_1 = require("./mcp-approvals");
+const storeGuardBundle = __importStar(require("./generated/store-guard-bundle"));
 const SCRIPT_RE = /^store-guard-[0-9a-f]{16}\.js$/;
 const STALE_MS = 90 * 24 * 60 * 60 * 1000;
 function _sha(s) {
     return crypto.createHash("sha256").update(s).digest("hex");
 }
 function storeGuardDir() {
-    return path.join(approvalsDir(), "hooks");
+    return path.join((0, mcp_approvals_1.approvalsDir)(), "hooks");
 }
 /** A regular file (not a link) whose content hashes to `sha256`. */
 function _verified(file, sha256) {
@@ -38,7 +75,7 @@ function _verified(file, sha256) {
             return false;
         return _sha(fs.readFileSync(file, "utf8")) === sha256;
     }
-    catch (_) {
+    catch {
         return false;
     }
 }
@@ -58,7 +95,7 @@ function sweepStoreGuardScripts(keep, dir = storeGuardDir(), now = Date.now()) {
     try {
         names = fs.readdirSync(dir);
     }
-    catch (_) {
+    catch {
         return;
     }
     const others = [];
@@ -69,7 +106,7 @@ function sweepStoreGuardScripts(keep, dir = storeGuardDir(), now = Date.now()) {
         try {
             others.push({ p, mtime: fs.statSync(p).mtimeMs });
         }
-        catch (_) { /* gone */ }
+        catch { /* gone */ }
     }
     if (others.length + 1 <= MAX_KEPT)
         return;
@@ -93,7 +130,7 @@ function sweepStoreGuardScripts(keep, dir = storeGuardDir(), now = Date.now()) {
  * hook and must say so.
  */
 function ensureStoreGuardScript(opts = {}) {
-    const bundle = opts.bundle || require("./generated/store-guard-bundle");
+    const bundle = opts.bundle || storeGuardBundle;
     if (!bundle || typeof bundle.source !== "string" || !/^[0-9a-f]{64}$/.test(bundle.sha256)) {
         return { ok: false, reason: "the embedded store-guard script is missing" };
     }
@@ -107,7 +144,7 @@ function ensureStoreGuardScript(opts = {}) {
                     fs.chmodSync(path.dirname(dir), 0o700);
                     fs.chmodSync(dir, 0o700);
                 }
-                catch (_) { /* best effort */ }
+                catch { /* best effort */ }
             }
             const tmp = path.join(dir, `.store-guard.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
             fs.writeFileSync(tmp, bundle.source, { mode: 0o600, flag: "wx" });
@@ -118,7 +155,7 @@ function ensureStoreGuardScript(opts = {}) {
                 try {
                     fs.unlinkSync(tmp);
                 }
-                catch (_) { /* already gone */ }
+                catch { /* already gone */ }
                 throw e;
             }
         }
@@ -136,15 +173,10 @@ function ensureStoreGuardScript(opts = {}) {
         const t = new Date();
         fs.utimesSync(target, t, t);
     }
-    catch (_) { /* best effort */ }
+    catch { /* best effort */ }
     if (!_swept) {
         _swept = true;
         sweepStoreGuardScripts(target, dir);
     }
     return { ok: true, path: target, sha256: bundle.sha256 };
 }
-module.exports = {
-    ensureStoreGuardScript,
-    sweepStoreGuardScripts,
-    storeGuardDir,
-};

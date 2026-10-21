@@ -1,6 +1,50 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.STORE_GUARD_HOOK_KEY = exports.HOOK_KEY = exports.kind = void 0;
+exports.buildSpawnExtras = buildSpawnExtras;
+exports.hooksFilePath = hooksFilePath;
+exports.stripStaleHooks = stripStaleHooks;
+exports._buildHookEntry = _buildHookEntry;
+exports._socketOf = _socketOf;
+exports._installInto = _installInto;
+exports._uninstallFrom = _uninstallFrom;
+exports._stripStaleFrom = _stripStaleFrom;
+exports._asciiForShim = _asciiForShim;
+exports.lastRefusal = lastRefusal;
 /**
  * Antigravity CLI (`agy`) hook adapter.
  *
@@ -44,20 +88,23 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * A file we cannot parse is left exactly as found: silently overwriting a
  * user's config to fix our own merge is worse than degrading hooks.
  */
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const crypto = require("crypto");
-const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
-const { sameFileAs } = require("../path-identity");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
+const hook_settings_builder_1 = require("@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder");
+const store_guard_command_1 = require("./store-guard-command");
+const path_identity_1 = require("../path-identity");
+const child_process_1 = require("child_process");
 const KIND = "antigravity-cli";
+exports.kind = KIND;
 const OWNER_RE = /gryphon-owner=([0-9a-f]{16,})/;
 /**
  * Top-level key we own inside the shared hooks.json. Antigravity keys hook
  * specs by name and merges across names, so this is our whole footprint.
  */
 const HOOK_KEY = "gryphon";
+exports.HOOK_KEY = HOOK_KEY;
 /**
  * Issue #30: store-guard-only installs use their OWN key. Two Obsidian
  * windows share hooks.json; if a Protected-Mode-off spawn replaced the
@@ -66,6 +113,7 @@ const HOOK_KEY = "gryphon";
  * both run and a deny from either blocks the tool.
  */
 const STORE_GUARD_HOOK_KEY = "gryphon-store-guard";
+exports.STORE_GUARD_HOOK_KEY = STORE_GUARD_HOOK_KEY;
 /**
  * The one location `agy` reads hooks from (see header). Not configurable.
  */
@@ -126,7 +174,7 @@ function _asciiForShim(p, shortOf = _shortPathOf) {
     const short = shortOf(p);
     if (!short || !PLAIN_ASCII.test(short))
         return null;
-    return sameFileAs(short, [p]) ? short : null;
+    return (0, path_identity_1.sameFileAs)(short, [p]) ? short : null;
 }
 /**
  * Why Windows gets a shim file instead of an inline command.
@@ -212,12 +260,11 @@ function _winShimPath(ipcSocketPath, baseDir) {
  */
 function _shortPathOf(dir) {
     try {
-        const { spawnSync } = require("child_process");
         // windowsVerbatimArguments: the argument contains quotes, and default
         // escaping would render them as \" — which cmd reads literally. That is
         // the exact defect this whole shim exists to work around, so it must not
         // be reintroduced in the code that computes the shim's path.
-        const r = spawnSync("cmd", ["/c", `for %I in ("${dir}") do @echo %~sI`], { encoding: "utf8", timeout: 5000, windowsVerbatimArguments: true });
+        const r = (0, child_process_1.spawnSync)("cmd", ["/c", `for %I in ("${dir}") do @echo %~sI`], { encoding: "utf8", timeout: 5000, windowsVerbatimArguments: true });
         if (!r || r.status !== 0)
             return null;
         const line = String(r.stdout || "").trim().split(/\r?\n/)[0];
@@ -373,7 +420,7 @@ function _makeStoreGuardCommand(nodePath, sg, owner) {
         }
         return shimPath;
     }
-    const { command } = storeGuardCommand({ nodePath, scriptPath: sg.scriptPath, approvalsDir: sg.approvalsDir, dialect: "antigravity" });
+    const { command } = (0, store_guard_command_1.storeGuardCommand)({ nodePath, scriptPath: sg.scriptPath, approvalsDir: sg.approvalsDir, dialect: "antigravity" });
     return `${command} ${_shQuote(`gryphon-owner=${owner}`)}`;
 }
 /**
@@ -392,11 +439,11 @@ function _buildHookEntry({ pluginDir, nodePath, ipcSocketPath = "", storeGuard, 
         if (!cmd)
             return null;
         return {
-            PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: cmd, timeout: STORE_GUARD_TIMEOUT_S }] }],
+            PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: cmd, timeout: store_guard_command_1.STORE_GUARD_TIMEOUT_S }] }],
         };
     }
     const hooksDir = path.join(pluginDir, "hooks");
-    const pre = _makeCommand(nodePath, path.join(hooksDir, String(HOOK_FILES.PreToolUse)), ipcSocketPath);
+    const pre = _makeCommand(nodePath, path.join(hooksDir, String(hook_settings_builder_1.HOOK_FILES.PreToolUse)), ipcSocketPath);
     if (!pre)
         return null;
     // NO PostToolUse. Captured live from agy v1.1.8, its PostToolUse payload is
@@ -420,7 +467,7 @@ function _buildHookEntry({ pluginDir, nodePath, ipcSocketPath = "", storeGuard, 
                 hooks: [{
                         type: "command",
                         command: pre,
-                        timeout: DEFAULT_HOOK_TIMEOUTS.PreToolUse,
+                        timeout: hook_settings_builder_1.DEFAULT_HOOK_TIMEOUTS.PreToolUse,
                     }],
             }],
     };
@@ -648,7 +695,7 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, storeGuardOnly, 
     // refuse to build a command for -- in every one of those cases there is no
     // guardrail, and the caller has to know that before it decides whether to
     // pass --dangerously-skip-permissions.
-    if (!_installInto(file, { pluginDir: pluginDir, nodePath, ipcSocketPath }))
+    if (!_installInto(file, { pluginDir, nodePath, ipcSocketPath }))
         return null;
     let cleaned = false;
     const cleanup = () => {
@@ -673,18 +720,3 @@ function buildSpawnExtras({ pluginDir, ipcSocketPath, nodePath, storeGuardOnly, 
         hooksFile: file,
     };
 }
-module.exports = {
-    kind: KIND,
-    buildSpawnExtras,
-    hooksFilePath,
-    stripStaleHooks,
-    HOOK_KEY,
-    STORE_GUARD_HOOK_KEY,
-    _buildHookEntry,
-    _socketOf,
-    _installInto,
-    _uninstallFrom,
-    _stripStaleFrom,
-    _asciiForShim,
-    lastRefusal,
-};

@@ -66,7 +66,7 @@ const INJECTION_PATTERNS = [
   },
   {
     id: "ssh-key-read",
-    regex: /\b(cat|read|show)\s+[~\/]\S*\.ssh\/\S+/i,
+    regex: /\b(cat|read|show)\s+[~/]\S*\.ssh\/\S+/i,
     severity: "high",
   },
   {
@@ -135,7 +135,7 @@ function scanForInjectionMarkers(text: string): Array<{ id: string; severity: st
   return hits;
 }
 
-module.exports = {
+export {
   INJECTION_PATTERNS,
   SCAN_MAX_BYTES,
   scanForInjectionMarkers,

@@ -25,28 +25,18 @@
  * narrating mechanism back to the user.
  */
 
-const {
+import {
   readStdinJson,
   writeStdoutJson,
   traceHook,
-} = require("./common/ipc-client");
+} from "./common/ipc-client";
 
-let scanForInjectionMarkers: ((text: string) => Array<{ id: string; severity: string; match: string; offset: number }>) | undefined;
-try {
-  ({ scanForInjectionMarkers } = require("./common/injection-patterns"));
-} catch (_) {
-  try {
-    ({ scanForInjectionMarkers } = require("../injection-patterns"));
-  } catch (_) {
-    // Both candidate paths failed — scanner is now silently absent and
-    // every user prompt would pass through unscanned. Surface this once
-    // to stderr so a packaging glitch (build forgets to copy
-    // hooks/common/injection-patterns.js, or a future rename breaks both
-    // paths) shows up in the dev console rather than hiding as
-    // "all prompts are clean."
-    console.error("[gryphon/user-prompt] injection scanner unavailable — prompt scanning disabled (both candidate require paths failed)");
-  }
-}
+type InjectionScanner = (text: string) => Array<{ id: string; severity: string; match: string; offset: number }>;
+
+// Static import from ./common/: the shipped hook tree has the scanner there
+// (build.ts builds it from src/), the source tree has a re-export at the same
+// path. Compiles to a plain synchronous require.
+import { scanForInjectionMarkers } from "./common/injection-patterns";
 
 // Same regex as chat-view.js::_stripContextBlock — kept inline (not
 // imported) because hooks are standalone per design invariant #4.
@@ -59,10 +49,10 @@ function stripContextBlock(text: unknown): string {
 }
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) {
+  } catch {
     await writeStdoutJson({});
     process.exit(0);
     return;
@@ -81,7 +71,7 @@ async function main() {
   // ours, not user-pasted, so they shouldn't trigger injection alerts.
   const cleanPrompt = stripContextBlock(prompt);
 
-  let hits = [];
+  let hits: ReturnType<InjectionScanner> = [];
   if (scanForInjectionMarkers && cleanPrompt) {
     try {
       hits = scanForInjectionMarkers(cleanPrompt);
@@ -118,6 +108,6 @@ async function main() {
 }
 
 main().catch(async () => {
-  try { await writeStdoutJson({}); } catch (_) { /* ignore */ }
+  try { await writeStdoutJson({}); } catch { /* ignore */ }
   process.exit(0);
 });

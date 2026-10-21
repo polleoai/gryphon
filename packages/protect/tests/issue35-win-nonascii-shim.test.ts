@@ -10,7 +10,8 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const adapter = require("../src/hook-adapters/antigravity-cli");
+// The registry copy is the replaceable seam the dispatcher reads.
+const adapter = require("../src/hook-adapters").getAdapter("antigravity-cli");
 
 function withPlatform(value: string, fn: () => any) {
   const original = Object.getOwnPropertyDescriptor(process, "platform");

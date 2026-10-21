@@ -26,27 +26,70 @@
  * (heuristic), exact for SDK mode (countTokens). Self-tuning calibration
  * (Stage D) sharpens this over time.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
+exports.SDK_TOOL_SCHEMAS_TOKENS_BASELINE = exports.SDK_SYSTEM_PROMPT_TOKENS_BASELINE = exports.CC_TOOL_SCHEMAS_TOKENS_BASELINE = exports.CC_SYSTEM_PROMPT_TOKENS_BASELINE = exports.CHARS_PER_TOKEN = void 0;
+exports.collectContextSources = collectContextSources;
+exports.summarizeContext = summarizeContext;
+exports.estimateTokensFromChars = estimateTokensFromChars;
+exports.estimateTokensFromBytes = estimateTokensFromBytes;
+exports.escapeVaultPath = escapeVaultPath;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const os = __importStar(require("os"));
 // 1 token ≈ 4 chars is the rough rule-of-thumb for English text against
 // the Claude tokenizer. Code and JSON are more dense (~3 chars/token);
 // natural language is less dense (~5 chars/token). 0.25 is the median
 // that splits the error symmetrically. Self-tuning calibration learns
 // the per-vault deviation from this baseline.
 const CHARS_PER_TOKEN = 0.25;
+exports.CHARS_PER_TOKEN = CHARS_PER_TOKEN;
 // Fixed baselines for inputs we can't directly measure. Calibrated by
 // counting Anthropic's published prompts + sampling CC spawn args. These
 // are the v1.7.0 starting points; the rolling-average calibrator
 // (Stage D) layers a per-vault delta on top.
 const CC_SYSTEM_PROMPT_TOKENS_BASELINE = 1500; // CC's built-in system prompt
+exports.CC_SYSTEM_PROMPT_TOKENS_BASELINE = CC_SYSTEM_PROMPT_TOKENS_BASELINE;
 const CC_TOOL_SCHEMAS_TOKENS_BASELINE = 2500; // CC's built-in tool definitions
-const MCP_SERVER_TOKENS_BASELINE = 1500; // per registered MCP server
+exports.CC_TOOL_SCHEMAS_TOKENS_BASELINE = CC_TOOL_SCHEMAS_TOKENS_BASELINE;
 // SDK-mode (anthropic-api) has a different baseline because Gryphon
 // owns the system prompt + tool list, not CC.
 const SDK_SYSTEM_PROMPT_TOKENS_BASELINE = 300; // Gryphon's appended hint is small
+exports.SDK_SYSTEM_PROMPT_TOKENS_BASELINE = SDK_SYSTEM_PROMPT_TOKENS_BASELINE;
 const SDK_TOOL_SCHEMAS_TOKENS_BASELINE = 800; // smaller tool set than CC
+exports.SDK_TOOL_SCHEMAS_TOKENS_BASELINE = SDK_TOOL_SCHEMAS_TOKENS_BASELINE;
 /**
  * Approximate token count of a UTF-8 string using the chars/4 heuristic.
  * Centralized so calibration can slot a multiplier in one place later.
@@ -83,7 +126,7 @@ function safeStatBytes(p) {
             return 0; // caller handles dirs explicitly
         return 0;
     }
-    catch (_) {
+    catch {
         return 0;
     }
 }
@@ -111,7 +154,7 @@ function sumDirMarkdownBytes(dirPath) {
         }
         return total;
     }
-    catch (_) {
+    catch {
         return 0;
     }
 }
@@ -157,10 +200,9 @@ function escapeVaultPath(absVaultPath) {
  * @property {number} memoryDirTokens        — sum of *.md in memory dir (worst case)
  * @property {number} memoryFileCount        — # of `.md` files in memory dir (for UI)
  */
-async function collectContextSources({ kind, vaultPath, homeDir, settings }) {
+async function collectContextSources({ kind, vaultPath, homeDir }) {
     const home = homeDir || os.homedir() || "";
     const isClaudeCode = kind === "claude-code";
-    const isSdk = kind === "anthropic-api" || kind === "openai-api" || kind === "google-api";
     // System-prompt + tool-schema baselines depend on whether CC owns the
     // prompt (CLI mode) or Gryphon does (SDK mode). Codex-CLI / Gemini-CLI
     // fall through to the SDK baseline as a coarse approximation — refine
@@ -210,7 +252,7 @@ async function collectContextSources({ kind, vaultPath, homeDir, settings }) {
             memoryFileCount = fs.readdirSync(memoryDir)
                 .filter((f) => f.endsWith(".md") && f !== "MEMORY.md").length;
         }
-        catch (_) { /* dir missing — count stays 0 */ }
+        catch { /* dir missing — count stays 0 */ }
     }
     return {
         ccSystemPromptTokens,
@@ -286,16 +328,3 @@ function summarizeContext({ sources, messages, userInput, windowSize, measuredHi
         windowSize: w,
     };
 }
-module.exports = {
-    collectContextSources,
-    summarizeContext,
-    // Exported for tests + the breakdown popover's labels.
-    estimateTokensFromChars,
-    estimateTokensFromBytes,
-    escapeVaultPath,
-    CHARS_PER_TOKEN,
-    CC_SYSTEM_PROMPT_TOKENS_BASELINE,
-    CC_TOOL_SCHEMAS_TOKENS_BASELINE,
-    SDK_SYSTEM_PROMPT_TOKENS_BASELINE,
-    SDK_TOOL_SCHEMAS_TOKENS_BASELINE,
-};

@@ -36,17 +36,86 @@
 const setTimeoutFn = setTimeout;
 
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
-const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
-const {
-  computeCost,
-  coerceToVendorModel,
-  coerceToCodexCliModel,
-  CODEX_CLI_DEFAULT_MODEL,
-  DEFAULT_MODEL,
-} = require("@gryphon/provider-config").pricing.openai;
-const { hookDispatcher: dispatcher } = require("@gryphon/protect");
-const { winSpawn } = require("@gryphon/protect");
+import type { ChildProcessByStdio } from "child_process";
+import type { Readable } from "stream";
+import { managedSpawn, killProcessTree } from "../../subprocess-registry";
+import { pricing } from "@polleoai/gryphon-provider-config";
+import { hookDispatcher as dispatcher, winSpawn } from "@polleoai/gryphon-protect";
+import * as os from "os";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+
+import { buildEnhancedPath, resolveCliBinary } from "../../utils";
+import { codexTrustOnlyOverlay } from "@polleoai/gryphon-protect";
+import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
+import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
+import { BudgetExceededError } from "../../budget-error";
+import { HeadlessHostAdapter } from "../../host-adapter";
+const { computeCost, coerceToCodexCliModel } = pricing.openai;
+// The registry's default model id (typed loosely upstream).
+const DEFAULT_MODEL = pricing.openai.DEFAULT_MODEL;
+
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+  notify(message: string, opts?: { level?: string; timeoutMs?: number }): void;
+}
+
+/** The slice of the host plugin this provider reads (also handed to the hook dispatcher). */
+type CodexHostPlugin = {
+  consumeTaintedSession?: (sessionId: string) => boolean;
+  consumeForceFreshSpawn?: (kind: string) => boolean;
+  [key: string]: unknown;
+};
+
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+
+interface CodexOptions {
+  model?: string | null;
+  permissionMode?: string;
+  resumeSessionId?: string;
+  extraArgs?: string[];
+  plugin?: CodexHostPlugin | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride | null;
+  [key: string]: unknown;
+}
+
+/** Test-harness options-bag constructor form. */
+interface CodexBag {
+  codexPath?: string;
+  cwd?: string;
+  config?: { model?: string } | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride;
+}
+
+/** What the hook dispatcher hands back for one spawn. */
+interface HookExtras {
+  ok: boolean;
+  degradationReason?: string;
+  env?: Record<string, string | undefined>;
+  args?: string[];
+  cleanup?: (() => void) | null;
+}
+
+/** `codex exec` spawns with stdio ["ignore", "pipe", "pipe"]. */
+type CodexProc = ChildProcessByStdio<null, Readable, Readable>;
+
+interface CodexUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_input_tokens?: number;
+}
+
+/** One `codex exec --json` stdout event (only the fields read here). */
+interface CodexEvent {
+  type?: string;
+  thread_id?: unknown;
+  item?: { type?: unknown; text?: unknown };
+  usage?: CodexUsage | null;
+  error?: { message?: string } | null;
+  message?: string;
+}
 
 /**
  * Detect whether the host kernel supports Codex's sandbox modes that
@@ -66,7 +135,6 @@ const { winSpawn } = require("@gryphon/protect");
  * a privileged read on some distros and we can't add that dependency.
  * Version parsing is good enough — landlock has been stable in 5.13+.
  */
-const os = require("os") as typeof import("os");
 let _landlockSupportCache: boolean | null = null;
 function _supportsLandlockSandbox() {
   if (_landlockSupportCache !== null) return _landlockSupportCache;
@@ -84,7 +152,7 @@ function _supportsLandlockSandbox() {
     const major = parseInt(m[1], 10);
     const minor = parseInt(m[2], 10);
     _landlockSupportCache = major > 5 || (major === 5 && minor >= 13);
-  } catch (_) {
+  } catch {
     _landlockSupportCache = false;
   }
   return _landlockSupportCache;
@@ -97,13 +165,12 @@ function _supportsLandlockSandbox() {
  * hooks couldn't be installed there is no overlay yet — build a trust-only
  * one. If even that fails, refuse: never spawn with the vault's config live.
  */
-function _ensureProjectUntrusted(hookExtras: any, cwd: string): void {
+function _ensureProjectUntrusted(hookExtras: HookExtras, cwd: string): void {
   if (hookExtras.env && hookExtras.env.CODEX_HOME) return;
-  const { codexTrustOnlyOverlay } = require("@gryphon/protect");
   const t = codexTrustOnlyOverlay({ projectDir: cwd });
   hookExtras.env = { ...(hookExtras.env || {}), ...t.env };
   const prev = hookExtras.cleanup;
-  hookExtras.cleanup = () => { try { prev && prev(); } finally { t.cleanup(); } };
+  hookExtras.cleanup = () => { try { if (prev) prev(); } finally { t.cleanup(); } };
 }
 
 /**
@@ -140,8 +207,8 @@ function _insertBeforePrompt(args: string[], extra: string[]): void {
  * the alternative is "Codex CLI doesn't work on this host." A
  * one-time console warning surfaces the downgrade for diagnostics.
  */
-function _mapPermissionToSandbox(permissionMode: any) {
-  let target;
+function _mapPermissionToSandbox(permissionMode: unknown) {
+  let target: string;
   if (permissionMode === "plan") target = "read-only";
   else if (permissionMode === "bypassPermissions") target = "danger-full-access";
   else target = "workspace-write";
@@ -183,7 +250,7 @@ const SESSION_PREFIX = "codex-cli-";
 // antigravity-cli added in issue #19.
 const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|gemini-cli|antigravity-cli)-/;
 
-function _wrapSession(id: any) {
+function _wrapSession(id: unknown): string | null {
   if (!id) return null;
   if (typeof id !== "string") return null;
   if (FOREIGN_PREFIX_RE.test(id)) return null;
@@ -191,7 +258,7 @@ function _wrapSession(id: any) {
   return SESSION_PREFIX + id;
 }
 
-function _unwrapSession(id: any) {
+function _unwrapSession(id: string | null): string | null {
   if (typeof id !== "string") return id;
   if (id.startsWith(SESSION_PREFIX)) return id.slice(SESSION_PREFIX.length);
   return id;
@@ -221,7 +288,7 @@ function _unwrapSession(id: any) {
  * inside a code fence, and the trailing "Command: ..." echo Codex
  * sometimes appends.
  */
-function _scrubInternalLeaks(text: any) {
+function _scrubInternalLeaks(text: string): string {
   if (typeof text !== "string" || !text) return text;
   let out = text;
   // Strip leading "Command blocked by PreToolUse hook: " prefix in any
@@ -268,7 +335,7 @@ function _scrubInternalLeaks(text: any) {
   // (no closing fence after it); a fence after a "Command:" position
   // is therefore guaranteed to be a code-block boundary, not a real
   // trailer.
-  const _stripTrailerIfSafe = (s: any) => {
+  const _stripTrailerIfSafe = (s: string) => {
     const m = s.match(/(?:^|\n)\s*Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -281,7 +348,7 @@ function _scrubInternalLeaks(text: any) {
   // common when the model concatenates "Ask me again. Command: rm".
   // Match only when the trailer extends through end-of-string AND no
   // code fence intervenes (same V13H-3 reasoning as above).
-  const _stripInlineTrailerIfSafe = (s: any) => {
+  const _stripInlineTrailerIfSafe = (s: string) => {
     const m = s.match(/\.[ \t]+Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -303,8 +370,33 @@ function _scrubInternalLeaks(text: any) {
 
 
 class CodexProvider {
-  [key: string]: any;
-  constructor(codexPath: any, cwd: any, options: Record<string, any> = {}) {
+  declare codexPath: string;
+  declare cwd: string;
+  declare options: CodexOptions;
+  declare _spawnOverride: SpawnOverride | null;
+  declare hostAdapter: HostAdapterLike;
+  declare process: CodexProc | null;
+  declare alive: boolean;
+  declare sessionId: string | null;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare lastCumulativeCost: number;
+  declare _buffer: string;
+  declare _stderrTail: string;
+  declare _turnText: string;
+  declare _lastUsage: CodexUsage | null;
+  declare _currentResolve: ((result: Result) => void) | null;
+  declare _currentReject: ((reason?: unknown) => void) | null;
+  declare onMessage: ((text: string, type: StreamMessageType) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: Result) => void) | null;
+  declare onSessionExpired: (() => void) | null;
+  declare _failed?: boolean;
+  declare _lastPrompt?: string;
+  declare _staleRecoveryFired?: boolean;
+  declare _hookCleanup?: (() => void) | null;
+
+  constructor(codexPath: string | CodexBag, cwd?: string, options: CodexOptions = {}) {
     // Test-harness options-bag form: CodexProvider({ config, hostAdapter,
     // _spawnOverride }) — no codexPath or cwd required. The _spawnOverride
     // function replaces the real CLI spawn for unit tests.
@@ -318,14 +410,16 @@ class CodexProvider {
         _spawnOverride: bag._spawnOverride,
       };
     }
-    this.codexPath = codexPath;
-    this.cwd = cwd;
+    // Bag form is resolved above; any other object here is passed through
+    // untouched, as before (the assertions only narrow the static type).
+    this.codexPath = codexPath as string;
+    this.cwd = cwd as string;
     this.options = options;
     // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
     this.process = null;
     this.alive = false;
     // Wrap the resumed id so chat-view sees the prefixed form regardless
@@ -367,14 +461,14 @@ class CodexProvider {
    * "unexpected argument '--sandbox' found". Fresh-session flags only
    * fire on the initial spawn (when `sessionId` is null).
    */
-  _buildArgs(prompt: any) {
+  _buildArgs(prompt: string) {
     const args = ["exec"];
     const resuming = !!this.sessionId;
 
     // Resume the prior thread if we captured one; else start fresh. The
     // CLI expects a raw UUID — strip our synthetic "codex-cli-" prefix.
     if (resuming) {
-      args.push("resume", _unwrapSession(this.sessionId));
+      args.push("resume", _unwrapSession(this.sessionId) as string); // resuming ⇒ sessionId set
     }
 
     // Flags valid on both `exec` and `exec resume`.
@@ -402,7 +496,6 @@ class CodexProvider {
     // so a multi-provider consumer can pass a shared extraArgs without
     // failing the codex spawn with "unexpected argument."
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      const { filterExtraArgs } = require("@gryphon/provider-config");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "codex-cli");
       if (dropped.length > 0) {
         // Round 4 review (SFH-1): use console.error not warn — see
@@ -423,7 +516,7 @@ class CodexProvider {
     return args;
   }
 
-  send(prompt: any, options: any) {
+  send(prompt: string, options?: SendOptions): Promise<Result> {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -433,7 +526,7 @@ class CodexProvider {
     if (options && options.signal) {
       if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
       if (typeof options.signal.addEventListener === "function") {
-        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch { /* best-effort */ } }, { once: true });
       }
     }
     // L6.1 — structured-output retry budget for CLI providers.
@@ -442,11 +535,6 @@ class CodexProvider {
     // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
     // path (no option) falls through to _spawnTurn unchanged.
     if (options && options.structuredOutput) {
-      const {
-        injectSchemaHint,
-        parseAndValidate,
-        CliStructuredOutputError,
-      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -456,8 +544,8 @@ class CodexProvider {
       // ourselves on success with the enriched result (json + text).
       this.onDone = null;
 
-      const loop = async () => {
-        let lastError = null;
+      const loop = async (): Promise<Result> => {
+        let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
         // Snapshot before the retry loop: each failed attempt still costs
         // money; the per-call cap covers all attempts within this send().
         const priorCallCumulative = this.lastCumulativeCost;
@@ -474,14 +562,13 @@ class CodexProvider {
             if (options && typeof options.maxUsdBudget === "number") {
               const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
               if (cumCost === null) {
-                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
                   `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
                   { level: "warn" },
                 );
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -490,7 +577,8 @@ class CodexProvider {
               }
             }
             try {
-              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              // structuredOutput was checked truthy before the loop started.
+              const json = parseAndValidate(turnResult.text, (options.structuredOutput as NonNullable<SendOptions["structuredOutput"]>).schema);
               const result = { ...turnResult, json, text: JSON.stringify(json) };
               this.onDone = savedOnDone;
               if (this.onDone) this.onDone(result);
@@ -500,18 +588,18 @@ class CodexProvider {
               lastError = e;
               try {
                 this.hostAdapter.notify(
-                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${(e as any).reason}`,
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
                   { level: "warn" },
                 );
-              } catch (_) { /* notify must never block */ }
+              } catch { /* notify must never block */ }
             }
           }
           throw new CliStructuredOutputError(
-            `structured-output budget exhausted after ${maxRetries} attempts on codex-cli: ${lastError && (lastError as any).message}`,
+            `structured-output budget exhausted after ${maxRetries} attempts on codex-cli: ${lastError && lastError.message}`,
             {
               reason: "budget-exhausted",
               attempts: maxRetries,
-              lastOutput: lastError && (lastError as any).lastOutput,
+              lastOutput: lastError && lastError.lastOutput,
             },
           );
         } finally {
@@ -531,22 +619,21 @@ class CodexProvider {
     // (this call's cost < budget).
     if (options && typeof options.maxUsdBudget === "number") {
       const priorCallCumulative = this.lastCumulativeCost;
-      return this._spawnTurn(prompt).then((result: any) => {
+      return this._spawnTurn(prompt).then((result: Result) => {
         // Keep lastCumulativeCost in sync when _spawnOverride is active
         // (the real path updates it in _handleClose; the override bypasses that).
         if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
         const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
         if (cumCost === null) {
-          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
             `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
             { level: "warn" },
           );
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+        if (perCallSpent >= (options.maxUsdBudget as number)) {
           throw new BudgetExceededError({
-            budget: options.maxUsdBudget,
+            budget: options.maxUsdBudget as number, // checked as a number before .then
             spent: perCallSpent,
             lastTurnCost: result.cost || 0,
           });
@@ -564,7 +651,7 @@ class CodexProvider {
    * contextTokens}. When _spawnOverride is set (test-harness injection),
    * delegates directly to the override function.
    */
-  _spawnTurn(prompt: any) {
+  _spawnTurn(prompt: string): Promise<Result> {
     if (this._spawnOverride) {
       return this._spawnOverride(prompt);
     }
@@ -583,12 +670,12 @@ class CodexProvider {
       this.codexPath = resolved.path; // self-heal to the newest valid binary
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<Result>((resolve, reject) => {
       // Codex exec is one-shot. If a previous send is still in flight,
       // abort it — chat-view's supersede semantics expect the new turn
       // to take over cleanly.
       if (this.alive && this.process) {
-        try { killProcessTree(this.process, "SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
         if (this._currentReject) {
           const r = this._currentReject;
           this._currentReject = null;
@@ -650,7 +737,7 @@ class CodexProvider {
         kind: "codex-cli",
         plugin: this.options.plugin,
         options: { ...this.options, projectDir: this.cwd },
-      });
+      }) as HookExtras;
       if (!hookExtras.ok && hookExtras.degradationReason) {
         console.warn(`[gryphon/codex-cli] hooks degraded: ${hookExtras.degradationReason}`);
       }
@@ -689,33 +776,35 @@ class CodexProvider {
         Object.assign(spawnOpts, wrapped.options);
       }
 
-      let proc;
+      let proc: CodexProc;
       try {
-        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
+        // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" }) as CodexProc;
       } catch (err) {
         if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
-        reject(err);
+        // spawn throws Errors; anything else is wrapped so callers always get one.
+        reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err) ?? "spawn failed"));
         return;
       }
       this.process = proc;
       this.alive = true;
 
       const forThis = () => this.process === proc;
-      proc.stdout.on("data", (data: any) => { if (forThis()) this._handleStdout(data); });
-      proc.stderr.on("data", (data: any) => { if (forThis()) this._handleStderr(data); });
-      proc.on("close", (code: any) => { if (forThis()) this._handleClose(code); });
-      proc.on("error", (err: any) => { if (forThis()) this._handleProcessError(err); });
+      proc.stdout.on("data", (data: Buffer) => { if (forThis()) this._handleStdout(data); });
+      proc.stderr.on("data", (data: Buffer) => { if (forThis()) this._handleStderr(data); });
+      proc.on("close", (code: number | null) => { if (forThis()) this._handleClose(code); });
+      proc.on("error", (err: Error) => { if (forThis()) this._handleProcessError(err); });
     });
   }
 
-  _handleStdout(data: any) {
+  _handleStdout(data: Buffer | string) {
     this._buffer += data.toString();
     const lines = this._buffer.split("\n");
     this._buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(line) as CodexEvent | null;
         this._processEvent(parsed);
       } catch (e) {
         if (!(e instanceof SyntaxError)) {
@@ -725,7 +814,7 @@ class CodexProvider {
     }
   }
 
-  _processEvent(raw: any) {
+  _processEvent(raw: CodexEvent | null) {
     if (!raw || typeof raw !== "object") return;
 
     if (raw.type === "thread.started") {
@@ -741,7 +830,7 @@ class CodexProvider {
     }
 
     if (raw.type === "item.started") {
-      const item = raw.item || {};
+      const item: NonNullable<CodexEvent["item"]> = raw.item || {};
       // Pattern enforcement now happens at the PreToolUse hook layer
       // via the HookDispatcher (v1.3 Stage 5). This branch only emits
       // the friendly tool-callback for chat-view rendering.
@@ -758,7 +847,7 @@ class CodexProvider {
     }
 
     if (raw.type === "item.completed") {
-      const item = raw.item || {};
+      const item: NonNullable<CodexEvent["item"]> = raw.item || {};
       // The agent_message item carries the assistant's text response.
       // Codex emits it as a single completed item per turn (no streaming
       // deltas at the JSONL layer — the text is final at this point).
@@ -839,7 +928,7 @@ class CodexProvider {
   _handleStaleSession() {
     // Kill the failed exec (if still running).
     if (this.process) {
-      try { killProcessTree(this.process, "SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
       this.process = null;
     }
     this.alive = false;
@@ -847,7 +936,7 @@ class CodexProvider {
     // Cleanup the per-spawn hook overlay since we're about to
     // re-spawn with a fresh one.
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch {}
+      try { this._hookCleanup(); } catch { /* best-effort */ }
       this._hookCleanup = null;
     }
 
@@ -860,7 +949,7 @@ class CodexProvider {
     // Without this, the NEXT provider constructed by the factory
     // would re-read the stale id from settings and fail the same way.
     if (typeof this.onSessionExpired === "function") {
-      try { this.onSessionExpired(); } catch {}
+      try { this.onSessionExpired(); } catch { /* best-effort */ }
     }
 
     // Re-send the user's prompt. send() supersede-kills any in-flight
@@ -901,7 +990,7 @@ class CodexProvider {
       // resolving/rejecting the same outer Promise on completion.
       // Use a small async dispatch so we return cleanly from the
       // event handler before re-entering spawn logic.
-      Promise.resolve().then(() => {
+      void Promise.resolve().then(() => {
         try {
           this._respawnFresh(prompt);
         } catch (e) {
@@ -926,13 +1015,12 @@ class CodexProvider {
    * The pending Promise hooks (_currentResolve / _currentReject)
    * MUST already be set to the original send()'s callbacks.
    */
-  _respawnFresh(prompt: any) {
-    const { hookDispatcher: dispatcher } = require("@gryphon/protect");
+  _respawnFresh(prompt: string) {
     const hookExtras = dispatcher.prepareSpawn({
       kind: "codex-cli",
       plugin: this.options.plugin,
       options: { ...this.options, projectDir: this.cwd },
-    });
+    }) as HookExtras;
     if (!hookExtras.ok && hookExtras.degradationReason) {
       console.warn(`[gryphon/codex-cli] hooks degraded on stale-session retry: ${hookExtras.degradationReason}`);
     }
@@ -969,9 +1057,10 @@ class CodexProvider {
       Object.assign(spawnOpts, wrapped.options);
     }
 
-    let proc;
+    let proc: CodexProc;
     try {
-      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" });
+      // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "codex-cli" }) as CodexProc;
     } catch (err) {
       if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
       const reject = this._currentReject;
@@ -984,13 +1073,13 @@ class CodexProvider {
     this.alive = true;
 
     const forThis = () => this.process === proc;
-    proc.stdout.on("data", (data: any) => { if (forThis()) this._handleStdout(data); });
-    proc.stderr.on("data", (data: any) => { if (forThis()) this._handleStderr(data); });
-    proc.on("close", (code: any) => { if (forThis()) this._handleClose(code); });
-    proc.on("error", (err: any) => { if (forThis()) this._handleProcessError(err); });
+    proc.stdout.on("data", (data: Buffer) => { if (forThis()) this._handleStdout(data); });
+    proc.stderr.on("data", (data: Buffer) => { if (forThis()) this._handleStderr(data); });
+    proc.on("close", (code: number | null) => { if (forThis()) this._handleClose(code); });
+    proc.on("error", (err: Error) => { if (forThis()) this._handleProcessError(err); });
   }
 
-  _handleStderr(data: any) {
+  _handleStderr(data: Buffer | string) {
     const text = data.toString();
     if (!text) return;
     // Keep last 4 KB for surfacing on close.
@@ -1015,7 +1104,7 @@ class CodexProvider {
     }
   }
 
-  _handleClose(code: any) {
+  _handleClose(code: number | null) {
     this.alive = false;
     this.process = null;
     if (this._hookCleanup) {
@@ -1077,7 +1166,7 @@ class CodexProvider {
       const { cost } = computeCost(mappedUsage, this.resolvedModel);
       this.lastCumulativeCost += cost;
 
-      const result = {
+      const result: Result = {
         text: this._turnText || "",
         cost,
         cumulativeCost: this.lastCumulativeCost,
@@ -1095,7 +1184,7 @@ class CodexProvider {
     const stderr = (this._stderrTail || "").trim();
     const tail = stderr
       .split(/\r?\n/)
-      .map((l: any) => l.trim())
+      .map((l) => l.trim())
       .filter(Boolean)
       .slice(-6)
       .join("\n");
@@ -1108,14 +1197,15 @@ class CodexProvider {
       "rejected by the sandbox, or a transient API error. Try again, or " +
       "run `codex exec --json -- 'hello'` in a terminal to verify the CLI " +
       "is working.";
-    reject(new Error(header + details + hint));
+    // Set together with resolve, which was checked above.
+    (reject as (reason?: unknown) => void)(new Error(header + details + hint));
   }
 
-  _handleProcessError(err: any) {
+  _handleProcessError(err: Error) {
     this.alive = false;
     this.process = null;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;
@@ -1129,13 +1219,13 @@ class CodexProvider {
       const proc = this.process;
       // Tree-kill: codex's child tree (incl. any MCP grandchildren) — not
       // just the direct pid. SIGKILL the group after 5s if still alive.
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
-      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* best-effort */ }
+      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* best-effort */ } }, 5000);
       this.process = null;
     }
     this.alive = false;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;

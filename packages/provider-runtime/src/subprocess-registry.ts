@@ -29,18 +29,27 @@
  *      then re-raise the signal so the host's own exit path still runs.
  *
  * The module is platform-aware but otherwise host-agnostic — it has no
- * Obsidian dependency, so a non-Obsidian consumer of @gryphon/provider-runtime
+ * Obsidian dependency, so a non-Obsidian consumer of @polleoai/gryphon-provider-runtime
  * gets the same leak-free guarantee.
  */
 
-const { spawn, spawnSync } = require("child_process") as typeof import("child_process");
+import { spawn, spawnSync } from "child_process";
+import type { ChildProcess } from "child_process";
 
 const IS_WINDOWS = process.platform === "win32";
 
 type SpawnOptions = Record<string, unknown>;
 
+/** The slice of a ChildProcess the kill paths touch (tests pass look-alikes). */
+interface KillableChild {
+  pid?: number | null;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals | number): boolean | void;
+}
+
 interface RegistryEntry {
-  child: any;
+  child: KillableChild;
   label: string;
   pgid: number | null; // POSIX process-group id (== pid for detached); null on Windows / non-detached
   startedAt: number;
@@ -76,7 +85,7 @@ const LIVE_COUNT_WARN_THRESHOLD = 16;
  *          its children. Best-effort; we also call child.kill() as a
  *          backstop.
  */
-function killProcessTree(child: any, signal: NodeJS.Signals | number = "SIGTERM"): void {
+function killProcessTree(child: KillableChild | null | undefined, signal: NodeJS.Signals | number = "SIGTERM"): void {
   if (!child || child.pid == null) return;
   // H1: never signal a pgid/pid that may have been recycled. Node retains
   // `child.pid` after exit (it does NOT go null), so the delayed-SIGKILL
@@ -91,8 +100,8 @@ function killProcessTree(child: any, signal: NodeJS.Signals | number = "SIGTERM"
     try {
       // /T = tree, /F = force. Fire-and-forget; we don't await it.
       spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
-    } catch (_) { /* taskkill missing/locked — fall through to direct kill */ }
-    try { child.kill(); } catch (_) { /* already dead */ }
+    } catch { /* taskkill missing/locked — fall through to direct kill */ }
+    try { child.kill(); } catch { /* already dead */ }
     return;
   }
 
@@ -102,10 +111,10 @@ function killProcessTree(child: any, signal: NodeJS.Signals | number = "SIGTERM"
   // fallback is a harmless no-op if the child is truly gone, and reaps the
   // direct pid if it's a standalone (non-leader) process.
   try {
-    process.kill(-pid, signal as NodeJS.Signals);
+    process.kill(-pid, signal);
     return;
-  } catch (_) { /* fall through to the direct-child fallback below */ }
-  try { child.kill(signal as NodeJS.Signals); } catch (__) { /* already dead */ }
+  } catch { /* fall through to the direct-child fallback below */ }
+  try { child.kill(signal); } catch { /* already dead */ }
 }
 
 /**
@@ -116,7 +125,7 @@ function killAll(signal: NodeJS.Signals = "SIGTERM"): number {
   let n = 0;
   // Snapshot first — killProcessTree triggers `exit` which mutates the map.
   for (const entry of Array.from(_registry.values())) {
-    try { killProcessTree(entry.child, signal); n++; } catch (_) { /* best-effort */ }
+    try { killProcessTree(entry.child, signal); n++; } catch { /* best-effort */ }
   }
   return n;
 }
@@ -135,11 +144,11 @@ function _killAllSync(): void {
     if (child.exitCode != null || child.signalCode != null) continue;
     if (IS_WINDOWS) {
       try { spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" }); }
-      catch (_) { /* best-effort at exit */ }
+      catch { /* best-effort at exit */ }
     } else {
       try { process.kill(-pid, "SIGKILL"); }
-      catch (_) {
-        try { process.kill(pid, "SIGKILL"); } catch (__) { /* already dead */ }
+      catch {
+        try { process.kill(pid, "SIGKILL"); } catch { /* already dead */ }
       }
     }
   }
@@ -152,10 +161,10 @@ function _installShutdownHandlers(): void {
   // Synchronous best-effort reap on any exit path. Detached groups do NOT
   // die with the parent (that's the trade-off for being able to tree-kill
   // them), so an explicit kill here is required to avoid orphans.
-  process.on("exit", () => { try { _killAllSync(); } catch (_) { /* exit must not throw */ } });
+  process.on("exit", () => { try { _killAllSync(); } catch { /* exit must not throw */ } });
 
   // beforeExit allows async-ish work; SIGTERM the groups politely.
-  process.on("beforeExit", () => { try { killAll("SIGTERM"); } catch (_) { /* best-effort */ } });
+  process.on("beforeExit", () => { try { killAll("SIGTERM"); } catch { /* best-effort */ } });
 
   // One-shot signal handlers: reap, then re-raise the SAME signal with our
   // listener removed so the host's own exit disposition runs (we don't
@@ -171,10 +180,10 @@ function _installShutdownHandlers(): void {
         // incident) can't outlive us. Then re-raise with our once-listener
         // already removed so the host's own exit disposition runs (we don't
         // permanently swallow Ctrl-C from a headless consumer).
-        try { _killAllSync(); } catch (_) { /* best-effort */ }
-        try { process.kill(process.pid, sig); } catch (_) { /* host already exiting */ }
+        try { _killAllSync(); } catch { /* best-effort */ }
+        try { process.kill(process.pid, sig); } catch { /* host already exiting */ }
       });
-    } catch (_) { /* signal not supported on this platform */ }
+    } catch { /* signal not supported on this platform */ }
   }
 }
 
@@ -192,7 +201,7 @@ function _installShutdownHandlers(): void {
  *
  * @param meta.label  short tag for diagnostics (e.g. "claude-code")
  */
-function managedSpawn(command: string, args: string[], options: SpawnOptions = {}, meta: { label?: string } = {}): any {
+function managedSpawn(command: string, args: string[], options: SpawnOptions = {}, meta: { label?: string } = {}): ChildProcess {
   _installShutdownHandlers();
 
   const spawnOptions: SpawnOptions = { ...options };

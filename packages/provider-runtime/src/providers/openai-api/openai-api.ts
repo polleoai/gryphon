@@ -28,11 +28,75 @@
  * decision (track-but-don't-discount until OpenAI's pricing stabilizes).
  */
 
-const OpenAI = require("openai");
-const { runOpenAIToolLoop } = require("./tool-loop") as typeof import("./tool-loop");
-const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.openai;
+import type OpenAIClient from "openai";
+import { runOpenAIToolLoop } from "./tool-loop";
+import { pricing } from "@polleoai/gryphon-provider-config";
+import { HeadlessHostAdapter } from "../../host-adapter";
+import { GRYPHON_SDK_COMPOUND_REQUEST_RULE } from "@polleoai/gryphon-protect";
 
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
+// The SDK is loaded on first use, not at module load (gryphon-dev#38):
+// importing this module (the factory does, and Settings' "Test key" does on
+// click) must not pay the SDK's parse + init cost at plugin start. Every
+// reference goes through `loadSdk()`, so the process holds one SDK copy.
+// The module's default export is the client class, which carries the SDK's
+// error classes as statics (`OpenAI.AuthenticationError`, …). `_sdk` is set
+// once the import resolves; error classification reads it synchronously —
+// an SDK error can only exist after the SDK has loaded.
+type OpenAISdk = typeof OpenAIClient;
+let _sdk: OpenAISdk | null = null;
+async function loadSdk(): Promise<OpenAISdk> {
+  return (_sdk ??= (await import("openai")).default);
+}
+const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = pricing.openai;
+
+type ChatMessageParam = OpenAIClient.Chat.Completions.ChatCompletionMessageParam;
+type OpenAIToolLoopArgs = Parameters<typeof runOpenAIToolLoop>[0];
+type OpenAIToolLoopContext = OpenAIToolLoopArgs["ctx"];
+type OpenAIChatStream = ReturnType<OpenAIClient["chat"]["completions"]["stream"]>;
+
+// Loose shape of a persisted/seeded history entry (cloned field by field).
+interface OpenAIHistoryMessage {
+  role: string;
+  content: unknown;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  name?: string;
+}
+
+interface OpenAIProviderOptions {
+  hostAdapter?: unknown;
+  client?: OpenAIClient;
+  initialHistory?: OpenAIHistoryMessage[];
+  model?: string | null;
+  permissionMode?: string;
+  plugin?: unknown;
+  security?: unknown;
+  [key: string]: unknown;
+}
+
+interface OpenAISendOptions {
+  maxUsdBudget?: number | null;
+  structuredOutput?: { name: string; schema: Record<string, unknown> } | null;
+  [key: string]: unknown;
+}
+
+interface OpenAITurnResult {
+  text: string;
+  cost: number;
+  cumulativeCost: number;
+  sessionId: string;
+  duration: number;
+  contextTokens: number;
+  json?: unknown;
+}
+
+// Fields the error formatters read off a thrown SDK (or mock) error.
+type ErrorLike = {
+  constructor?: { name?: string };
+  headers?: Record<string, string>;
+  status?: number;
+  message?: string;
+} | null | undefined;
 const GRYPHON_OPENAI_SYSTEM_PROMPT_BASE =
   "You are running inside the Gryphon Obsidian plugin. The user's " +
   "own protected-pattern list inside Gryphon decides which file " +
@@ -69,8 +133,28 @@ const GRYPHON_OPENAI_SYSTEM_PROMPT =
   GRYPHON_OPENAI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 
 class OpenAIProvider {
-  [key: string]: any;
-  constructor(apiKey: any, cwd: any, options: Record<string, any> = {}) {
+  // `declare` fields: typed for the compiler, no emitted class-field
+  // initializers (the constructor assigns them exactly as before).
+  declare apiKey: string;
+  declare cwd: string;
+  declare options: OpenAIProviderOptions;
+  declare hostAdapter: unknown;
+  declare client: OpenAIClient | null;
+  declare history: ChatMessageParam[];
+  declare sessionId: string;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare cumulativeCost: number;
+  declare startTime: number;
+  declare activeStream: OpenAIChatStream | null;
+  declare pending: boolean;
+  declare destroyed: boolean;
+  declare onMessage: ((text: string, type: string) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: OpenAITurnResult) => void) | null;
+  declare _needsHistoryReset: boolean | undefined;
+
+  constructor(apiKey: string, cwd: string, options: OpenAIProviderOptions = {}) {
     if (!apiKey) {
       throw new Error("OpenAIProvider: apiKey is required");
     }
@@ -78,17 +162,11 @@ class OpenAIProvider {
     this.cwd = cwd;
     this.options = options;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
 
-    // dangerouslyAllowBrowser: same justification as anthropic-api — Obsidian
-    // exposes `window`, the SDK gates browser usage by default to prevent
-    // API-key leakage in shipped client apps. Gryphon ships the key only
-    // through plugin settings on the user's own disk, never to a third party.
-    this.client = options.client || new OpenAI({
-      apiKey,
-      dangerouslyAllowBrowser: true,
-      maxRetries: 3,
-    });
+    // Test seam: callers may inject a client. Otherwise the real SDK client
+    // is built on first use by `_ensureClient()` (the SDK loads lazily).
+    this.client = options.client || null;
 
     // Seed history from caller (defensive copy). OpenAI's message shape:
     //   { role: "system" | "user" | "assistant" | "tool", content, tool_calls?, tool_call_id? }
@@ -116,6 +194,27 @@ class OpenAIProvider {
 
   isAlive() { return !this.destroyed; }
 
+  /**
+   * The SDK client, built on first use. Loads the SDK (once per process)
+   * unless a client was injected or already built.
+   */
+  async _ensureClient(): Promise<OpenAIClient> {
+    if (this.client) return this.client;
+    const OpenAI = await loadSdk();
+    // A concurrent first call may have built one while we awaited.
+    if (this.client) return this.client;
+    // dangerouslyAllowBrowser: same justification as anthropic-api — Obsidian
+    // exposes `window`, the SDK gates browser usage by default to prevent
+    // API-key leakage in shipped client apps. Gryphon ships the key only
+    // through plugin settings on the user's own disk, never to a third party.
+    this.client = new OpenAI({
+      apiKey: this.apiKey,
+      dangerouslyAllowBrowser: true,
+      maxRetries: 3,
+    });
+    return this.client;
+  }
+
   // OpenAI mode: cost is computed locally from token usage × MODEL_PRICES.
   // The price table may drift from OpenAI's published pricing between
   // Gryphon releases, and cached-token discounts are deliberately NOT
@@ -125,7 +224,7 @@ class OpenAIProvider {
 
   abort() {
     if (this.activeStream) {
-      try { this.activeStream.abort(); } catch {}
+      try { this.activeStream.abort(); } catch { /* stream already settled */ }
       this.activeStream = null;
     }
     this.pending = false;
@@ -144,7 +243,7 @@ class OpenAIProvider {
    * fix path (if needed) is to convert the in-flight tracking to a queue
    * so the `pending` reset only fires for the matching turn.
    */
-  async send(prompt: any, options: Record<string, any> = {}) {
+  async send(prompt: string, options: OpenAISendOptions = {}) {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -174,7 +273,7 @@ class OpenAIProvider {
     if (this.onMessage) this.onMessage("", "init");
 
     const turnStart = Date.now();
-    const ctx: Record<string, any> = {
+    const ctx: OpenAIToolLoopContext = {
       vaultRoot: this.cwd,
       permissionMode: this.options.permissionMode || "default",
       plugin: this.options.plugin || null,
@@ -202,29 +301,30 @@ class OpenAIProvider {
     // post-turn (subprocess owns mid-stream).
     ctx.maxUsdBudget = options && typeof options.maxUsdBudget === "number" ? options.maxUsdBudget : null;
     ctx.priorCumulativeCost = this.cumulativeCost;
-    ctx.computeIterationCost = (usage: any) => {
+    ctx.computeIterationCost = (usage) => {
       const { cost } = computeCost(usage, this.resolvedModel);
       return cost;
     };
 
     try {
+      const client = await this._ensureClient();
       const { turnText, finalMessage, totalUsage, peakUsage } = await runOpenAIToolLoop({
-        client: this.client,
+        client,
         model: this.resolvedModel,
         systemPrompt: GRYPHON_OPENAI_SYSTEM_PROMPT,
         history: this.history,
         ctx,
         callbacks: {
-          onMessage: (text: any, type: any) => {
+          onMessage: (text: string, type: string) => {
             if (this.onMessage) this.onMessage(text, type);
           },
-          onTool: (name: any) => {
+          onTool: (name: string) => {
             if (this.onMessage) this.onMessage(name, "tool");
           },
-          onError: (text: any) => {
+          onError: (text: string) => {
             if (this.onError) this.onError(text);
           },
-          onStream: (stream: any) => {
+          onStream: (stream: OpenAIChatStream) => {
             this.activeStream = stream;
           },
         },
@@ -243,7 +343,7 @@ class OpenAIProvider {
       // concern (taint propagation) localized to the SDK provider.
       const _GRYPHON_DENY_MARKER = "matches one of your protected patterns in Gryphon";
       const turnSlice = this.history.slice(historyCheckpoint);
-      const hadProtectedDeny = turnSlice.some((m: any) =>
+      const hadProtectedDeny = turnSlice.some((m) =>
         m && m.role === "tool" && typeof m.content === "string" &&
         m.content.includes(_GRYPHON_DENY_MARKER)
       );
@@ -262,7 +362,7 @@ class OpenAIProvider {
       this.contextTokens = (peak && peak.prompt_tokens) || 0;
 
       const rawText = turnText || (finalMessage && finalMessage.content) || "";
-      const result: Record<string, any> = {
+      const result: OpenAITurnResult = {
         text: rawText,
         cost: turnCost,
         cumulativeCost: this.cumulativeCost,
@@ -280,7 +380,9 @@ class OpenAIProvider {
           result.json = JSON.parse(rawText);
           result.text = JSON.stringify(result.json);
         } catch (parseErr) {
-          const err: any = new Error(`structuredOutput: failed to parse model output as JSON: ${(parseErr as Error).message}`);
+          const err = new Error(
+            `structuredOutput: failed to parse model output as JSON: ${(parseErr as Error).message}`,
+          ) as Error & { code?: string; cause?: unknown; lastOutput?: string };
           err.code = "STRUCTURED_OUTPUT_PARSE_FAILED";
           err.cause = parseErr;
           err.lastOutput = rawText;
@@ -300,7 +402,10 @@ class OpenAIProvider {
     }
   }
 
-  _formatError(err: any) {
+  _formatError(err: unknown) {
+    const e = err as ErrorLike;
+    // No SDK loaded → no SDK error can exist; the class checks are skipped.
+    const OpenAI = _sdk;
     // Use the SDK's exported error classes via instanceof when available —
     // robust to minified production builds and class-name churn. Fall back
     // to `constructor.name` string match (which remains correct for the
@@ -308,42 +413,44 @@ class OpenAIProvider {
     // AuthenticationError class). Below-threshold finding BT-3 (Round 18).
     const looksLikeAuth =
       (OpenAI && OpenAI.AuthenticationError && err instanceof OpenAI.AuthenticationError) ||
-      (err && err.constructor && err.constructor.name === "AuthenticationError");
+      (e && e.constructor && e.constructor.name === "AuthenticationError");
     if (looksLikeAuth) {
       return "Invalid API key. Check Settings → Gryphon → OpenAI API key.";
     }
     const looksLikeRateLimit =
       (OpenAI && OpenAI.RateLimitError && err instanceof OpenAI.RateLimitError) ||
-      (err && err.constructor && err.constructor.name === "RateLimitError");
+      (e && e.constructor && e.constructor.name === "RateLimitError");
     if (looksLikeRateLimit) {
-      const retryAfter = err.headers && err.headers["retry-after"];
+      const retryAfter = e && e.headers && e.headers["retry-after"];
       const hint = retryAfter
         ? `Retry-After header says ${retryAfter} seconds.`
         : "Check your OpenAI usage dashboard for current rate limits.";
       return `Rate limited by OpenAI after 3 automatic retries. ${hint}`;
     }
-    if (err && err.status) {
-      return `OpenAI API error (${err.status}): ${err.message || String(err)}`;
+    if (e && e.status) {
+      return `OpenAI API error (${e.status}): ${e.message || String(err)}`;
     }
-    return String((err && err.message) || err);
+    return String((e && e.message) || err);
   }
 }
 
-function cloneOpenAIMessage(m: any) {
-  const copy: Record<string, any> = { role: m.role, content: m.content };
+function cloneOpenAIMessage(m: OpenAIHistoryMessage): ChatMessageParam {
+  const copy: OpenAIHistoryMessage = { role: m.role, content: m.content };
   if (m.tool_calls) copy.tool_calls = JSON.parse(JSON.stringify(m.tool_calls));
   if (m.tool_call_id) copy.tool_call_id = m.tool_call_id;
   if (m.name) copy.name = m.name;
-  return copy;
+  return copy as ChatMessageParam;
 }
 
 /**
  * Validate an API key by making a trivial chat.completions call.
  * Used by the "Test key" button in settings.
  */
-async function testApiKey(apiKey: any) {
+async function testApiKey(apiKey: string | null | undefined) {
   if (!apiKey) return { ok: false, message: "No API key provided" };
+  let OpenAI: OpenAISdk | null = null;
   try {
+    OpenAI = await loadSdk();
     const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
     await client.chat.completions.create({
       model: "gpt-4o-mini",
@@ -352,14 +459,15 @@ async function testApiKey(apiKey: any) {
     });
     return { ok: true, message: "Key works" };
   } catch (err) {
+    const e = err as ErrorLike;
     const looksLikeAuth =
       (OpenAI && OpenAI.AuthenticationError && err instanceof OpenAI.AuthenticationError) ||
-      (err && err.constructor && err.constructor.name === "AuthenticationError");
+      (e && e.constructor && e.constructor.name === "AuthenticationError");
     if (looksLikeAuth) {
       return { ok: false, message: "Invalid API key" };
     }
-    if (err && (err as any).status) {
-      return { ok: false, message: `API error (${(err as any).status}): ${(err as Error).message}` };
+    if (e && e.status) {
+      return { ok: false, message: `API error (${e.status}): ${(err as Error).message}` };
     }
     return { ok: false, message: String((err && (err as Error).message) || err) };
   }

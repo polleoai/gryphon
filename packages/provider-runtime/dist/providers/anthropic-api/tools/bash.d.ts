@@ -19,6 +19,22 @@
  *   - non-zero exit reported with code, but is_error=false (the model
  *     should see and reason about the failure, not have it suppressed)
  */
+interface BashInput {
+    command?: unknown;
+    description?: string;
+    timeout?: number | string;
+}
+type BashToolContext = {
+    vaultRoot: string;
+    [key: string]: unknown;
+};
+interface ToolResult {
+    content: Array<{
+        type: string;
+        text: string;
+    }>;
+    isError: boolean;
+}
 declare const SCHEMA: {
     name: string;
     description: string;
@@ -41,5 +57,5 @@ declare const SCHEMA: {
         required: string[];
     };
 };
-declare function execute(input: any, ctx: any): Promise<unknown>;
+declare function execute(input: BashInput, ctx: BashToolContext): Promise<ToolResult>;
 export { SCHEMA, execute };

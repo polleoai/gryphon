@@ -16,7 +16,17 @@
  * callers that omit it get HeadlessHostAdapter as a default so old call
  * sites don't crash before Task 0.6 lands.
  */
-declare function testApiKey(apiKey: any, hostAdapter: any): Promise<{
+interface KeyCheckResponse {
+    status: number;
+    json?: unknown;
+}
+interface KeyCheckHostAdapter {
+    fetch(url: string, opts: {
+        method: string;
+        throw: boolean;
+    }): Promise<KeyCheckResponse>;
+}
+declare function testApiKey(apiKey: string | null | undefined, hostAdapter?: KeyCheckHostAdapter | null): Promise<{
     ok: boolean;
     message: string;
 }>;

@@ -32,7 +32,7 @@ const { GryphonChatView } = require("../src/chat-view");
 const securityUi = require("../src/security-settings");
 const { renderDefaultsPanel, renderSectionHeading } = require("../src/settings-view");
 const { PERMS } = require("../src/constants");
-const { securitySettings: store } = require("@gryphon/protect");
+const { securitySettings: store } = require("@polleoai/gryphon-protect");
 
 const EMBEDDER_OVERRIDES = { protectedMode: false, protectedPathsEnabled: false, protectedCommandsEnabled: false };
 
@@ -134,9 +134,9 @@ test("#29 (1): the audit line is logged once per spawn when the host sets overri
   const host = makeHost({ app: makeApp(vaultDir()) });
   const view = makeView(host, { securityOverrides: EMBEDDER_OVERRIDES });
   const lines = [];
-  const orig = console.info;
-  console.info = (...a) => lines.push(a.join(" "));
-  try { view._logSecurityAudit(view._effectiveSecurity()); } finally { console.info = orig; }
+  const orig = console.debug;
+  console.debug = (...a) => lines.push(a.join(" "));
+  try { view._logSecurityAudit(view._effectiveSecurity()); } finally { console.debug = orig; }
   assert.equal(lines.length, 1);
   assert.match(lines[0], /protectedMode=false/);
 });
@@ -149,6 +149,10 @@ test("#29 (2, 13): confirm in the panel, then restart → bypassPermissions, no 
   const view = makeView(host, { securityOverrides: EMBEDDER_OVERRIDES });
   const modal = view._maybePromptVaultSecurity();
   assert.ok(modal instanceof securityUi.ConfirmVaultSecurityModal);
+  // #37: the modal keeps Obsidian's own keymap scope (Esc etc. work); the
+  // security scope lives in its own field.
+  assert.ok(modal.scope instanceof obsidian.Scope, "Modal.scope is still the keymap Scope");
+  assert.deepEqual(modal.securityScope, store.resolveSecurityScope({ hostPlugin: host }));
   await modal.confirm();
   assert.equal(modal.isOpen, false);
 

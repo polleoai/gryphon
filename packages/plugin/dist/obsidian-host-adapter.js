@@ -1,12 +1,7 @@
 "use strict";
-/**
- * ObsidianHostAdapter — wraps Obsidian's Notice + requestUrl behind
- * the HostAdapter duck-type so runtime/protect can stay headless.
- *
- * The plugin instantiates one and passes it to createProvider() and
- * createProtectionContext() so internals never `require("obsidian")` directly.
- */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.ObsidianHostAdapter = void 0;
+const obsidian_1 = require("obsidian");
 class ObsidianHostAdapter {
     /**
      * @param {object} [hooks]
@@ -26,13 +21,11 @@ class ObsidianHostAdapter {
         // opts.level (info|warn|error) is accepted for HostAdapter contract parity but
         // ignored — Obsidian's Notice has no severity surface. Headless paths route by
         // level via console.error/warn/log; here every notice renders identically.
-        const { Notice } = require("obsidian");
-        new Notice(message, opts.timeoutMs || 5000);
+        new obsidian_1.Notice(message, opts.timeoutMs || 5000);
     }
     async fetch(url, opts) {
         opts = opts || {};
-        const { requestUrl } = require("obsidian");
-        const response = await requestUrl({
+        const response = await (0, obsidian_1.requestUrl)({
             url,
             method: opts.method || "GET",
             headers: opts.headers,
@@ -47,4 +40,4 @@ class ObsidianHostAdapter {
         };
     }
 }
-module.exports = { ObsidianHostAdapter };
+exports.ObsidianHostAdapter = ObsidianHostAdapter;

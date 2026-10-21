@@ -39,22 +39,15 @@
  *   - The plugin owns the lifecycle: spawn creates, close deletes.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
-const {
-  DEFAULT_HOOK_TIMEOUTS,
-  HOOK_FILES,
-  POSTTOOL_MATCHER,
-} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
-const {
-  GRYPHON_SYSTEM_PROMPT_HINT,
-  GRYPHON_FALLBACK_DENY_HINT,
-} = require("../system-prompt-hints");
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import * as crypto from "crypto";
+import { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER } from "@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder";
+import { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT } from "../system-prompt-hints";
 
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
-const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
+import { storeGuardCommand, STORE_GUARD_TIMEOUT_S } from "./store-guard-command";
+import { hookCommandLine } from "@polleoai/gryphon-provider-runtime/shell-quote";
 
 const KIND = "gemini-cli";
 
@@ -94,7 +87,7 @@ function _buildStoreGuardJson({ nodePath, storeGuard, nonce = _hookNameNonce() }
  * to Gemini's event names + the matcher to use. Order matches the
  * claude-code/codex builders so behavior parity is easy to audit.
  */
-const GEMINI_HOOK_EVENTS = [
+const GEMINI_HOOK_EVENTS: Array<[string, string, string, string]> = [
   // [geminiEventName, hookFileName, matcher, timeoutKey]
   ["BeforeTool",       HOOK_FILES.PreToolUse,       "",                "PreToolUse"],
   ["AfterTool",        HOOK_FILES.PostToolUse,      POSTTOOL_MATCHER,  "PostToolUse"],
@@ -147,7 +140,7 @@ function _buildHooksJson({ pluginDir, nodePath, nonce = _hookNameNonce() }: { pl
       // through to default-allow. The rm ran, the model saw a
       // generic failure, and surfaced "file does not exist" to the
       // user. Reported by user 2026-05-03.
-      timeout: DEFAULT_HOOK_TIMEOUTS[timeoutKey] * 1000,
+      timeout: DEFAULT_HOOK_TIMEOUTS[timeoutKey as keyof typeof DEFAULT_HOOK_TIMEOUTS] * 1000,
     };
     if (cmd.shell) hookEntry.shell = cmd.shell;
     hooksBlock[geminiEvent] = [{
@@ -297,8 +290,8 @@ function buildSpawnExtras(
   };
 }
 
-module.exports = {
-  kind: KIND,
+export {
+  KIND as kind,
   buildSpawnExtras,
   _buildHooksJson,
   _buildStoreGuardJson,

@@ -70,7 +70,8 @@ test("blocks IPv4 CGNAT 100.64/10 (Round 2)", () => {
 test("blocks IPv4 multicast 224/4 (Round 2)", () => {
   assert.equal(_isPrivateHost("224.0.0.1"), true);
   assert.equal(_isPrivateHost("239.255.255.255"), true);
-  assert.equal(_isPrivateHost("240.0.0.1"), false);  // class E, above multicast
+  // 240/4 (class E) is reserved and never publicly routable — blocked too.
+  assert.equal(_isPrivateHost("240.0.0.1"), true);
 });
 
 test("blocks IPv4 limited broadcast (Round 2)", () => {
@@ -211,4 +212,62 @@ test("unwraps IPv6 URL bracket-form [::1] (R4-H2)", () => {
   assert.equal(_isPrivateHost("[2002:7f00:1::]"), true);
   // Public IPv6 stays public after unwrap
   assert.equal(_isPrivateHost("[2606:2800:220:1:248:1893:25c8:1946]"), false);
+});
+
+// Headless hosts (HeadlessHostAdapter → nodeFetch) return fetch-style
+// text()/json() methods; Obsidian's requestUrl returns properties. WebFetch must
+// read the body either way — reading only the property shape made a headless
+// fetch "succeed" with an empty page.
+test("WebFetch reads a fetch-style (headless) response body, not an empty page", async () => {
+  const { execute } = require("../src/providers/anthropic-api/tools/web-fetch");
+  const hostAdapter = {
+    fetch: async () => ({
+      status: 200,
+      headers: { "content-type": "text/plain; charset=utf-8" },
+      text: async () => "hello from the page",
+      json: async () => { throw new Error("not json"); },
+    }),
+  };
+  const r = await execute({ url: "https://93.184.216.34/" }, { permissionMode: "default", hostAdapter });
+  const out = JSON.stringify(r);
+  assert.match(out, /hello from the page/);
+});
+
+test("WebFetch still reads the requestUrl (Obsidian) property shape", async () => {
+  const { execute } = require("../src/providers/anthropic-api/tools/web-fetch");
+  const hostAdapter = {
+    fetch: async () => ({ status: 200, headers: { "content-type": "text/plain" }, text: "obsidian body" }),
+  };
+  const r = await execute({ url: "https://93.184.216.34/" }, { permissionMode: "default", hostAdapter });
+  assert.match(JSON.stringify(r), /obsidian body/);
+});
+
+test("blocks the rest of fe80::/10, NAT64-wrapped private v4, reserved v4 ranges, ::ffff", () => {
+  for (const h of ["fe90::1", "feb0::1", "febf::1", "64:ff9b::a9fe:a9fe", "64:ff9b::169.254.169.254", "64:ff9b:1::1",
+    "198.18.0.1", "198.19.255.1", "192.0.0.8", "192.0.2.1", "198.51.100.1", "203.0.113.1", "240.0.0.1", "[::ffff]", "::7f"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+  for (const h of ["64:ff9b::808:808", "198.20.0.1", "2606:4700::1111", "8.8.8.8", "fe7f::1"]) {
+    assert.equal(_isPrivateHost(h), false, h);
+  }
+});
+
+test("public hostnames that merely start with fe… are not mistaken for IPv6 link/site-local", () => {
+  for (const h of ["feather.com", "febreze.com", "feature.io", "fedex.com", "feedly.com", "fe.example"]) {
+    assert.equal(_isPrivateHost(h), false, h);
+  }
+  for (const h of ["fe80::1", "fe8::1", "febf::1", "fec0::1", "feff::1", "[fe80::1]"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+});
+
+test("WebFetch's DNS pre-check refusal doesn't hand the resolved private address to the model", async () => {
+  const { execute } = require("../src/providers/anthropic-api/tools/web-fetch");
+  // "localhost." passes the name check; DNS resolves it to loopback.
+  let fetched = false;
+  const r = await execute({ url: "http://localhost./" }, { permissionMode: "default", hostAdapter: { fetch: async () => { fetched = true; return { status: 200 }; } } });
+  const out = JSON.stringify(r);
+  assert.match(out, /resolves to a private or loopback address/);
+  assert.doesNotMatch(out, /127\.0\.0\.1|::1/);
+  assert.equal(fetched, false);
 });

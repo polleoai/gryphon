@@ -16,12 +16,11 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const Module = require("module");
 
-// Stub the Anthropic SDK before requiring the provider — the provider's
-// constructor builds a real client otherwise, and we want to inject a
-// fake one. The shape must mirror what the provider uses: a class with
-// a `messages` property.
+// Fake SDK client, injected via options.client — the provider builds the
+// real client lazily on first use otherwise, and we want a fake one. The
+// shape must mirror what the provider uses: a class with a `messages`
+// property.
 class FakeAnthropic {
   constructor(opts) {
     this.opts = opts;
@@ -33,12 +32,6 @@ class FakeAnthropic {
   }
 }
 
-const originalLoad = Module._load;
-Module._load = function (request, ...args) {
-  if (request === "@anthropic-ai/sdk") return { default: FakeAnthropic };
-  return originalLoad.call(this, request, ...args);
-};
-
 const { AnthropicAPIProvider } = require("../src/providers/anthropic-api/anthropic-api");
 const { GRYPHON_SDK_SYSTEM_PROMPT } = require("../src/providers/anthropic-api/tool-loop");
 
@@ -46,6 +39,7 @@ function makeProvider({ history = [] } = {}) {
   const p = new AnthropicAPIProvider("test-api-key", "/fake/cwd", {
     model: "claude-sonnet-4-6",
     initialHistory: history,
+    client: new FakeAnthropic({ apiKey: "test-api-key", dangerouslyAllowBrowser: true, maxRetries: 3 }),
   });
   return p;
 }
@@ -178,4 +172,19 @@ test("countTokensForNext caches the null result too (don't re-hit a failing endp
   await p.countTokensForNext("hello");
   await p.countTokensForNext("hello");
   assert.equal(callCount, 1, "failures should also be cached against the same key");
+});
+
+// gryphon-dev#38: the SDK client is built on first use, not in the
+// constructor. Uses the real SDK (constructing a client makes no request).
+test("client is built lazily, once, with the same SDK options", async () => {
+  const p = new AnthropicAPIProvider("test-api-key", "/fake/cwd", {});
+  assert.equal(p.client, null, "constructor must not build a client");
+  const c = await p._ensureClient();
+  assert.equal(p.client, c);
+  assert.equal(c.apiKey, "test-api-key");
+  assert.equal(c.maxRetries, 3);
+  assert.equal(c._options.dangerouslyAllowBrowser, true);
+  assert.equal(await p._ensureClient(), c, "second call reuses the client");
+  const Anthropic = (await import("@anthropic-ai/sdk")).default;
+  assert.ok(c instanceof Anthropic, "built from the one SDK copy the process imports");
 });

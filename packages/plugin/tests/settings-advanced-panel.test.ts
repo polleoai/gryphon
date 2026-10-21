@@ -55,6 +55,6 @@ test("Block REST toggle still fires gryphon:settings-changed", async () => {
   await toggle.changeHandler(false);
   assert.equal(host.settings.obsidianRestApiPolicy, "allowed");
   assert.equal(fired, "gryphon:settings-changed");
-  const { securitySettings } = require("@gryphon/protect");
+  const { securitySettings } = require("@polleoai/gryphon-protect");
   assert.equal(securitySettings.readMachineSecuritySettings({ vaultKey: vault, hostId: "gryphon" }).obsidianRestApiPolicy, "allowed");
 });

@@ -18,8 +18,10 @@
  * intentional — it tells the model what happened and lets it adapt.
  */
 
-const { buildDenyReason } = require("./deny-copy");
-const { securityInputsOf } = require("./security-settings-store");
+import type { App } from "obsidian";
+import { buildDenyReason } from "./deny-copy";
+
+import { securityInputsOf } from "./security-settings-store";
 
 // Obsidian's Modal + Setting are resolved lazily inside _showPermissionModal
 // (only when a modal is actually about to be rendered). This keeps the module
@@ -191,6 +193,16 @@ async function checkPermission({
     };
   }
 
+  if (!_modalUi) {
+    // The host never registered a permission prompt (setPermissionModalUi):
+    // refuse, and say so — this is not the user saying no.
+    console.error("[gryphon/permission-gate] no permission prompt registered; refusing");
+    return {
+      allow: false,
+      reason: `Cannot prompt user (no permission prompt is available in this host). Set permission mode to Safe or YOLO to allow ${action} operations.`,
+    };
+  }
+
   const decision = await _showPermissionModal({
     app: ctxPlugin.app,
     action,
@@ -259,10 +271,36 @@ async function checkPermission({
 const MAX_MODAL_TARGET_CHARS = 8 * 1024;
 const MAX_MODAL_DETAIL_CHARS = 100 * 1024;
 
-function _clip(text: unknown, max: number): unknown {
+function _clip(text: string | null | undefined, max: number): string | null | undefined {
   if (typeof text !== "string" || text.length <= max) return text;
   const elided = text.length - max;
   return text.slice(0, max) + `\n\n[truncated — ${elided} additional chars hidden; see full tool-use block in the chat log]`;
+}
+
+/**
+ * How to find the active provider kind, registered by provider-runtime's
+ * factory when it loads. It can't be imported here: factory → providers →
+ * protect would be an import cycle. Unregistered (no provider runtime in
+ * this process) → the modal says "Claude", as before.
+ */
+let _activeProviderKindOf: ((plugin: unknown) => string | null) | null = null;
+function setActiveProviderKindResolver(fn: ((plugin: unknown) => string | null) | null): void {
+  _activeProviderKindOf = fn;
+}
+
+/**
+ * Obsidian's Modal and Setting, registered by the host's UI code (the plugin
+ * package registers them on load). protect never loads "obsidian" itself:
+ * the package must load with no obsidian installed (headless contract, #26;
+ * enforced by scripts/pack-verify.sh check f).
+ */
+interface PermissionModalUi {
+  Modal: typeof import("obsidian").Modal;
+  Setting: typeof import("obsidian").Setting;
+}
+let _modalUi: PermissionModalUi | null = null;
+function setPermissionModalUi(ui: PermissionModalUi | null): void {
+  _modalUi = ui;
 }
 
 /**
@@ -274,27 +312,16 @@ function _clip(text: unknown, max: number): unknown {
  */
 function _getAssistantName(ctx: Record<string, unknown>): string {
   try {
-    // factory.js is owned by the runtime layer (Stage 3) which currently
-    // lives under packages/provider-runtime/. Cross-package relative reach
-    // is the interim shape (dist/, not src/, so the compiled tree resolves
-    // under plain node — gryphon-dev#23); Stage 4's provider-config extraction moves
-    // getActiveProviderKind to its proper home and we'll switch to a
-    // package import then.
-    const { getActiveProviderKind } = require("../../provider-runtime/dist/factory");
-    const kind = getActiveProviderKind(ctx && ctx.plugin);
+    const kind = _activeProviderKindOf ? _activeProviderKindOf(ctx && ctx.plugin) : null;
     if (kind === "openai-api" || kind === "codex-cli") return "Codex";
     if (kind === "google-api" || kind === "gemini-cli") return "Gemini";
     // claude-code, anthropic-api, and the null fallback all → "Claude"
     return "Claude";
   } catch (e) {
-    // Tighten the catch: the documented fallback is "headless test
-    // context with no factory available" → MODULE_NOT_FOUND. Anything
-    // else (a future ReferenceError inside getActiveProviderKind, an
-    // unexpected throw shape) is a real bug we want surfaced rather
-    // than silently mislabeling Codex/Gemini modals as "Claude is asking."
-    if (!e || (e as NodeJS.ErrnoException).code !== "MODULE_NOT_FOUND") {
-      console.error("[gryphon/permission-gate] _getAssistantName threw unexpectedly:", e && (e as Error).message);
-    }
+    // No resolver registered is the documented fallback ("Claude"). A throw
+    // from the resolver is a real bug we want surfaced rather than silently
+    // mislabeling Codex/Gemini modals as "Claude is asking."
+    console.error("[gryphon/permission-gate] _getAssistantName threw unexpectedly:", e && (e as Error).message);
     return "Claude";
   }
 }
@@ -313,8 +340,8 @@ function _showPermissionModal({
 }: {
   app: unknown;
   action: string;
-  target: unknown;
-  detail?: unknown;
+  target: string;
+  detail?: string | null;
   showRememberToggle?: boolean;
   warning?: string | null;
   isProtected?: boolean;
@@ -322,12 +349,16 @@ function _showPermissionModal({
   categoryTitle?: string | null;
   assistantName?: string;
 }) {
-  // require("obsidian") is safe here: _showPermissionModal is only called
-  // from checkPermission when ctx.plugin.app is present (Obsidian is running).
-  // eslint-disable-next-line import/no-extraneous-dependencies -- 'obsidian' is provided by the host app at runtime, not a bundled dependency
-  const { Modal, Setting } = require("obsidian");
-  return new Promise((resolve) => {
-    const modal = new Modal(app);
+  // Only called when ctx.plugin.app is present (Obsidian is running), so the
+  // host's UI code has registered Obsidian's Modal and Setting. If it hasn't,
+  // we can't ask — refuse, as for a missing plugin context.
+  if (!_modalUi) {
+    console.error("[gryphon/permission-gate] no permission modal registered; refusing");
+    return Promise.resolve({ allow: false, remember: false });
+  }
+  const { Modal, Setting } = _modalUi;
+  return new Promise<{ allow: boolean; remember: boolean }>((resolve) => {
+    const modal = new Modal(app as App);
 
     // Title — for protected operations, prefer the category-specific
     // title ("⚠ Modifies Gryphon configuration" etc.) so the user sees
@@ -347,7 +378,7 @@ function _showPermissionModal({
       // `userRisk` copy from constants.js (what the asset is / why it's
       // risky). Title already shows the category, so the banner body
       // just carries the description.
-      const banner = modal.contentEl.createEl("div", {
+      const banner = modal.contentEl.createDiv({
         cls: "gryphon-permission-warning",
       });
       banner.createEl("p", {
@@ -460,4 +491,4 @@ function _showPermissionModal({
   });
 }
 
-module.exports = { checkPermission };
+export { checkPermission, setActiveProviderKindResolver, setPermissionModalUi };

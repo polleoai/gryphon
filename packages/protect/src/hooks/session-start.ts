@@ -28,13 +28,13 @@
  * and `source: "resume"` for resumed sessions. We block both.
  */
 
-const {
+import {
   readStdinJson,
   sendToGryphon,
   traceHook,
   installHookDeadline,
   SOCKET_ENV_VAR,
-} = require("./common/ipc-client");
+} from "./common/ipc-client";
 
 const PING_TIMEOUT_MS = 5_000;
 // CC's configured SessionStart hook timeout is 10s. Self-deadline at
@@ -57,10 +57,10 @@ const { emitAndExit, crashHandler } = installHookDeadline({
 });
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) { /* tolerate — we still attempt the ping */ }
+  } catch { /* tolerate — we still attempt the ping */ }
   traceHook("SessionStart", input);
 
   if (!process.env[SOCKET_ENV_VAR]) {
@@ -89,10 +89,11 @@ async function main() {
       return;
     }
   } catch (e) {
+    const err = e as Error | null | undefined;  // sendToGryphon rejects with Errors
     await emitAndExit({
       continue: false,
       stopReason:
-        `Gryphon security layer not reachable (${(e && (e as Error).message) || e}). ` +
+        `Gryphon security layer not reachable (${(err && err.message) || String(err)}). ` +
         `The plugin may have been disabled or crashed. Restart Obsidian ` +
         `or re-enable the plugin, then try again.`,
     });

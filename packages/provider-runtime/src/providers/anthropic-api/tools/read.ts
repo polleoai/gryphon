@@ -7,9 +7,20 @@
  * this format, so reproducing it gives better tool-use behavior.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as path from "path";
+import { resolveVaultPath, PathOutsideVaultError } from "@polleoai/gryphon-protect";
+
+interface ReadInput {
+  file_path: string;
+  offset?: number | string;
+  limit?: number | string;
+}
+
+interface ReadToolContext {
+  vaultRoot: string;
+  plugin?: { settings?: { maxReadFileSizeMb?: unknown } } | null;
+}
 
 const SCHEMA = {
   name: "Read",
@@ -46,17 +57,17 @@ const MAX_LINE_LENGTH = 2000;  // truncate very long lines
 // Gryphon → Max file size (MB). See the Edit tool for the same cap.
 const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-function _maxFileSize(ctx: any) {
+function _maxFileSize(ctx: ReadToolContext | null | undefined) {
   const mb = ctx && ctx.plugin && ctx.plugin.settings &&
              Number(ctx.plugin.settings.maxReadFileSizeMb);
-  if (Number.isFinite(mb) && mb > 0) return Math.floor(mb * 1024 * 1024);
+  if (typeof mb === "number" && Number.isFinite(mb) && mb > 0) return Math.floor(mb * 1024 * 1024);
   return DEFAULT_MAX_FILE_SIZE;
 }
 
-async function execute(input: any, ctx: any) {
+async function execute(input: ReadInput, ctx: ReadToolContext) {
   const filePath = input.file_path;
-  const offset = Math.max(1, parseInt(input.offset || 1, 10));
-  const limit = Math.min(10000, parseInt(input.limit || DEFAULT_LIMIT, 10));
+  const offset = Math.max(1, parseInt(String(input.offset || 1), 10));
+  const limit = Math.min(10000, parseInt(String(input.limit || DEFAULT_LIMIT), 10));
 
   let resolved;
   try {
@@ -71,7 +82,7 @@ async function execute(input: any, ctx: any) {
   let stat;
   try {
     stat = fs.statSync(resolved);
-  } catch (e) {
+  } catch {
     return _error(`File not found: ${filePath}`);
   }
   if (stat.isDirectory()) {
@@ -113,7 +124,7 @@ async function execute(input: any, ctx: any) {
   const endIdx = Math.min(lines.length, startIdx + limit);
   const slice = lines.slice(startIdx, endIdx);
 
-  const numbered = slice.map((line: any, i: any) => {
+  const numbered = slice.map((line: string, i: number) => {
     const lineNo = startIdx + i + 1;
     const truncated = line.length > MAX_LINE_LENGTH
       ? line.substring(0, MAX_LINE_LENGTH) + ` ... [truncated, line was ${line.length} chars]`
@@ -129,11 +140,11 @@ async function execute(input: any, ctx: any) {
   return _ok(numbered.join("\n") + footer);
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

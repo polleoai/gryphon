@@ -250,6 +250,20 @@ test("abort: flips destroyed=true so isAlive() is false", () => {
   assert.equal(p.isAlive(), false);
 });
 
+// gryphon-dev#38: without an injected client the SDK client is built on
+// first use, not in the constructor. Uses the real SDK (constructing a
+// client makes no request).
+test("client is built lazily, once, from the SDK", async () => {
+  const p = new GoogleProvider("AIza-test", "/cwd", {});
+  assert.equal(p.client, null, "constructor must not build a client");
+  const c = await p._ensureClient();
+  assert.equal(p.client, c);
+  assert.equal(c.apiKey, "AIza-test");
+  assert.equal(await p._ensureClient(), c, "second call reuses the client");
+  const { GoogleGenAI } = await import("@google/genai");
+  assert.ok(c instanceof GoogleGenAI, "built from the one SDK copy the process imports");
+});
+
 process.on("exit", () => {
   Module._resolveFilename = origResolve;
 });

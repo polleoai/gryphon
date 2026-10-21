@@ -20,8 +20,10 @@
  */
 
 class CliStructuredOutputError extends Error {
-  [key: string]: any;
-  constructor(message: string, { reason, attempts, lastOutput }: { reason?: string; attempts?: number; lastOutput?: string } = {}) {
+  declare reason: string | undefined;
+  declare attempts: number | undefined;
+  declare lastOutput: string | null | undefined;
+  constructor(message: string, { reason, attempts, lastOutput }: { reason?: string; attempts?: number; lastOutput?: string | null } = {}) {
     super(message);
     this.name = "CliStructuredOutputError";
     this.reason = reason;            // "parse" | "validate" | "budget-exhausted"
@@ -44,9 +46,19 @@ function stripFence(text: string): string {
   return m ? m[1] : text;
 }
 
-function parseAndValidate(text: string, schema: any): unknown {
+/** The JSON Schema subset `validate` understands (see module header). */
+interface SchemaNode {
+  enum?: unknown[];
+  type?: string;
+  properties?: Record<string, SchemaNode>;
+  required?: string[];
+  additionalProperties?: boolean;
+  items?: SchemaNode;
+}
+
+function parseAndValidate(text: string, schema: SchemaNode): unknown {
   const cleaned = stripFence(text).trim();
-  let parsed;
+  let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
   } catch (e) {
@@ -66,8 +78,8 @@ function parseAndValidate(text: string, schema: any): unknown {
 }
 
 // Minimal JSON Schema validator. See module header for scope.
-function validate(value: unknown, schema: any, path: string): string[] {
-  const errors = [];
+function validate(value: unknown, schema: SchemaNode, path: string): string[] {
+  const errors: string[] = [];
   if (schema.enum && !schema.enum.includes(value)) {
     errors.push(`${path || "(root)"} must be one of ${JSON.stringify(schema.enum)}, got ${JSON.stringify(value)}`);
     return errors;   // an enum-mismatched value isn't worth deeper inspection
@@ -106,7 +118,8 @@ function validate(value: unknown, schema: any, path: string): string[] {
     if (!Array.isArray(value)) {
       errors.push(`${path} expected array, got ${typeof value}`);
     } else if (schema.items) {
-      value.forEach((v, i) => errors.push(...validate(v, schema.items, `${path}/${i}`)));
+      const items = schema.items;
+      value.forEach((v, i) => errors.push(...validate(v, items, `${path}/${i}`)));
     }
   }
   return errors;

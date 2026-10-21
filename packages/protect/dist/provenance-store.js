@@ -1,6 +1,41 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.STORE_VERSION = exports.ProvenanceStore = void 0;
+exports._normaliseKey = _normaliseKey;
 /**
  * Provenance store (v0.6.0 Stage 6).
  *
@@ -61,10 +96,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * operation re-tags the file), and (c) the reload-before-mutate
  * mitigation already reduces race probability by ~1000x.
  */
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const crypto = __importStar(require("crypto"));
 const STORE_VERSION = 1;
+exports.STORE_VERSION = STORE_VERSION;
 const FILENAME = "provenance.json";
 // Round-14 Q4 (lockfile): advisory lockfile used to serialize the
 // read+mutate+persist critical section across concurrent Obsidian
@@ -160,7 +196,7 @@ class ProvenanceStore {
             try {
                 console.warn(`[gryphon/provenance] load failed (writes blocked until cleared): ${this._loadError.message}`);
             }
-            catch (_) { }
+            catch { /* ignore */ }
             return false;
         }
         try {
@@ -179,7 +215,7 @@ class ProvenanceStore {
                 try {
                     console.warn(`[gryphon/provenance] ${this._loadError.message}`);
                 }
-                catch (_) { }
+                catch { /* ignore */ }
             }
         }
         catch (e) {
@@ -190,7 +226,7 @@ class ProvenanceStore {
             try {
                 console.warn(`[gryphon/provenance] load failed (JSON parse): ${this._loadError.message}`);
             }
-            catch (_) { }
+            catch { /* ignore */ }
         }
         this._loaded = true;
         return this._loadError === null;
@@ -230,7 +266,7 @@ class ProvenanceStore {
         try {
             entries = fs.readdirSync(dir);
         }
-        catch (_) {
+        catch {
             return; // Plugin dir unreadable — nothing we can do here.
         }
         for (const name of entries) {
@@ -243,7 +279,7 @@ class ProvenanceStore {
                     fs.unlinkSync(full);
                 }
             }
-            catch (_) { /* best-effort */ }
+            catch { /* best-effort */ }
         }
     }
     /**
@@ -420,7 +456,7 @@ class ProvenanceStore {
                 try {
                     fs.writeSync(fd, `${process.pid}\n${new Date().toISOString()}\n`);
                 }
-                catch (_) { /* best-effort payload */ }
+                catch { /* best-effort payload */ }
                 fs.closeSync(fd);
                 acquired = true;
             }
@@ -434,11 +470,11 @@ class ProvenanceStore {
                         try {
                             fs.unlinkSync(this._lockFile);
                         }
-                        catch (_) { /* another writer unlinked first */ }
+                        catch { /* another writer unlinked first */ }
                         continue; // try again immediately
                     }
                 }
-                catch (_) { /* lockfile vanished between EEXIST and stat → loop retries */ }
+                catch { /* lockfile vanished between EEXIST and stat → loop retries */ }
                 if (Date.now() >= deadline) {
                     throw new Error(`ProvenanceStore: could not acquire lock within ${LOCK_TIMEOUT_MS}ms ` +
                         `(another Obsidian instance may be holding it). The mutation was not applied.`);
@@ -457,7 +493,7 @@ class ProvenanceStore {
             try {
                 fs.unlinkSync(this._lockFile);
             }
-            catch (_) { /* ignore — stale-lock logic handles */ }
+            catch { /* ignore — stale-lock logic handles */ }
         }
     }
     /** Count of tagged paths. Cheap accessor for the settings UI. */
@@ -495,17 +531,18 @@ class ProvenanceStore {
                 try {
                     fs.closeSync(fd);
                 }
-                catch (_) { /* ignore */ }
+                catch { /* ignore */ }
             }
             try {
                 if (fs.existsSync(tmp))
                     fs.unlinkSync(tmp);
             }
-            catch (_) { /* ignore */ }
+            catch { /* ignore */ }
             throw e;
         }
     }
 }
+exports.ProvenanceStore = ProvenanceStore;
 /**
  * Normalise a path into the canonical vault-relative key form:
  * POSIX separators, no leading slash. Returns null for empty input.
@@ -518,8 +555,3 @@ function _normaliseKey(p) {
         return null;
     return trimmed.replace(/\\/g, "/").replace(/^\/+/, "");
 }
-module.exports = {
-    ProvenanceStore,
-    STORE_VERSION,
-    _normaliseKey, // exported for tests
-};

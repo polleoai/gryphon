@@ -14,7 +14,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("module");
 
-// Stub the Anthropic SDK before requiring the provider.
+// Fake SDK client, injected via options.client (the provider builds the real
+// one lazily on first use, so an injected client keeps the SDK unloaded).
 class FakeAnthropic {
   constructor(opts) {
     this.opts = opts;
@@ -24,12 +25,6 @@ class FakeAnthropic {
     };
   }
 }
-
-const originalLoad = Module._load;
-Module._load = function (request, ...args) {
-  if (request === "@anthropic-ai/sdk") return { default: FakeAnthropic };
-  return originalLoad.call(this, request, ...args);
-};
 
 const stubPath = require.resolve("./_stubs/obsidian.js");
 const origResolve = Module._resolveFilename;
@@ -59,7 +54,9 @@ function makeMockStream({ content, stop_reason, usage }) {
 }
 
 test("Anthropic provider aborts mid-loop when maxUsdBudget exceeded", async () => {
-  const provider = new AnthropicAPIProvider("test-key", "/vault");
+  const provider = new AnthropicAPIProvider("test-key", "/vault", {
+    client: new FakeAnthropic({ apiKey: "test-key", dangerouslyAllowBrowser: true, maxRetries: 3 }),
+  });
 
   // 1M input tokens at $3/M (Sonnet pricing) = $3 per turn.
   // maxUsdBudget is $1.00 — one turn should trip the budget.
@@ -92,7 +89,9 @@ test("Anthropic provider aborts mid-loop when maxUsdBudget exceeded", async () =
 });
 
 test("Anthropic provider: send without maxUsdBudget works normally", async () => {
-  const provider = new AnthropicAPIProvider("test-key", "/vault");
+  const provider = new AnthropicAPIProvider("test-key", "/vault", {
+    client: new FakeAnthropic({ apiKey: "test-key", dangerouslyAllowBrowser: true, maxRetries: 3 }),
+  });
 
   const normalUsage = {
     input_tokens: 100,

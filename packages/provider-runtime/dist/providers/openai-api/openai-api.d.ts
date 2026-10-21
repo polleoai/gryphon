@@ -27,11 +27,70 @@
  * to USD. Cached tokens are billed at full input rate per the v1.2 design
  * decision (track-but-don't-discount until OpenAI's pricing stabilizes).
  */
-declare const resolveModel: any, DEFAULT_MODEL: any;
+import type OpenAIClient from "openai";
+declare const resolveModel: typeof import("@polleoai/gryphon-provider-config/dist/pricing/openai").resolveModel, DEFAULT_MODEL: string;
+type ChatMessageParam = OpenAIClient.Chat.Completions.ChatCompletionMessageParam;
+type OpenAIChatStream = ReturnType<OpenAIClient["chat"]["completions"]["stream"]>;
+interface OpenAIHistoryMessage {
+    role: string;
+    content: unknown;
+    tool_calls?: unknown;
+    tool_call_id?: string;
+    name?: string;
+}
+interface OpenAIProviderOptions {
+    hostAdapter?: unknown;
+    client?: OpenAIClient;
+    initialHistory?: OpenAIHistoryMessage[];
+    model?: string | null;
+    permissionMode?: string;
+    plugin?: unknown;
+    security?: unknown;
+    [key: string]: unknown;
+}
+interface OpenAISendOptions {
+    maxUsdBudget?: number | null;
+    structuredOutput?: {
+        name: string;
+        schema: Record<string, unknown>;
+    } | null;
+    [key: string]: unknown;
+}
+interface OpenAITurnResult {
+    text: string;
+    cost: number;
+    cumulativeCost: number;
+    sessionId: string;
+    duration: number;
+    contextTokens: number;
+    json?: unknown;
+}
 declare class OpenAIProvider {
-    [key: string]: any;
-    constructor(apiKey: any, cwd: any, options?: Record<string, any>);
+    apiKey: string;
+    cwd: string;
+    options: OpenAIProviderOptions;
+    hostAdapter: unknown;
+    client: OpenAIClient | null;
+    history: ChatMessageParam[];
+    sessionId: string;
+    resolvedModel: string;
+    contextTokens: number;
+    cumulativeCost: number;
+    startTime: number;
+    activeStream: OpenAIChatStream | null;
+    pending: boolean;
+    destroyed: boolean;
+    onMessage: ((text: string, type: string) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: OpenAITurnResult) => void) | null;
+    _needsHistoryReset: boolean | undefined;
+    constructor(apiKey: string, cwd: string, options?: OpenAIProviderOptions);
     isAlive(): boolean;
+    /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    _ensureClient(): Promise<OpenAIClient>;
     get costIsEstimate(): boolean;
     abort(): void;
     /**
@@ -46,14 +105,14 @@ declare class OpenAIProvider {
      * fix path (if needed) is to convert the in-flight tracking to a queue
      * so the `pending` reset only fires for the matching turn.
      */
-    send(prompt: any, options?: Record<string, any>): Promise<Record<string, any>>;
-    _formatError(err: any): string;
+    send(prompt: string, options?: OpenAISendOptions): Promise<OpenAITurnResult>;
+    _formatError(err: unknown): string;
 }
 /**
  * Validate an API key by making a trivial chat.completions call.
  * Used by the "Test key" button in settings.
  */
-declare function testApiKey(apiKey: any): Promise<{
+declare function testApiKey(apiKey: string | null | undefined): Promise<{
     ok: boolean;
     message: string;
 }>;

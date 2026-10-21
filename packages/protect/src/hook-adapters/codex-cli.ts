@@ -20,21 +20,14 @@
  * stdin/stdout JSON contract Claude Code uses.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
-const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
-const {
-  DEFAULT_HOOK_TIMEOUTS,
-  HOOK_FILES,
-  POSTTOOL_MATCHER,
-} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
-const {
-  GRYPHON_SYSTEM_PROMPT_HINT,
-  GRYPHON_FALLBACK_DENY_HINT,
-} = require("../system-prompt-hints");
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import * as crypto from "crypto";
+import { hookCommandLine } from "@polleoai/gryphon-provider-runtime/shell-quote";
+import { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER } from "@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder";
+import { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT } from "../system-prompt-hints";
+import { storeGuardCommand, STORE_GUARD_TIMEOUT_S } from "./store-guard-command";
 
 const KIND = "codex-cli";
 
@@ -182,7 +175,7 @@ function _canonicalJson(v: unknown): unknown {
   if (Array.isArray(v)) return v.map(_canonicalJson);
   if (v && typeof v === "object") {
     const out: Record<string, unknown> = {};
-    for (const k of Object.keys(v as Record<string, unknown>).sort()) out[k] = _canonicalJson((v as Record<string, unknown>)[k]);
+    for (const k of Object.keys(v).sort()) out[k] = _canonicalJson((v as Record<string, unknown>)[k]);
     return out;
   }
   return v;
@@ -276,7 +269,7 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
     return hookCommandLine(nodePath, scriptPath, isWindows ? "win32" : process.platform);
   };
 
-  const events = [
+  const events: Array<[string, string, string]> = [
     ["PreToolUse",        "",                 HOOK_FILES.PreToolUse],
     ["PostToolUse",       POSTTOOL_MATCHER,   HOOK_FILES.PostToolUse],
     ["SessionStart",      "",                 HOOK_FILES.SessionStart],
@@ -299,9 +292,9 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
   const rendered: Array<[string, string, string, number]> = [];
   for (const [event, matcher, scriptName] of events) {
     const cmd = makeCommand(scriptName);
-    toml += _renderHookBlock(event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]);
+    toml += _renderHookBlock(event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event as keyof typeof DEFAULT_HOOK_TIMEOUTS]);
     toml += "\n";
-    rendered.push([event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]]);
+    rendered.push([event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event as keyof typeof DEFAULT_HOOK_TIMEOUTS]]);
   }
   if (configPath) toml += _renderTrustState(configPath, rendered);
   return toml;
@@ -491,8 +484,8 @@ function buildTrustOnlyOverlay({ projectDir }: { projectDir: string }) {
   return { env: { CODEX_HOME: overlay }, cleanup: () => _cleanupOverlay(overlay) };
 }
 
-module.exports = {
-  kind: KIND,
+export {
+  KIND as kind,
   buildSpawnExtras,
   buildTrustOnlyOverlay,
   _projectTrustToml,

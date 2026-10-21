@@ -9,7 +9,27 @@
  * keeping the active tab.
  */
 
-function renderTabbedSettings(containerEl, tabs, opts) {
+interface TabRenderContext {
+  rerenderSelf: () => void;
+  rerenderAll: () => void;
+}
+
+interface SettingsTab {
+  id: string;
+  label: string;
+  render: (panel: HTMLElement, ctx: TabRenderContext) => void;
+}
+
+interface TabbedSettingsOptions {
+  initialTabId?: string;
+  onTabChange?: (id: string) => void;
+}
+
+function renderTabbedSettings(
+  containerEl: HTMLElement,
+  tabs: SettingsTab[],
+  opts?: TabbedSettingsOptions | null,
+): { activate: (id: string) => void } {
   opts = opts || {};
   const ids = tabs.map((t) => t.id);
   let activeId = ids.includes(opts.initialTabId) ? opts.initialTabId : (ids[0] || null);
@@ -17,8 +37,8 @@ function renderTabbedSettings(containerEl, tabs, opts) {
   const tabBar = containerEl.createDiv("gryphon-settings-tabs");
   const panelHost = containerEl.createDiv("gryphon-settings-panels");
 
-  const buttons = {};
-  const panelEls = {};
+  const buttons: Record<string, HTMLElement> = {};
+  const panelEls: Record<string, HTMLElement> = {};
 
   const applyActive = () => {
     for (const t of tabs) {
@@ -28,7 +48,7 @@ function renderTabbedSettings(containerEl, tabs, opts) {
     }
   };
 
-  const ctxFor = (t) => ({
+  const ctxFor = (t: SettingsTab): TabRenderContext => ({
     rerenderSelf: () => {
       panelEls[t.id].empty();
       t.render(panelEls[t.id], ctxFor(t));
@@ -42,7 +62,7 @@ function renderTabbedSettings(containerEl, tabs, opts) {
     },
   });
 
-  const activate = (id) => {
+  const activate = (id: string) => {
     if (!ids.includes(id)) return;
     activeId = id;
     applyActive();
@@ -62,4 +82,4 @@ function renderTabbedSettings(containerEl, tabs, opts) {
   return { activate };
 }
 
-module.exports = { renderTabbedSettings };
+export { renderTabbedSettings };

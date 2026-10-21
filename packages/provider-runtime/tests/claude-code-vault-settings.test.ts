@@ -42,8 +42,8 @@ const { ClaudeCodeProvider } = require("../src/providers/claude-code/claude-code
 const { HOOK_FILES } = require("../src/providers/claude-code/hook-settings-builder");
 const scopeMod = require("../src/providers/claude-code/scope");
 const { resolveClaudeCodeScope } = scopeMod;
-const mcpApprovals = require("@gryphon/protect").mcpApprovals;
-const { filterExtraArgs } = require("@gryphon/provider-config");
+const mcpApprovals = require("@polleoai/gryphon-protect").mcpApprovals;
+const { filterExtraArgs } = require("@polleoai/gryphon-provider-config");
 
 const NO_APPROVALS = { lookup: () => null };
 function approving(servers: Record<string, any>) {

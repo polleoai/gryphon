@@ -145,7 +145,7 @@
  * `cache_read_tokens`, and `thinking_tokens` is a new field gemini-cli's
  * `stats` shape doesn't have (folded into computeCost's existing
  * candidatesTokenCount mapping below rather than tracked separately,
- * since @gryphon/provider-config's google pricing table has no
+ * since @polleoai/gryphon-provider-config's google pricing table has no
  * thinking-token-specific rate).
  */
 
@@ -158,16 +158,107 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
-const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
-const {
-  computeCost,
-  coerceToAntigravityCliModel,
-  DEFAULT_MODEL,
-} = require("@gryphon/provider-config").pricing.google;
-const { registry } = require("@gryphon/provider-config");
-const { hookDispatcher: dispatcher } = require("@gryphon/protect");
-const { winSpawn } = require("@gryphon/protect");
+import type { ChildProcessByStdio } from "child_process";
+import type { Readable } from "stream";
+import { managedSpawn, killProcessTree } from "../../subprocess-registry";
+import { pricing, registry } from "@polleoai/gryphon-provider-config";
+import { hookDispatcher as dispatcher, winSpawn } from "@polleoai/gryphon-protect";
+import { launcherRefusalText } from "../../launcher-refusal-text";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+
+import { buildEnhancedPath, resolveCliBinary } from "../../utils";
+import { securityInputsOf } from "@polleoai/gryphon-protect";
+import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
+import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
+import { BudgetExceededError } from "../../budget-error";
+import { HeadlessHostAdapter } from "../../host-adapter";
+const { computeCost, coerceToAntigravityCliModel } = pricing.google;
+// The registry's default model id (typed loosely upstream).
+const DEFAULT_MODEL = pricing.google.DEFAULT_MODEL;
+
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+  notify(message: string, opts?: { level?: string; timeoutMs?: number }): void;
+}
+
+/** The slice of the host plugin this provider reads (also handed to the hook dispatcher). */
+type AgyHostPlugin = {
+  consumeTaintedSession?: (sessionId: string) => boolean;
+  consumeForceFreshSpawn?: (kind: string) => boolean;
+  [key: string]: unknown;
+};
+
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+
+interface AgyOptions {
+  model?: string | null;
+  effort?: string;
+  resumeSessionId?: string;
+  extraArgs?: string[];
+  antigravityTimeoutMs?: number;
+  plugin?: AgyHostPlugin | null;
+  security?: unknown;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride | null;
+  [key: string]: unknown;
+}
+
+/** Test-harness options-bag constructor form. */
+interface AgyBag {
+  antigravityPath?: string;
+  cwd?: string;
+  config?: { model?: string } | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride;
+}
+
+/** What the hook dispatcher hands back for one spawn. */
+interface HookExtras {
+  ok: boolean;
+  mode?: string;
+  degradationReason?: string;
+  env?: Record<string, string | undefined>;
+  args?: string[];
+  cleanup?: (() => void) | null;
+}
+
+/** `agy -p` spawns with stdio ["ignore", "pipe", "pipe"]. */
+type AgyProc = ChildProcessByStdio<null, Readable, Readable>;
+
+interface AgyUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_tokens?: number;
+}
+
+/** A `step_update` payload (only the fields read here). */
+interface AgyStepUpdate {
+  conversation_id?: unknown;
+  step_type?: string;
+  state?: string;
+  tool_name?: string;
+  text_delta?: unknown;
+  usage?: AgyUsage | null;
+}
+
+/** The terminal `result` payload (only the fields read here). */
+interface AgyResult {
+  conversation_id?: unknown;
+  status?: string;
+  error?: unknown;
+  usage?: AgyUsage | null;
+  response?: unknown;
+  duration_seconds?: unknown;
+}
+
+/** One `--output-format stream-json` stdout event. */
+interface AgyEvent {
+  event?: string;
+  conversation_id?: unknown;
+  step_update?: AgyStepUpdate | null;
+  result?: AgyResult | null;
+}
 
 // Default hard client-side timeout for a single `agy` turn. Antigravity's
 // documented sharp edge is a headless stdin hang with silent stdout/stderr
@@ -189,7 +280,7 @@ const SESSION_PREFIX = "antigravity-cli-";
 // Foreign provider prefixes — see codex-cli.ts for the rationale.
 const FOREIGN_PREFIX_RE = /^(sdk|openai-sdk|gemini-sdk|codex-cli|gemini-cli)-/;
 
-function _wrapSession(id: any) {
+function _wrapSession(id: unknown): string | null {
   if (!id) return null;
   if (typeof id !== "string") return null;
   if (FOREIGN_PREFIX_RE.test(id)) return null;
@@ -205,7 +296,7 @@ function _wrapSession(id: any) {
  */
 const FOREIGN_MODEL_RE = /^(claude[-.]|gpt[-.]|o[1-9][-.]?|anthropic[/.]|openai[/.])/i;
 
-function _unwrapSession(id: any) {
+function _unwrapSession(id: string | null): string | null {
   if (typeof id !== "string") return id;
   if (id.startsWith(SESSION_PREFIX)) return id.slice(SESSION_PREFIX.length);
   return id;
@@ -219,7 +310,7 @@ function _unwrapSession(id: any) {
  * without this scrub the model echoes the mechanism vocabulary back to the
  * user (see `feedback_public_release_wording`).
  */
-function _scrubInternalLeaks(text: any) {
+function _scrubInternalLeaks(text: string): string {
   if (typeof text !== "string" || !text) return text;
   let out = text;
   out = out.replace(
@@ -230,7 +321,7 @@ function _scrubInternalLeaks(text: any) {
     /\s*\((?:via|by|using|through)\s+[^)]*hook[^)]*\)/gi,
     "",
   );
-  const _stripTrailerIfSafe = (s: any) => {
+  const _stripTrailerIfSafe = (s: string) => {
     const m = s.match(/(?:^|\n)\s*Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -238,7 +329,7 @@ function _scrubInternalLeaks(text: any) {
     return s.slice(0, m.index);
   };
   out = _stripTrailerIfSafe(out);
-  const _stripInlineTrailerIfSafe = (s: any) => {
+  const _stripInlineTrailerIfSafe = (s: string) => {
     const m = s.match(/\.[ \t]+Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -253,9 +344,8 @@ function _scrubInternalLeaks(text: any) {
 }
 
 /** R44 D1: a user-facing cause; the raw reason is logged by the dispatcher. */
-const { launcherRefusalText } = require("../../launcher-refusal-text");
 
-function _plainAgyCause(reason: unknown): string {
+function _plainAgyCause(reason: string | undefined): string {
   const r = String(reason || "");
   const refusal = launcherRefusalText(r);
   if (refusal) return refusal.cause;
@@ -268,7 +358,7 @@ function _plainAgyCause(reason: unknown): string {
 }
 
 /** QA P2-1/P2-2: the fix that matches the cause. */
-function _agyFix(reason: unknown): string {
+function _agyFix(reason: string | undefined): string {
   const r = String(reason || "");
   const refusal = launcherRefusalText(r);
   if (refusal) return refusal.fix;
@@ -280,8 +370,34 @@ function _agyFix(reason: unknown): string {
 }
 
 class AntigravityCliProvider {
-  [key: string]: any;
-  constructor(antigravityPath: any, cwd: any, options: Record<string, any> = {}) {
+  declare antigravityPath: string;
+  declare cwd: string;
+  declare options: AgyOptions;
+  declare _spawnOverride: SpawnOverride | null;
+  declare hostAdapter: HostAdapterLike;
+  declare process: AgyProc | null;
+  declare alive: boolean;
+  declare sessionId: string | null;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare lastCumulativeCost: number;
+  declare _buffer: string;
+  declare _stderrTail: string;
+  declare _turnText: string;
+  declare _lastResult: AgyResult | null;
+  declare _currentResolve: ((result: Result) => void) | null;
+  declare _currentReject: ((reason?: unknown) => void) | null;
+  declare _watchdog: ReturnType<typeof setTimeout> | null;
+  declare onMessage: ((text: string, type: StreamMessageType) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: Result) => void) | null;
+  declare onSessionExpired: (() => void) | null;
+  declare _failed?: boolean;
+  declare _lastPrompt?: string;
+  declare _staleRecoveryFired?: boolean;
+  declare _hookCleanup?: (() => void) | null;
+
+  constructor(antigravityPath: string | AgyBag, cwd?: string, options: AgyOptions = {}) {
     // Test-harness options-bag form: AntigravityCliProvider({ config, hostAdapter,
     // _spawnOverride }) — no antigravityPath or cwd required. The _spawnOverride
     // function replaces the real CLI spawn for unit tests.
@@ -295,14 +411,16 @@ class AntigravityCliProvider {
         _spawnOverride: bag._spawnOverride,
       };
     }
-    this.antigravityPath = antigravityPath;
-    this.cwd = cwd;
+    // Bag form is resolved above; any other object here is passed through
+    // untouched, as before (the assertions only narrow the static type).
+    this.antigravityPath = antigravityPath as string;
+    this.cwd = cwd as string;
     this.options = options;
     // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
     this.process = null;
     this.alive = false;
     this.sessionId = _wrapSession(options.resumeSessionId) || null;
@@ -384,8 +502,8 @@ class AntigravityCliProvider {
    *    console.warn nobody reads while auto-approve stayed on. Refuse, so
    *    the next occurrence is visible instead of silent.
    */
-  _autoApproveDecision(hookExtras: any): { autoApprove: boolean; refuse: boolean; message: string } {
-    const plugin = this.options?.plugin as any;
+  _autoApproveDecision(hookExtras: HookExtras): { autoApprove: boolean; refuse: boolean; message: string } {
+    const plugin = this.options?.plugin;
     if (!plugin) {
       return { autoApprove: false, refuse: false, message: "" };
     }
@@ -396,7 +514,6 @@ class AntigravityCliProvider {
       return { autoApprove: true, refuse: false, message: "" };
     }
     // Issue #29: the spawn's security snapshot, never the vault's data.json.
-    const { securityInputsOf } = require("@gryphon/protect");
     if (securityInputsOf({ security: this.options?.security, plugin }).protectedMode === false) {
       // Protected Mode off still keeps the store guard. Run without it only
       // when Node.js is missing (nothing could restore it); a guard that
@@ -437,7 +554,7 @@ class AntigravityCliProvider {
    *   true for callers that predate the guardrail coupling; the spawn path
    *   passes it explicitly. See `_autoApproveDecision`.
    */
-  _buildArgs(prompt: any, autoApprove = true) {
+  _buildArgs(prompt: string, autoApprove = true) {
     // No documented per-call approval-mode flag exists for `agy` (unlike
     // gemini's `--approval-mode`). `--dangerously-skip-permissions`
     // (verified real flag name — `agy --help` has no `--yes`/`--no-color`
@@ -475,14 +592,13 @@ class AntigravityCliProvider {
     // with `--conversation <id>` continued the same conversation with
     // step_index picking up where the prior turn left off.
     if (this.sessionId) {
-      args.push("--conversation", _unwrapSession(this.sessionId));
+      args.push("--conversation", _unwrapSession(this.sessionId) as string); // sessionId checked just above
     }
 
     // Issue #39-style cross-provider flag filtering — same contract the
     // other three CLI providers use, so a multi-provider consumer can pass
     // a shared extraArgs without failing this spawn on another CLI's flags.
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      const { filterExtraArgs } = require("@gryphon/provider-config");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "antigravity-cli");
       if (dropped.length > 0) {
         console.error(
@@ -504,7 +620,7 @@ class AntigravityCliProvider {
     return { ...process.env, PATH: buildEnhancedPath() };
   }
 
-  send(prompt: any, options: any) {
+  send(prompt: string, options?: SendOptions): Promise<Result> {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -513,17 +629,12 @@ class AntigravityCliProvider {
     if (options && options.signal) {
       if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
       if (typeof options.signal.addEventListener === "function") {
-        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch { /* best-effort */ } }, { once: true });
       }
     }
     // L6.1 — structured-output retry budget for CLI providers. Identical
     // shape to GeminiCliProvider/CodexProvider.
     if (options && options.structuredOutput) {
-      const {
-        injectSchemaHint,
-        parseAndValidate,
-        CliStructuredOutputError,
-      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -531,8 +642,8 @@ class AntigravityCliProvider {
       const savedOnDone = this.onDone;
       this.onDone = null;
 
-      const loop = async () => {
-        let lastError = null;
+      const loop = async (): Promise<Result> => {
+        let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
         const priorCallCumulative = this.lastCumulativeCost;
         try {
           for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -541,14 +652,13 @@ class AntigravityCliProvider {
             if (options && typeof options.maxUsdBudget === "number") {
               const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
               if (cumCost === null) {
-                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
                   `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
                   { level: "warn" },
                 );
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -557,7 +667,8 @@ class AntigravityCliProvider {
               }
             }
             try {
-              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              // structuredOutput was checked truthy before the loop started.
+              const json = parseAndValidate(turnResult.text, (options.structuredOutput as NonNullable<SendOptions["structuredOutput"]>).schema);
               const result = { ...turnResult, json, text: JSON.stringify(json) };
               this.onDone = savedOnDone;
               if (this.onDone) this.onDone(result);
@@ -567,18 +678,18 @@ class AntigravityCliProvider {
               lastError = e;
               try {
                 this.hostAdapter.notify(
-                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${(e as any).reason}`,
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
                   { level: "warn" },
                 );
-              } catch (_) { /* notify must never block */ }
+              } catch { /* notify must never block */ }
             }
           }
           throw new CliStructuredOutputError(
-            `structured-output budget exhausted after ${maxRetries} attempts on antigravity-cli: ${lastError && (lastError as any).message}`,
+            `structured-output budget exhausted after ${maxRetries} attempts on antigravity-cli: ${lastError && lastError.message}`,
             {
               reason: "budget-exhausted",
               attempts: maxRetries,
-              lastOutput: lastError && (lastError as any).lastOutput,
+              lastOutput: lastError && lastError.lastOutput,
             },
           );
         } finally {
@@ -591,20 +702,19 @@ class AntigravityCliProvider {
     // Plain (non-structured-output) path.
     if (options && typeof options.maxUsdBudget === "number") {
       const priorCallCumulative = this.lastCumulativeCost;
-      return this._spawnTurn(prompt).then((result: any) => {
+      return this._spawnTurn(prompt).then((result: Result) => {
         if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
         const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
         if (cumCost === null) {
-          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
             `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
             { level: "warn" },
           );
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+        if (perCallSpent >= (options.maxUsdBudget as number)) {
           throw new BudgetExceededError({
-            budget: options.maxUsdBudget,
+            budget: options.maxUsdBudget as number, // checked as a number before .then
             spent: perCallSpent,
             lastTurnCost: result.cost || 0,
           });
@@ -622,7 +732,7 @@ class AntigravityCliProvider {
    * contextTokens}. When _spawnOverride is set (test-harness injection),
    * delegates directly to the override function.
    */
-  _spawnTurn(prompt: any) {
+  _spawnTurn(prompt: string): Promise<Result> {
     if (this._spawnOverride) {
       return this._spawnOverride(prompt);
     }
@@ -642,7 +752,7 @@ class AntigravityCliProvider {
       this.antigravityPath = resolved.path; // self-heal to the newest valid binary
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<Result>((resolve, reject) => {
       // Supersede an in-flight turn — same shape as CodexProvider/GeminiCliProvider.
       if (this.alive && this.process) {
         // The old process's close handler is skipped by its forThis() guard,
@@ -656,7 +766,7 @@ class AntigravityCliProvider {
         //     superseded turn, gating their own `agy` until the next
         //     plugin-load self-heal.
         this._clearWatchdog();
-        try { killProcessTree(this.process, "SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
         if (this._hookCleanup) {
           try { this._hookCleanup(); } catch (e) {
             console.warn(`[gryphon/antigravity-cli] hook cleanup on supersede failed: ${(e as Error).message}`);
@@ -698,7 +808,7 @@ class AntigravityCliProvider {
         kind: "antigravity-cli",
         plugin: this.options.plugin,
         options: this.options,
-      });
+      }) as HookExtras;
       this._hookCleanup = hookExtras.cleanup;
 
       const autoApprove = this._autoApproveDecision(hookExtras);
@@ -739,22 +849,24 @@ class AntigravityCliProvider {
         Object.assign(spawnOpts, wrapped.options);
       }
 
-      let proc;
+      let proc: AgyProc;
       try {
-        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "antigravity-cli" });
+        // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "antigravity-cli" }) as AgyProc;
       } catch (err) {
         if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
-        reject(err);
+        // spawn throws Errors; anything else is wrapped so callers always get one.
+        reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err) ?? "spawn failed"));
         return;
       }
       this.process = proc;
       this.alive = true;
 
       const forThis = () => this.process === proc;
-      proc.stdout.on("data", (data: any) => { if (forThis()) this._handleStdout(data); });
-      proc.stderr.on("data", (data: any) => { if (forThis()) this._handleStderr(data); });
-      proc.on("close", (code: any) => { if (forThis()) this._handleClose(code); });
-      proc.on("error", (err: any) => { if (forThis()) this._handleProcessError(err); });
+      proc.stdout.on("data", (data: Buffer) => { if (forThis()) this._handleStdout(data); });
+      proc.stderr.on("data", (data: Buffer) => { if (forThis()) this._handleStderr(data); });
+      proc.on("close", (code: number | null) => { if (forThis()) this._handleClose(code); });
+      proc.on("error", (err: Error) => { if (forThis()) this._handleProcessError(err); });
 
       // Hard client-side timeout (issue #19 — "no silent hang to the
       // connection timeout"). Antigravity's documented sharp edge is a
@@ -773,11 +885,11 @@ class AntigravityCliProvider {
           "(tracked: https://github.com/google-antigravity/antigravity-cli/issues/7). " +
           "Try again, or switch Provider in Settings → Gryphon."
         );
-        try { killProcessTree(proc, "SIGTERM"); } catch {}
-        setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+        try { killProcessTree(proc, "SIGTERM"); } catch { /* best-effort */ }
+        setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* best-effort */ } }, 5000);
         this.process = null;
         this.alive = false;
-        if (this._hookCleanup) { try { this._hookCleanup(); } catch {} this._hookCleanup = null; }
+        if (this._hookCleanup) { try { this._hookCleanup(); } catch { /* best-effort */ } this._hookCleanup = null; }
         const rej = this._currentReject;
         this._currentResolve = null;
         this._currentReject = null;
@@ -789,19 +901,19 @@ class AntigravityCliProvider {
 
   _clearWatchdog() {
     if (this._watchdog) {
-      try { clearTimeoutFn(this._watchdog); } catch {}
+      try { clearTimeoutFn(this._watchdog); } catch { /* best-effort */ }
       this._watchdog = null;
     }
   }
 
-  _handleStdout(data: any) {
+  _handleStdout(data: Buffer | string) {
     this._buffer += data.toString();
     const lines = this._buffer.split("\n");
     this._buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(line) as AgyEvent | null;
         this._processEvent(parsed);
       } catch (e) {
         if (!(e instanceof SyntaxError)) {
@@ -811,7 +923,7 @@ class AntigravityCliProvider {
     }
   }
 
-  _processEvent(raw: any) {
+  _processEvent(raw: AgyEvent | null) {
     if (!raw || typeof raw !== "object") return;
 
     // Real wire shape (verified live against agy v1.1.8 — see header):
@@ -911,7 +1023,7 @@ class AntigravityCliProvider {
     }
   }
 
-  _handleStderr(data: any) {
+  _handleStderr(data: Buffer | string) {
     const text = data.toString();
     if (!text) return;
     this._stderrTail = (this._stderrTail + text).slice(-4096);
@@ -935,7 +1047,7 @@ class AntigravityCliProvider {
     }
   }
 
-  _handleClose(code: any) {
+  _handleClose(code: number | null) {
     this._clearWatchdog();
     this.alive = false;
     this.process = null;
@@ -954,7 +1066,8 @@ class AntigravityCliProvider {
     }
 
     const resolve = this._currentResolve;
-    const reject = this._currentReject;
+    // Set together with resolve; the `!resolve` return below covers both.
+    const reject = this._currentReject as (reason?: unknown) => void;
     this._currentResolve = null;
     this._currentReject = null;
     if (!resolve) return;
@@ -966,7 +1079,7 @@ class AntigravityCliProvider {
       // verified: `cached` → `cache_read_tokens`; `thinking_tokens` is a
       // new field with no dedicated slot in computeCost's pricing table,
       // so it isn't separately forwarded (see header note).
-      const usage = lastResult.usage || {};
+      const usage: AgyUsage = lastResult.usage || {};
       const mappedUsage = {
         promptTokenCount: usage.input_tokens || 0,
         candidatesTokenCount: usage.output_tokens || 0,
@@ -982,7 +1095,7 @@ class AntigravityCliProvider {
       // text only if the result event somehow omitted it.
       const text = typeof lastResult.response === "string" ? lastResult.response : (this._turnText || "");
 
-      const result = {
+      const result: Result = {
         text,
         cost,
         cumulativeCost: this.lastCumulativeCost,
@@ -1007,7 +1120,7 @@ class AntigravityCliProvider {
       : null;
     const tail = stderr
       .split(/\r?\n/)
-      .map((l: any) => l.trim())
+      .map((l) => l.trim())
       .filter(Boolean)
       .slice(-6)
       .join("\n");
@@ -1026,12 +1139,12 @@ class AntigravityCliProvider {
     reject(new Error(header + details + hint));
   }
 
-  _handleProcessError(err: any) {
+  _handleProcessError(err: Error) {
     this._clearWatchdog();
     this.alive = false;
     this.process = null;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;
@@ -1044,13 +1157,13 @@ class AntigravityCliProvider {
     this._clearWatchdog();
     if (this.process) {
       const proc = this.process;
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
-      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* best-effort */ }
+      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* best-effort */ } }, 5000);
       this.process = null;
     }
     this.alive = false;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;

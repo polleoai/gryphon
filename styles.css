@@ -1331,3 +1331,13 @@
 .gryphon-credentials-summary:hover {
   color: var(--text-normal);
 }
+
+/* Obsidian 1.13+ renders the settings tab from getSettingDefinitions(); one
+   render item hosts Gryphon's tabbed settings UI. Lay it out as a plain block
+   (the row's own flex layout is for name + control pairs). */
+.gryphon-settings-host {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: none;
+}

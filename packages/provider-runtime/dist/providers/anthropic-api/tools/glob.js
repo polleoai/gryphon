@@ -10,14 +10,47 @@
  * For complex patterns we'd want picomatch, but the common cases
  * (`**\/*.md`, `src/**\/*.js`, `*.{ts,tsx}`) are well covered here.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SCHEMA = void 0;
 exports.execute = execute;
 exports._globToRegex = _globToRegex;
 exports._expandBraces = _expandBraces;
-const fs = require("fs");
-const path = require("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
 const SCHEMA = {
     name: "Glob",
     description: "Fast file pattern matching that works with any codebase size. " +
@@ -48,11 +81,11 @@ async function execute(input, ctx) {
     let searchRoot;
     try {
         searchRoot = input.path
-            ? resolveVaultPath(input.path, ctx.vaultRoot)
+            ? (0, gryphon_protect_1.resolveVaultPath)(input.path, ctx.vaultRoot)
             : ctx.vaultRoot;
     }
     catch (e) {
-        if (e instanceof PathOutsideVaultError) {
+        if (e instanceof gryphon_protect_1.PathOutsideVaultError) {
             return _error(`Search path is outside the vault: ${input.path}`);
         }
         return _error(String(e.message || e));
@@ -100,7 +133,7 @@ async function execute(input, ctx) {
         try {
             mtime = fs.statSync(p).mtimeMs;
         }
-        catch { }
+        catch { /* vanished/unreadable — sort as oldest */ }
         return { path: p, mtime };
     });
     withMtime.sort((a, b) => b.mtime - a.mtime);

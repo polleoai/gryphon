@@ -11,7 +11,7 @@
 // DEFAULT_SETTINGS is constructed. The duplicate declaration near the
 // bottom of this file was moved here — underscore-prefixed to mark it
 // module-private (avoids visual collision with the many public exports).
-const _registry = require("@gryphon/provider-config").registry;
+import { registry as _registry } from "@polleoai/gryphon-provider-config";
 
 // Tool names → user-friendly status messages
 const TOOL_STATUS_CORE = {
@@ -987,7 +987,7 @@ const DEFAULT_SETTINGS = {
 };
 
 // v2.2: derive Anthropic-family tables from the canonical registry in
-// @gryphon/provider-config. Adding a new Anthropic model is now a one-
+// @polleoai/gryphon-provider-config. Adding a new Anthropic model is now a one-
 // place edit in registry.js — these tables regenerate at module load.
 //
 // Migration map (MODEL_ALIAS_MIGRATION) handles users whose persisted
@@ -1024,7 +1024,7 @@ const PERMS = [
 ];
 
 const MODEL_CONTEXT = (() => {
-  const out = {};
+  const out: Record<string, number> = {};
   for (const m of _registry.modelsByVendor("anthropic")) {
     if (m.contextTokens) out[m.id] = m.contextTokens;
   }
@@ -1043,7 +1043,7 @@ const MODEL_CONTEXT = (() => {
 // stateless HTTPS calls without a comparable cold-start cost, so they
 // fall through to DEFAULT_COLD_START_BUDGET_MS.
 const COLD_START_BUDGET_MS = (() => {
-  const out = {};
+  const out: Record<string, number> = {};
   for (const m of _registry.modelsByVendor("anthropic")) {
     if (m.coldStartMs) out[m.id] = m.coldStartMs;
   }
@@ -1069,7 +1069,7 @@ const MAX_COLD_START_BUDGET_MS = 600_000;
  * @param {string} args.model                     settings.model identifier
  * @returns {number}                              budget in ms
  */
-function resolveConnectionTimeoutMs({ override, model }) {
+function resolveConnectionTimeoutMs({ override, model }: { override?: unknown; model?: string }): number {
   if (typeof override === "number"
       && Number.isFinite(override)
       && override >= MIN_COLD_START_BUDGET_MS
@@ -1196,7 +1196,7 @@ const FALLBACK_PROVIDER_PREFS = [
  * @param prefs    PROVIDER_PREFS or FALLBACK_PROVIDER_PREFS
  * @param current  the currently persisted preference
  */
-function visibleProviderPrefs(prefs: any[], current: string | null | undefined) {
+function visibleProviderPrefs<T extends { value: string; deprecated?: boolean }>(prefs: T[], current: string | null | undefined): T[] {
   return prefs.filter((p) => !p.deprecated || p.value === current);
 }
 
@@ -1218,7 +1218,7 @@ const PROTECTED_CATEGORIES = {
   "user-custom":           "⚠ Matches a pattern you added",
 };
 
-module.exports = {
+export {
   TOOL_STATUS_CORE, DEFAULT_SETTINGS, DEFAULT_PROVIDER_PREFERENCE,
   DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS,
   PROTECTED_CATEGORIES,

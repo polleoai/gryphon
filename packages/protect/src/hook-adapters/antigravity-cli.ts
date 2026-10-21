@@ -44,17 +44,20 @@
  * user's config to fix our own merge is worse than degrading hooks.
  */
 
-const path = require("path") as typeof import("path");
-const fs = require("fs") as typeof import("fs");
-const os = require("os") as typeof import("os");
-const crypto = require("crypto") as typeof import("crypto");
-const {
-  DEFAULT_HOOK_TIMEOUTS,
-  HOOK_FILES,
-} = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
+import * as path from "path";
+import * as fs from "fs";
+import * as os from "os";
+import * as crypto from "crypto";
+import { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES } from "@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder";
 
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
-const { sameFileAs } = require("../path-identity");
+import { storeGuardCommand, STORE_GUARD_TIMEOUT_S } from "./store-guard-command";
+import { sameFileAs } from "../path-identity";
+import { spawnSync } from "child_process";
+
+// The part of our installed hooks.json entry that names the hook command.
+type InstalledHookEntry = {
+  PreToolUse?: Array<{ hooks?: Array<{ command?: unknown }> }>;
+} | null | undefined;
 
 const KIND = "antigravity-cli";
 
@@ -224,7 +227,6 @@ function _winShimPath(ipcSocketPath: string, baseDir?: string): string | null {
  */
 function _shortPathOf(dir: string): string | null {
   try {
-    const { spawnSync } = require("child_process") as typeof import("child_process");
     // windowsVerbatimArguments: the argument contains quotes, and default
     // escaping would render them as \" — which cmd reads literally. That is
     // the exact defect this whole shim exists to work around, so it must not
@@ -458,7 +460,7 @@ function _buildHookEntry(
  */
 function _socketOf(entry: unknown): string | null {
   try {
-    const cmd = (entry as any)?.PreToolUse?.[0]?.hooks?.[0]?.command;
+    const cmd = (entry as InstalledHookEntry)?.PreToolUse?.[0]?.hooks?.[0]?.command;
     if (typeof cmd !== "string") return null;
     const m = cmd.match(/GRYPHON_PERMISSION_SOCKET=(?:'((?:[^']|'\\'')*)'|"([^"]*)")/);
     if (m) return (m[1] !== undefined ? m[1].replace(/'\\''/g, "'") : m[2]) || null;
@@ -499,8 +501,8 @@ function _readHooks(file: string): Record<string, unknown> | null {
     return null;  // absent
   }
   try {
-    const json = JSON.parse(raw);
-    return (json && typeof json === "object" && !Array.isArray(json)) ? json : null;
+    const json: unknown = JSON.parse(raw);
+    return (json && typeof json === "object" && !Array.isArray(json)) ? json as Record<string, unknown> : null;
   } catch (e) {
     console.warn(
       `[gryphon/antigravity-hooks] ${file} is not valid JSON — leaving it untouched ` +
@@ -582,7 +584,7 @@ function _uninstallFrom(file: string, ownedSocket?: string, key: string = HOOK_K
   }
   // Remove the shim too, before dropping the key that names it — otherwise
   // every spawn leaves a .cmd behind in LOCALAPPDATA forever.
-  const shim = (json[key] as any)?.PreToolUse?.[0]?.hooks?.[0]?.command;
+  const shim = (json[key] as InstalledHookEntry)?.PreToolUse?.[0]?.hooks?.[0]?.command;
   if (typeof shim === "string" && /\.cmd$/i.test(shim)) {
     try { fs.unlinkSync(shim); } catch { /* already gone, or never ours */ }
   }
@@ -670,7 +672,7 @@ function buildSpawnExtras(
   // refuse to build a command for -- in every one of those cases there is no
   // guardrail, and the caller has to know that before it decides whether to
   // pass --dangerously-skip-permissions.
-  if (!_installInto(file, { pluginDir: pluginDir as string, nodePath, ipcSocketPath })) return null;
+  if (!_installInto(file, { pluginDir, nodePath, ipcSocketPath })) return null;
 
   let cleaned = false;
   const cleanup = () => {
@@ -696,8 +698,8 @@ function buildSpawnExtras(
   };
 }
 
-module.exports = {
-  kind: KIND,
+export {
+  KIND as kind,
   buildSpawnExtras,
   hooksFilePath,
   stripStaleHooks,

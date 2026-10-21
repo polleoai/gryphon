@@ -134,7 +134,7 @@ function shouldFrame(tool: string): boolean {
   }
 }
 
-module.exports = {
+export {
   buildFraming,
   shouldFrame,
   TOOL_LABELS,

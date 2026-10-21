@@ -25,19 +25,20 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_ITERATIONS = void 0;
 exports.runGeminiToolLoop = runGeminiToolLoop;
 exports.serializeToolResultAsGeminiResponse = serializeToolResultAsGeminiResponse;
-const { translateSchemasToGemini } = require("./tool-schema-translator");
-const { getActiveTools, executeTool, } = require("../anthropic-api/tools/tool-registry");
+const tool_schema_translator_1 = require("./tool-schema-translator");
+const tool_registry_1 = require("../anthropic-api/tools/tool-registry");
+const budget_error_1 = require("../../budget-error");
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
 async function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }) {
-    const anthropicSchemas = getActiveTools({
+    const anthropicSchemas = (0, tool_registry_1.getActiveTools)({
         allowWrite: true,
         allowWeb: true,
         allowBash: true,
     }).map((t) => t.SCHEMA);
     // Gemini wants a single tools[] entry containing all functionDeclarations.
     const toolsConfig = anthropicSchemas.length > 0
-        ? [translateSchemasToGemini(anthropicSchemas)]
+        ? [(0, tool_schema_translator_1.translateSchemasToGemini)(anthropicSchemas)]
         : undefined;
     // Aggregate token usage across iterations. Gemini's GenerateContentResponse
     // uses promptTokenCount / candidatesTokenCount; cachedContentTokenCount
@@ -156,7 +157,7 @@ async function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, ca
                     try {
                         ctx.hostAdapter.notify(`[gryphon] iteration cost unmeasurable: ${e.message}`, { level: "warn" });
                     }
-                    catch (_) { /* notify must not block */ }
+                    catch { /* notify must not block */ }
                 }
             }
             if (!ctx._loopCost)
@@ -164,8 +165,7 @@ async function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, ca
             ctx._loopCost += iterCost;
             const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
             if (callCumulative >= ctx.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
-                throw new BudgetExceededError({
+                throw new budget_error_1.BudgetExceededError({
                     budget: ctx.maxUsdBudget,
                     spent: callCumulative,
                     lastTurnCost: iterCost,
@@ -217,12 +217,12 @@ async function runGeminiToolLoop({ client, model, systemPrompt, history, ctx, ca
             const callId = call.id; // optional per Gemini contract; preserve when present
             if (callbacks.onTool)
                 callbacks.onTool(name);
-            const result = await executeTool(name, input, ctx);
+            const result = await (0, tool_registry_1.executeTool)(name, input, ctx);
             const responseObj = serializeToolResultAsGeminiResponse(result);
-            const part = { functionResponse: { name, response: responseObj } };
+            const functionResponse = { name, response: responseObj };
             if (callId)
-                part.functionResponse.id = callId;
-            responseParts.push(part);
+                functionResponse.id = callId;
+            responseParts.push({ functionResponse });
         }
         // Tool results land as a single user-role Content with all
         // functionResponse parts — Gemini's expected shape for the next turn.

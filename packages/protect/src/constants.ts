@@ -843,7 +843,7 @@ const PROTECTED_CATEGORIES = {
   "user-custom":           "⚠ Matches a pattern you added",
 };
 
-module.exports = {
+export {
   DEFAULT_PROTECTED_PATHS,
   DEFAULT_PROTECTED_COMMANDS,
   PROTECTED_CATEGORIES,

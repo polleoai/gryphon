@@ -3,7 +3,7 @@
  * check. It needs no hooks: hash security-settings.json at turn start,
  * re-read at turn end, and revert any entry that got WEAKER unless the new
  * content was written by Gryphon's own store writer (the renderer-global
- * ledger, shared by every bundled copy of @gryphon/protect in the window).
+ * ledger, shared by every bundled copy of @polleoai/gryphon-protect in the window).
  *
  * Item: A5 (+ the A10 "embedded settings toggle mid-turn isn't reverted" half).
  */
@@ -97,7 +97,7 @@ test("#30 A5: Gryphon's toggle survives an agent write that lands after it", () 
   assert.equal("permissionMode" in vals, false);
 });
 
-test("#30 A10/A5: a write from ANOTHER bundled copy of @gryphon/protect (an embedder's) is recognised", () => {
+test("#30 A10/A5: a write from ANOTHER bundled copy of @polleoai/gryphon-protect (an embedder's) is recognised", () => {
   const { file, scope } = fresh();
   store.setMachineSecuritySetting({ ...scope, hostId: "embedder" }, "protectedMode", true);
   const before = store.snapshotSecurityStore();

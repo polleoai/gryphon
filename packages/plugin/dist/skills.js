@@ -12,15 +12,54 @@
  *
  * See docs/gryphon-skills-design.md for the full design and file format.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-const fs = require("fs");
-const path = require("path");
-const { TFile, Notice } = require("obsidian");
-const { SLASH_COMMANDS, RESERVED_SKILL_NAMES } = require("./constants");
-const BUNDLED_SKILLS = require("./bundled-skills");
-const BUNDLED_DOCS = require("./bundled-docs");
+exports.SKILLS_DIR = exports.SkillRegistry = void 0;
+exports.parseSkillFile = parseSkillFile;
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const obsidian_1 = require("obsidian");
+const constants_1 = require("./constants");
+const bundled_skills_1 = __importDefault(require("./bundled-skills"));
+const bundled_docs_1 = __importDefault(require("./bundled-docs"));
 const GRYPHON_DIR = "Gryphon";
 const SKILLS_DIR = "Gryphon/Skills";
+exports.SKILLS_DIR = SKILLS_DIR;
 const FRONTMATTER_RE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 // Skill names become slash commands like "/<name>", so they must follow
 // the same lexical rules: lowercase letters, digits, and hyphens; no
@@ -113,7 +152,7 @@ class SkillRegistry {
             takesArgs: !!s.argumentHint,
             isSkill: true,
         }));
-        return [...SLASH_COMMANDS, ...skillEntries]
+        return [...constants_1.SLASH_COMMANDS, ...skillEntries]
             .sort((a, b) => a.cmd.localeCompare(b.cmd));
     }
     expand(name, args) {
@@ -130,7 +169,7 @@ class SkillRegistry {
         if (!(await adapter.exists(GRYPHON_DIR))) {
             await this.app.vault.createFolder(GRYPHON_DIR);
         }
-        for (const [filename, content] of Object.entries(BUNDLED_DOCS)) {
+        for (const [filename, content] of Object.entries(bundled_docs_1.default)) {
             const p = `${GRYPHON_DIR}/${filename}`;
             if (!(await adapter.exists(p))) {
                 await this.app.vault.create(p, content);
@@ -140,7 +179,7 @@ class SkillRegistry {
         if (!(await adapter.exists(SKILLS_DIR))) {
             await this.app.vault.createFolder(SKILLS_DIR);
         }
-        for (const [filename, content] of Object.entries(BUNDLED_SKILLS)) {
+        for (const [filename, content] of Object.entries(bundled_skills_1.default)) {
             const p = `${SKILLS_DIR}/${filename}`;
             if (!(await adapter.exists(p))) {
                 await this.app.vault.create(p, content);
@@ -159,7 +198,7 @@ class SkillRegistry {
             const hasNew = await adapter.exists(GRYPHON_DIR);
             if (hasLegacy && !hasNew) {
                 await adapter.rename("Hermes", GRYPHON_DIR);
-                new Notice(`Renamed vault folder 'Hermes' → '${GRYPHON_DIR}'.`);
+                new obsidian_1.Notice(`Renamed vault folder 'Hermes' → '${GRYPHON_DIR}'.`);
             }
         }
         catch (err) {
@@ -172,7 +211,7 @@ class SkillRegistry {
         if (!folder || !folder.children)
             return;
         for (const child of folder.children) {
-            if (child instanceof TFile && child.extension === "md" &&
+            if (child instanceof obsidian_1.TFile && child.extension === "md" &&
                 child.name !== "README.md") {
                 await this._loadFile(child);
             }
@@ -197,7 +236,8 @@ class SkillRegistry {
         // contents as a slash-command body (prompt-injection vector). Also
         // reject broken symlinks. Skipped on mobile/unusual adapters where
         // basePath isn't exposed.
-        const basePath = this.app.vault?.adapter?.basePath;
+        const adapter = this.app.vault?.adapter;
+        const basePath = adapter?.basePath;
         if (typeof basePath === "string" && basePath.length > 0) {
             try {
                 const absPath = path.join(basePath, file.path);
@@ -248,7 +288,7 @@ class SkillRegistry {
                 "or underscores). Example: 'tag-suggest'.");
             return;
         }
-        if (RESERVED_SKILL_NAMES.has(name)) {
+        if (constants_1.RESERVED_SKILL_NAMES.has(name)) {
             this._recordError(file.path, `Name '${name}' is reserved by a built-in Gryphon command. ` +
                 "Pick a different name to avoid the collision.");
             return;
@@ -284,12 +324,12 @@ class SkillRegistry {
     _attachWatchers() {
         const vault = this.app.vault;
         const onCreate = vault.on("create", (file) => {
-            if (file instanceof TFile && this._isSkillFile(file.path)) {
-                this._loadFile(file);
+            if (file instanceof obsidian_1.TFile && this._isSkillFile(file.path)) {
+                void this._loadFile(file);
             }
         });
         const onModify = vault.on("modify", async (file) => {
-            if (file instanceof TFile && this._isSkillFile(file.path)) {
+            if (file instanceof obsidian_1.TFile && this._isSkillFile(file.path)) {
                 this._removeByPath(file.path);
                 await this._loadFile(file);
             }
@@ -301,11 +341,11 @@ class SkillRegistry {
         const onRename = vault.on("rename", async (file, oldPath) => {
             if (this._isSkillFile(oldPath))
                 this._removeByPath(oldPath);
-            if (file instanceof TFile && this._isSkillFile(file.path)) {
+            if (file instanceof obsidian_1.TFile && this._isSkillFile(file.path)) {
                 await this._loadFile(file);
             }
         });
         this.eventRefs.push(onCreate, onModify, onDelete, onRename);
     }
 }
-module.exports = { SkillRegistry, parseSkillFile, SKILLS_DIR };
+exports.SkillRegistry = SkillRegistry;

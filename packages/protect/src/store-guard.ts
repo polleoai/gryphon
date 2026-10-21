@@ -3,7 +3,7 @@
 /**
  * Store-guard script materialization (issue #30, G2).
  *
- * The store-guard hook ships as a string inside @gryphon/protect
+ * The store-guard hook ships as a string inside @polleoai/gryphon-protect
  * (generated/store-guard-bundle.ts), so a host that installs only `main.js`
  * still has it. Before each spawn that uses it, it's written to
  *
@@ -19,10 +19,11 @@
  * copy and a standalone install) keep their own scripts side by side.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const crypto = require("crypto") as typeof import("crypto");
-const { approvalsDir } = require("./mcp-approvals");
+import * as fs from "fs";
+import * as path from "path";
+import * as crypto from "crypto";
+import { approvalsDir } from "./mcp-approvals";
+import * as storeGuardBundle from "./generated/store-guard-bundle";
 
 type Bundle = { source: string; sha256: string };
 type Ensured = { ok: true; path: string; sha256: string } | { ok: false; reason: string };
@@ -43,7 +44,7 @@ function _verified(file: string, sha256: string): boolean {
   try {
     if (!fs.lstatSync(file).isFile()) return false;
     return _sha(fs.readFileSync(file, "utf8")) === sha256;
-  } catch (_) {
+  } catch {
     return false;
   }
 }
@@ -63,12 +64,12 @@ const MAX_KEPT = 20;
 
 function sweepStoreGuardScripts(keep: string, dir: string = storeGuardDir(), now: number = Date.now()): void {
   let names: string[];
-  try { names = fs.readdirSync(dir); } catch (_) { return; }
+  try { names = fs.readdirSync(dir); } catch { return; }
   const others: Array<{ p: string; mtime: number }> = [];
   for (const name of names) {
     if (!SCRIPT_RE.test(name) || name === path.basename(keep)) continue;
     const p = path.join(dir, name);
-    try { others.push({ p, mtime: fs.statSync(p).mtimeMs }); } catch (_) { /* gone */ }
+    try { others.push({ p, mtime: fs.statSync(p).mtimeMs }); } catch { /* gone */ }
   }
   if (others.length + 1 <= MAX_KEPT) return;
   others.sort((a, b) => a.mtime - b.mtime);
@@ -88,7 +89,7 @@ function sweepStoreGuardScripts(keep: string, dir: string = storeGuardDir(), now
  * hook and must say so.
  */
 function ensureStoreGuardScript(opts: { bundle?: Bundle; dir?: string } = {}): Ensured {
-  const bundle: Bundle = opts.bundle || require("./generated/store-guard-bundle");
+  const bundle: Bundle = opts.bundle || storeGuardBundle;
   if (!bundle || typeof bundle.source !== "string" || !/^[0-9a-f]{64}$/.test(bundle.sha256)) {
     return { ok: false, reason: "the embedded store-guard script is missing" };
   }
@@ -98,14 +99,14 @@ function ensureStoreGuardScript(opts: { bundle?: Bundle; dir?: string } = {}): E
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       if (process.platform !== "win32") {
-        try { fs.chmodSync(path.dirname(dir), 0o700); fs.chmodSync(dir, 0o700); } catch (_) { /* best effort */ }
+        try { fs.chmodSync(path.dirname(dir), 0o700); fs.chmodSync(dir, 0o700); } catch { /* best effort */ }
       }
       const tmp = path.join(dir, `.store-guard.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
       fs.writeFileSync(tmp, bundle.source, { mode: 0o600, flag: "wx" });
       try {
         fs.renameSync(tmp, target);
       } catch (e) {
-        try { fs.unlinkSync(tmp); } catch (_) { /* already gone */ }
+        try { fs.unlinkSync(tmp); } catch { /* already gone */ }
         throw e;
       }
     } catch (e) {
@@ -118,7 +119,7 @@ function ensureStoreGuardScript(opts: { bundle?: Bundle; dir?: string } = {}): E
   // R43-9: mtime means "last used", so another Gryphon copy's 30-day sweep
   // never deletes a script this copy relies on (a missing script makes the
   // CLI treat the hook as a non-blocking failure: the guard is off).
-  try { const t = new Date(); fs.utimesSync(target, t, t); } catch (_) { /* best effort */ }
+  try { const t = new Date(); fs.utimesSync(target, t, t); } catch { /* best effort */ }
   if (!_swept) {
     _swept = true;
     sweepStoreGuardScripts(target, dir);
@@ -126,7 +127,7 @@ function ensureStoreGuardScript(opts: { bundle?: Bundle; dir?: string } = {}): E
   return { ok: true, path: target, sha256: bundle.sha256 };
 }
 
-module.exports = {
+export {
   ensureStoreGuardScript,
   sweepStoreGuardScripts,
   storeGuardDir,

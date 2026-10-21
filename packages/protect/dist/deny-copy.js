@@ -1,6 +1,10 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.CANONICAL_OPENING = void 0;
+exports.describeOperation = describeOperation;
+exports.settingsPathForKind = settingsPathForKind;
+exports.buildDenyReason = buildDenyReason;
 /**
  * Single source of truth for the canonical Gryphon protected-deny
  * copy that gets shown to users.
@@ -77,6 +81,7 @@ function describeOperation(action, target) {
  * itself is English-only); never reworded mid-version.
  */
 const CANONICAL_OPENING = "The Gryphon plugin is blocking the ";
+exports.CANONICAL_OPENING = CANONICAL_OPENING;
 /**
  * Settings sub-page name based on the kind of operation. The exec
  * verbs (Bash / PowerShell / shell) live under "Protected
@@ -109,9 +114,3 @@ function buildDenyReason({ action, target, category, kind }) {
         `- Uncheck the matching pattern\n` +
         `- Ask me again`);
 }
-module.exports = {
-    CANONICAL_OPENING,
-    describeOperation,
-    settingsPathForKind,
-    buildDenyReason,
-};

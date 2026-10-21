@@ -1,10 +1,14 @@
 {
-  "name": "@gryphon/provider-config",
-  "version": "2.4.2",
+  "name": "@polleoai/gryphon-provider-config",
+  "version": "2.12.0",
   "description": "Provider configuration for Gryphon: model catalogs, pricing tables, dropdown options, per-vendor extra-args filter. Pure data + selection layer (cc-switch lesson). No spawning, no streaming, no UI.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polleoai/gryphon"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -27,7 +31,8 @@
       "types": "./dist/pricing/anthropic.d.ts",
       "require": "./dist/pricing/anthropic.js",
       "default": "./dist/pricing/anthropic.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/",
@@ -36,6 +41,7 @@
   ],
   "scripts": {
     "build:dist": "tsc -p tsconfig.build.json",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/*.test.ts",
+    "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')){console.error('prepack: dist/index.js missing - run npm run prebuild at the repo root first');process.exit(1)}fs.copyFileSync('../../LICENSE','LICENSE')\""
   }
 }

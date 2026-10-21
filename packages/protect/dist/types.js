@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Shared domain types for @gryphon/protect.
+ * Shared domain types for @polleoai/gryphon-protect.
  *
  * G1 — The `ProtectCategory` union is the discriminant for `ClassifyVerdict`.
  *       Adding a new category must fail to compile until every switch

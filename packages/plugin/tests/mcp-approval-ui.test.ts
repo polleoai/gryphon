@@ -24,7 +24,7 @@ const cfg = fs.mkdtempSync(path.join(os.tmpdir(), "g25-ui-cfg-"));
 if (process.platform === "win32") process.env.APPDATA = cfg; else process.env.XDG_CONFIG_HOME = cfg;
 
 const obsidian = require("obsidian");
-const { mcpApprovals } = require("@gryphon/protect");
+const { mcpApprovals } = require("@polleoai/gryphon-protect");
 const ui = require("../src/mcp-approval-ui");
 const { GryphonChatView } = require("../src/chat-view");
 const { ObsidianHostAdapter } = require("../src/obsidian-host-adapter");

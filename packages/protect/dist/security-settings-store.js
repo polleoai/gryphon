@@ -1,6 +1,64 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.SecurityScopeUnavailableError = exports.SECURITY_DEFAULTS = exports.CliPathRejectedError = exports.CLI_PATH_KEY_BY_KIND = exports.EXECUTABLE_KEYS = exports.WEAKENING_KEYS = void 0;
+exports.isExecutableKey = isExecutableKey;
+exports.validateCliPath = validateCliPath;
+exports.setMachineCliPath = setMachineCliPath;
+exports.sanitizeCliPathOverrides = sanitizeCliPathOverrides;
+exports.resolveCliPath = resolveCliPath;
+exports.snapshotSecurityStore = snapshotSecurityStore;
+exports.checkSecurityStoreTamper = checkSecurityStoreTamper;
+exports.onSecurityStoreTamper = onSecurityStoreTamper;
+exports.isWeakeningKey = isWeakeningKey;
+exports.isWeakening = isWeakening;
+exports.validateSecurityValue = validateSecurityValue;
+exports.hashValue = hashValue;
+exports.securitySettingsFilePath = securitySettingsFilePath;
+exports.describeSecurityScope = describeSecurityScope;
+exports.resolveSecurityScope = resolveSecurityScope;
+exports.scopeKey = scopeKey;
+exports.onSecurityStoreError = onSecurityStoreError;
+exports.readMachineSecuritySettings = readMachineSecuritySettings;
+exports.setMachineSecuritySetting = setMachineSecuritySetting;
+exports.dismissVaultSecuritySuggestion = dismissVaultSecuritySuggestion;
+exports.sanitizeSecurityOverrides = sanitizeSecurityOverrides;
+exports.effectiveSecuritySettings = effectiveSecuritySettings;
+exports.securityValuesOf = securityValuesOf;
+exports.securityInputsOf = securityInputsOf;
 /**
  * Machine-local security settings (issue #29, Design rev 3).
  *
@@ -47,14 +105,19 @@ Object.defineProperty(exports, "__esModule", { value: true });
  *     view's turn-end tamper check can tell Gryphon's own writes from an
  *     agent's and revert only the latter's weakening changes.
  */
-const fs = require("fs");
-const { isWithinByIdentity } = require("./path-identity");
-const { readRegularFile, clearNonFile } = require("./safe-read");
-const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
-const mcpApprovals = require("./mcp-approvals");
-const { DEFAULT_PROTECTED_PATHS, DEFAULT_PROTECTED_COMMANDS } = require("./constants");
+// Tests that replace this module's functions in place (e.g.
+// checkSecurityStoreTamper) patch the tsc-built dist, whose exports stay
+// writable; callers reach the store through its module object so the stubs
+// take effect. Never add `module.exports` here (see no-mixed-module-syntax).
+const fs = __importStar(require("fs"));
+const path_identity_1 = require("./path-identity");
+const safe_read_1 = require("./safe-read");
+const path = __importStar(require("path"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
+const mcpApprovals = __importStar(require("./mcp-approvals"));
+const constants_1 = require("./constants");
+const runtimeUtils = __importStar(require("@polleoai/gryphon-provider-runtime/utils"));
 const STORE_VERSION = 1;
 const FILE_NAME = "security-settings.json";
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -71,6 +134,7 @@ const WEAKENING_KEYS = Object.freeze([
     "claudeCodeInheritUserConfig",
     "obsidianRestApiPolicy",
 ]);
+exports.WEAKENING_KEYS = WEAKENING_KEYS;
 const DEFAULTS = Object.freeze({
     protectedMode: true,
     permissionMode: "default",
@@ -82,11 +146,13 @@ const DEFAULTS = Object.freeze({
     claudeCodeInheritUserConfig: false,
     obsidianRestApiPolicy: "blocked",
 });
+exports.SECURITY_DEFAULTS = DEFAULTS;
 const PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions", "plan"]);
 const BOOLEAN_KEYS = new Set(["protectedMode", "protectedPathsEnabled", "protectedCommandsEnabled", "blockPackageInstall", "claudeCodeInheritUserConfig"]);
 const KEY_SET = new Set(WEAKENING_KEYS);
 /** Issue #30: the CLI binary paths — machine-scoped, never read from data.json. */
 const EXECUTABLE_KEYS = Object.freeze(["claudePath", "codexPath", "geminiCliPath", "antigravityPath"]);
+exports.EXECUTABLE_KEYS = EXECUTABLE_KEYS;
 const EXECUTABLE_KEY_SET = new Set(EXECUTABLE_KEYS);
 const CLI_PATH_KEY_BY_KIND = Object.freeze({
     "claude-code": "claudePath",
@@ -94,6 +160,7 @@ const CLI_PATH_KEY_BY_KIND = Object.freeze({
     "gemini-cli": "geminiCliPath",
     "antigravity-cli": "antigravityPath",
 });
+exports.CLI_PATH_KEY_BY_KIND = CLI_PATH_KEY_BY_KIND;
 function isExecutableKey(key) {
     return typeof key === "string" && EXECUTABLE_KEY_SET.has(key);
 }
@@ -101,8 +168,8 @@ function _patternsOf(defs) {
     return new Set(defs.map((d) => (typeof d === "string" ? d : d && d.pattern)).filter((p) => typeof p === "string"));
 }
 const KNOWN_DISABLED = {
-    protectedPathsDisabled: _patternsOf(DEFAULT_PROTECTED_PATHS),
-    protectedCommandsDisabled: _patternsOf(DEFAULT_PROTECTED_COMMANDS),
+    protectedPathsDisabled: _patternsOf(constants_1.DEFAULT_PROTECTED_PATHS),
+    protectedCommandsDisabled: _patternsOf(constants_1.DEFAULT_PROTECTED_COMMANDS),
 };
 function isWeakeningKey(key) {
     return typeof key === "string" && KEY_SET.has(key);
@@ -135,6 +202,7 @@ function validateSecurityValue(key, value) {
         return { ok: false, reason: `${key} must be a list of built-in patterns` };
     }
     const known = KNOWN_DISABLED[key];
+    // Every entry was checked to be a string just above.
     return { ok: true, value: [...new Set(value.filter((p) => known.has(p)))] };
 }
 /** True when `value` removes protection relative to the default. */
@@ -176,6 +244,7 @@ class SecurityScopeUnavailableError extends Error {
         this.missing = missing;
     }
 }
+exports.SecurityScopeUnavailableError = SecurityScopeUnavailableError;
 function _validName(v) {
     return typeof v === "string" && v.length > 0 && !RESERVED_NAMES.has(v);
 }
@@ -185,7 +254,8 @@ function _validName(v) {
  * `_vaultRoot()`, which embedders don't have.
  */
 function describeSecurityScope(input = {}) {
-    const app = input.app || (input.hostPlugin && input.hostPlugin.app);
+    const hp = input.hostPlugin;
+    const app = (input.app || (hp && hp.app));
     if (!app)
         return { scope: null, missing: "app" };
     const adapter = app.vault && app.vault.adapter;
@@ -193,7 +263,7 @@ function describeSecurityScope(input = {}) {
     try {
         basePath = adapter && typeof adapter.getBasePath === "function" ? adapter.getBasePath() : adapter && adapter.basePath;
     }
-    catch (_) {
+    catch {
         basePath = null;
     }
     if (typeof basePath !== "string" || !basePath)
@@ -203,7 +273,6 @@ function describeSecurityScope(input = {}) {
     // inside the vault (.obsidian/plugins/<dir>/manifest.json), so a vault
     // could rename it to another host's id and inherit that host's confirmed
     // weakening values. With neither, there's no scope and reads fail closed.
-    const hp = input.hostPlugin;
     const hostId = input.hostId !== undefined && input.hostId !== null
         ? input.hostId
         : (hp && typeof hp.securityHostId === "string" && hp.securityHostId) || null;
@@ -237,7 +306,7 @@ function _report(file, stamp, message) {
         try {
             fn(message, file);
         }
-        catch (_) { /* a sink must not break reads */ }
+        catch { /* a sink must not break reads */ }
     }
 }
 function _empty() { return { version: STORE_VERSION, vaults: Object.create(null) }; }
@@ -246,7 +315,7 @@ function _parse(raw, file, stamp, report = _report) {
     try {
         parsed = JSON.parse(raw);
     }
-    catch (_) {
+    catch {
         report(file, stamp, `${file} is not valid JSON; every security setting uses its protected default`);
         return _empty();
     }
@@ -262,10 +331,12 @@ function _parse(raw, file, stamp, report = _report) {
     // with thousands of junk keys produced thousands of notices).
     const droppedValues = [];
     const droppedPaths = [];
-    for (const [vk, vault] of Object.entries(parsed.vaults)) {
+    for (const [vk, rawVault] of Object.entries(parsed.vaults)) {
+        const vault = rawVault;
         if (!_validName(vk) || !vault || typeof vault !== "object" || !vault.hosts || typeof vault.hosts !== "object")
             continue;
-        for (const [hostId, entry] of Object.entries(vault.hosts)) {
+        for (const [hostId, rawEntry] of Object.entries(vault.hosts)) {
+            const entry = rawEntry;
             if (!_validName(hostId) || !entry || typeof entry !== "object")
                 continue;
             const values = {};
@@ -328,7 +399,7 @@ function _load(file, fresh = false) {
     // Re-review of 0fd38d0: one safe read — a regular file only (anything
     // else at the path is "absent"), opened without following a symlink and
     // without blocking on a FIFO.
-    const r = readRegularFile(file, { follow: true });
+    const r = (0, safe_read_1.readRegularFile)(file, { follow: true });
     if (r.raw === null) {
         _cache = null;
         const kept = _missingStore(file, r.absent);
@@ -364,7 +435,7 @@ function _load(file, fresh = false) {
 /**
  * Every content this store's writer puts on disk, by sha256 — the turn-end
  * tamper check's way to tell Gryphon's own writes from an agent's. It lives
- * on the renderer process (`process`), so every bundled copy of @gryphon/protect in one
+ * on the renderer process (`process`), so every bundled copy of @polleoai/gryphon-protect in one
  * Obsidian window (an embedder's and a standalone Gryphon's) shares it; an
  * agent subprocess can't reach it. Bounded: old entries fall off.
  */
@@ -399,7 +470,7 @@ function _save(store, file, priorRaw = null) {
         try {
             fs.chmodSync(dir, 0o700);
         }
-        catch (_) { }
+        catch { /* ignore */ }
     }
     const tmp = path.join(dir, `.${FILE_NAME}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`);
     const raw = JSON.stringify(store, null, 2) + "\n";
@@ -414,7 +485,7 @@ function _save(store, file, priorRaw = null) {
         try {
             fs.unlinkSync(tmp);
         }
-        catch (_) { }
+        catch { /* ignore */ }
         throw e;
     }
     // Issue #32: the trusted copy only once the store holds it (review: a
@@ -467,7 +538,7 @@ function _lastTrusted() {
  * read back as "trusted"). Anything else reads as no copy.
  */
 function _readTrustedCopy(file) {
-    const r = readRegularFile(_trustedPath(file));
+    const r = (0, safe_read_1.readRegularFile)(_trustedPath(file));
     // Only the store itself (same file) or a non-file is rejected: a hard
     // link to some other file gives nothing a direct write wouldn't.
     if (r.raw === null)
@@ -477,7 +548,7 @@ function _readTrustedCopy(file) {
         if (s2.ino === r.st.ino && s2.dev === r.st.dev)
             return null;
     }
-    catch (_) { /* no store: nothing to alias */ }
+    catch { /* no store: nothing to alias */ }
     return r.raw;
 }
 function _writeTrusted(file, raw) {
@@ -489,7 +560,7 @@ function _writeTrusted(file, raw) {
             return;
         // Re-review: a directory (or anything but a file) at the record's path
         // can't be renamed over — clear it first; it isn't a record Gryphon wrote.
-        clearNonFile(t);
+        (0, safe_read_1.clearNonFile)(t);
         const tmp = `${t}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
         fs.writeFileSync(tmp, raw, { mode: 0o600, flag: "wx" });
         try {
@@ -499,7 +570,7 @@ function _writeTrusted(file, raw) {
             try {
                 fs.unlinkSync(tmp);
             }
-            catch (_) { }
+            catch { /* ignore */ }
             throw e;
         }
     }
@@ -518,7 +589,7 @@ function _emitTamper(reverted, error, info) {
         try {
             fn(reverted, error, info);
         }
-        catch (_) { /* a sink must not break reads */ }
+        catch { /* a sink must not break reads */ }
     }
 }
 let _verifying = false;
@@ -533,7 +604,7 @@ function _loosenedIn(raw, file) {
             .filter((w) => w.field !== "dismissed")
             .map((w) => ({ vaultKey: w.vaultKey, hostId: w.hostId, key: w.field === "values" ? w.key : `${w.field}.${w.key}` }));
     }
-    catch (_) {
+    catch {
         return [];
     }
 }
@@ -543,7 +614,7 @@ function _hasEntries(raw) {
         const o = JSON.parse(raw);
         return !!(o && typeof o === "object" && o.vaults && typeof o.vaults === "object" && Object.keys(o.vaults).length);
     }
-    catch (_) {
+    catch {
         return false;
     }
 }
@@ -572,7 +643,7 @@ function _sameContent(a, b) {
     try {
         return mcpApprovals.canonicalJSON(JSON.parse(a)) === mcpApprovals.canonicalJSON(JSON.parse(b));
     }
-    catch (_) {
+    catch {
         return false;
     }
 }
@@ -745,7 +816,7 @@ function _parses(raw) {
         JSON.parse(raw);
         return true;
     }
-    catch (_) {
+    catch {
         return false;
     }
 }
@@ -780,7 +851,7 @@ function _initEmptyRecord(file, empty) {
         }
         if (_readTrustedCopy(file) !== null)
             return; // another window's valid record
-        clearNonFile(_trustedPath(file));
+        (0, safe_read_1.clearNonFile)(_trustedPath(file));
         _writeTrusted(file, empty);
     }
 }
@@ -813,7 +884,7 @@ function _missingStore(file, absent = false) {
  * Gryphon's own (trusted) write.
  */
 function _verifiedRaw(file) {
-    const r = readRegularFile(file, { follow: true });
+    const r = (0, safe_read_1.readRegularFile)(file, { follow: true });
     if (r.raw === null)
         return _missingStore(file, r.absent);
     return _verifyAgainstTrusted(file, r.raw);
@@ -844,7 +915,7 @@ function _rawObject(raw) {
         const p = JSON.parse(raw);
         return p && typeof p === "object" && !Array.isArray(p) ? p : null;
     }
-    catch (_) {
+    catch {
         return null;
     }
 }
@@ -883,6 +954,8 @@ function _composeForWrite(priorRaw, store, touched, keepUnknown) {
     const base = _pruneDeep(_rawObject(priorRaw));
     if (!base || !_isPlainObject(base.vaults))
         return store;
+    // A copy of the raw file (vaults checked to be a plain object just above;
+    // every level below is re-checked before use).
     const out = JSON.parse(JSON.stringify(base));
     if (typeof out.version !== "number")
         out.version = STORE_VERSION;
@@ -1022,7 +1095,7 @@ function _stringList(v) {
  *   scopeAvailable — false when no store scope exists (reads failed closed)
  */
 function effectiveSecuritySettings(settings, scope, overrides, opts = {}) {
-    const raw = settings && typeof settings === "object" ? settings : {};
+    const raw = (settings && typeof settings === "object" ? settings : {});
     const ov = sanitizeSecurityOverrides(overrides);
     let machine = {};
     let dismissed = {};
@@ -1119,11 +1192,12 @@ let _warnedNoSnapshot = false;
  * per process. Gryphon's own call sites always pass a snapshot.
  */
 function securityInputsOf(holder) {
-    if (holder && holder.security && typeof holder.security === "object")
-        return holder.security;
-    if (holder && holder.settings && typeof holder.settings === "object")
-        return holder.settings;
-    const plugin = holder && holder.plugin;
+    const h = holder;
+    if (h && h.security && typeof h.security === "object")
+        return h.security;
+    if (h && h.settings && typeof h.settings === "object")
+        return h.settings;
+    const plugin = (h && h.plugin);
     if (!plugin)
         return {};
     if (!_warnedNoSnapshot) {
@@ -1132,7 +1206,7 @@ function securityInputsOf(holder) {
             "defaults (the host's settings file is never an enforcement input). Pass `security` " +
             "(effectiveSecuritySettings) or an explicit `settings` object.");
     }
-    const ps = plugin.settings && typeof plugin.settings === "object" ? plugin.settings : {};
+    const ps = (plugin.settings && typeof plugin.settings === "object" ? plugin.settings : {});
     return _freezeDeep({
         ...DEFAULTS,
         protectedPathsDisabled: [],
@@ -1162,6 +1236,7 @@ class CliPathRejectedError extends Error {
         this.reason = reason;
     }
 }
+exports.CliPathRejectedError = CliPathRejectedError;
 const CLI_PATH_REASON_TEXT = {
     "relative": "use the full path (starting with / or a drive letter)",
     "missing": "no file exists there",
@@ -1201,14 +1276,14 @@ function _vaultRoots(vaultRoot) {
     try {
         roots.push(fs.realpathSync(vaultRoot));
     }
-    catch (_) { /* gone */ }
+    catch { /* gone */ }
     return roots;
 }
 function _samePath(a, b) {
     const real = (p) => { try {
         return fs.realpathSync(p);
     }
-    catch (_) {
+    catch {
         return path.resolve(p);
     } };
     return _norm(real(a)) === _norm(real(b));
@@ -1227,14 +1302,14 @@ function validateCliPath(value, vaultRoot, platform = process.platform) {
     // R43-6: by string AND by file identity, so another name for the vault
     // (a symlinked folder, a macOS firmlink, a Windows UNC/8.3 spelling)
     // can't pass for "outside".
-    const inVault = (p) => roots.some((r) => _inside(p, r)) || isWithinByIdentity(p, roots);
+    const inVault = (p) => roots.some((r) => _inside(p, r)) || (0, path_identity_1.isWithinByIdentity)(p, roots);
     if (inVault(configured))
         return { ok: false, reason: "inside-vault" };
     let real;
     try {
         real = fs.realpathSync(configured);
     }
-    catch (_) {
+    catch {
         return { ok: false, reason: "missing" };
     }
     if (inVault(real))
@@ -1243,7 +1318,7 @@ function validateCliPath(value, vaultRoot, platform = process.platform) {
     try {
         st = fs.statSync(real);
     }
-    catch (_) {
+    catch {
         return { ok: false, reason: "missing" };
     }
     if (!st.isFile())
@@ -1256,7 +1331,7 @@ function validateCliPath(value, vaultRoot, platform = process.platform) {
         try {
             fs.accessSync(real, fs.constants.X_OK);
         }
-        catch (_) {
+        catch {
             return { ok: false, reason: "not-executable" };
         }
     }
@@ -1309,21 +1384,21 @@ function sanitizeCliPathOverrides(paths) {
 /**
  * Detection is provider-runtime's find*Binary — the exact functions every
  * caller used before, so an embedder's fallback can't diverge from the chat
- * view's. Looked up through the module object on each call so a patched
- * finder (tests) applies. A caller may inject its own `detect`.
+ * view's. Those finders dispatch through utils.binaryFinders on every call,
+ * so a substituted finder (tests) applies. A caller may inject its own
+ * `detect`.
  */
 const FINDER_BY_KIND = {
-    "claude-code": "findClaudeBinary",
-    "codex-cli": "findCodexBinary",
-    "gemini-cli": "findGeminiBinary",
-    "antigravity-cli": "findAntigravityBinary",
+    "claude-code": runtimeUtils.findClaudeBinary,
+    "codex-cli": runtimeUtils.findCodexBinary,
+    "gemini-cli": runtimeUtils.findGeminiBinary,
+    "antigravity-cli": runtimeUtils.findAntigravityBinary,
 };
-function _runtimeUtils() { return require("../../provider-runtime/dist/utils"); }
 function _detect(kind, detect) {
     try {
         if (typeof detect === "function")
             return detect(kind) || null;
-        const fn = _runtimeUtils()[FINDER_BY_KIND[kind]];
+        const fn = FINDER_BY_KIND[kind];
         return typeof fn === "function" ? fn() || null : null;
     }
     catch (e) {
@@ -1334,7 +1409,7 @@ function _detect(kind, detect) {
 /** The version floor check — runs ONLY on an already-validated realpath. */
 function _versionOf(kind, real) {
     try {
-        const u = _runtimeUtils();
+        const u = runtimeUtils;
         const label = { "claude-code": "claude", "codex-cli": "codex", "gemini-cli": "gemini", "antigravity-cli": "agy" }[kind];
         const v = u.probeVersion(real, undefined, u._versionSignatureFor(label));
         // The runtime's floors are permissive today ("0.0.0"); a too-old
@@ -1345,7 +1420,7 @@ function _versionOf(kind, real) {
         const tooOld = !!(r && !r.ok && r.error === "too-old");
         return { version: v, tooOld };
     }
-    catch (_) {
+    catch {
         return { version: null, tooOld: false };
     }
 }
@@ -1413,7 +1488,7 @@ function resolveCliPath(kind, ctx = {}) {
             const entry = _entry(_load(securitySettingsFilePath()), scope);
             stored = entry && entry.paths ? entry.paths[key] : undefined;
         }
-        catch (_) {
+        catch {
             stored = undefined;
         }
         if (stored) {
@@ -1439,16 +1514,17 @@ function resolveCliPath(kind, ctx = {}) {
 }
 function _basePathOf(app) {
     try {
-        const a = app && app.vault && app.vault.adapter;
+        const ap = app;
+        const a = ap && ap.vault && ap.vault.adapter;
         const bp = a && typeof a.getBasePath === "function" ? a.getBasePath() : a && a.basePath;
         return typeof bp === "string" && bp ? bp : null;
     }
-    catch (_) {
+    catch {
         return null;
     }
 }
 function _readRaw(file) {
-    return readRegularFile(file, { follow: true }).raw;
+    return (0, safe_read_1.readRegularFile)(file, { follow: true }).raw;
 }
 /** Turn start: remember the store's content and the ledger position. */
 function snapshotSecurityStore(opts = {}) {
@@ -1495,8 +1571,8 @@ function _weakenings(cand, base) {
                     out.push({ vaultKey: vk, hostId, field: "values", key, baseHas: bHas, baseVal: b.values[key], candVal: entry.values[key] });
             }
             for (const field of ["paths", "dismissed"]) {
-                const cur = entry[field] || {};
-                const was = b[field] || {};
+                const cur = (entry[field] || {});
+                const was = (b[field] || {});
                 for (const key of Object.keys(cur)) {
                     if (was[key] === cur[key])
                         continue;
@@ -1736,7 +1812,7 @@ function _attachSafe(e, obj) {
         if (e && typeof e === "object")
             e.gryphonSafeContent = JSON.stringify(obj, null, 2) + "\n";
     }
-    catch (_) { /* unserialisable: callers fall back to Gryphon's own record */ }
+    catch { /* unserialisable: callers fall back to Gryphon's own record */ }
 }
 function _applyUnknownRestore(nowSafe, expected, file, priorRaw) {
     const current = _rawObject(nowSafe);
@@ -1847,7 +1923,7 @@ function checkSecurityStoreTamper(before, judged) {
         JSON.parse(raw);
         return true;
     }
-    catch (_) {
+    catch {
         return false;
     } };
     // Foreign changes: each (found, knownBefore) pair where they differ,
@@ -1923,9 +1999,10 @@ function checkSecurityStoreTamper(before, judged) {
             after.vaults[w0.vaultKey].hosts[w0.hostId] = _emptyEntry();
             entry = _entry(after, { vaultKey: w0.vaultKey, hostId: w0.hostId });
         }
-        const bag = entry[w0.field] || (entry[w0.field] = {});
+        const hostEntry = entry; // recreated just above when missing
+        const bag = (hostEntry[w0.field] || (hostEntry[w0.field] = {}));
         const startEntry = _entry(start0, { vaultKey: w0.vaultKey, hostId: w0.hostId });
-        const startBag = startEntry ? startEntry[w0.field] || {} : {};
+        const startBag = startEntry ? (startEntry[w0.field] || {}) : {};
         const isList = w0.field === "values" && Array.isArray(DEFAULTS[w0.key]);
         let changed = false;
         if (isList) {
@@ -1943,7 +2020,7 @@ function checkSecurityStoreTamper(before, judged) {
             }
             const credited = new Set();
             for (const c of ownChange) {
-                const p0 = field(c.prior, w0) || [];
+                const p0 = (field(c.prior, w0) || []);
                 for (const x of (field(c.next, w0) || []))
                     if (!p0.includes(x) && !foreignHeld.has(x))
                         credited.add(x);
@@ -2005,35 +2082,3 @@ function checkSecurityStoreTamper(before, judged) {
     }
     return { changed: true, reverted };
 }
-module.exports = {
-    WEAKENING_KEYS,
-    EXECUTABLE_KEYS,
-    CLI_PATH_KEY_BY_KIND,
-    isExecutableKey,
-    CliPathRejectedError,
-    validateCliPath,
-    setMachineCliPath,
-    sanitizeCliPathOverrides,
-    resolveCliPath,
-    snapshotSecurityStore,
-    checkSecurityStoreTamper,
-    onSecurityStoreTamper,
-    SECURITY_DEFAULTS: DEFAULTS,
-    isWeakeningKey,
-    isWeakening,
-    validateSecurityValue,
-    hashValue,
-    securitySettingsFilePath,
-    SecurityScopeUnavailableError,
-    describeSecurityScope,
-    resolveSecurityScope,
-    scopeKey,
-    onSecurityStoreError,
-    readMachineSecuritySettings,
-    setMachineSecuritySetting,
-    dismissVaultSecuritySuggestion,
-    sanitizeSecurityOverrides,
-    effectiveSecuritySettings,
-    securityValuesOf,
-    securityInputsOf,
-};

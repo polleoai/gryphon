@@ -10,6 +10,7 @@
  * keeping the active tab.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.renderTabbedSettings = renderTabbedSettings;
 function renderTabbedSettings(containerEl, tabs, opts) {
     opts = opts || {};
     const ids = tabs.map((t) => t.id);
@@ -57,4 +58,3 @@ function renderTabbedSettings(containerEl, tabs, opts) {
     applyActive();
     return { activate };
 }
-module.exports = { renderTabbedSettings };

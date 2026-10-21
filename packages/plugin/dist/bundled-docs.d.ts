@@ -10,4 +10,5 @@
  * The manual lives in the vault (not the plugin code directory) so it
  * shows up in Obsidian's file tree where users actually look for help.
  */
-export {};
+declare const BUNDLED_DOCS: Record<string, string>;
+export default BUNDLED_DOCS;

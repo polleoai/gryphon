@@ -82,7 +82,7 @@ const TOOL_ALIASES: Record<string, string> = Object.freeze({
   "search_files": "Grep",        // common SDK variant
   "search_file_content": "Grep", // Gemini SDK
   "grep_search": "Grep",         // Antigravity — {Query, SearchPath}, captured live
-}) as Record<string, string>;
+});
 
 /**
  * R43-3: Codex's `apply_patch` names its files inside the patch text, not
@@ -179,4 +179,4 @@ function shellCdDirs(command: unknown): string[] {
   return out;
 }
 
-module.exports = { TOOL_ALIASES, patchTargets, patchTargetsInfo, shellCdDirs, MAX_CD_DIRS };
+export { TOOL_ALIASES, patchTargets, patchTargetsInfo, shellCdDirs, MAX_CD_DIRS };

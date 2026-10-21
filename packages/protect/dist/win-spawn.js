@@ -1,6 +1,9 @@
 "use strict";
 // TypeScript module marker — keeps global scope isolated from other .ts files.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isWindowsShim = isWindowsShim;
+exports.wrapForCmdShim = wrapForCmdShim;
+exports._quoteArg = _quoteArg;
 /**
  * Windows-safe spawn helper for `.cmd` / `.bat` shims.
  *
@@ -49,7 +52,6 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * `{ command, args, options }` ready to pass to `child_process.spawn`.
  * The caller still merges its own spawn options (cwd, env, stdio).
  */
-const path = require("path");
 /**
  * Detect a Windows .cmd / .bat shim. Callers gate the wrap on this so
  * the non-Windows / non-shim path stays untouched.
@@ -215,9 +217,3 @@ function wrapForCmdShim(commandPath, args) {
         },
     };
 }
-module.exports = {
-    isWindowsShim,
-    wrapForCmdShim,
-    // Exported for unit tests.
-    _quoteArg,
-};

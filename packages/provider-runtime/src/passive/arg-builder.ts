@@ -10,7 +10,18 @@ const DISALLOWED_BUILTINS = [
   "WebFetch", "WebSearch", "Task", "TodoWrite", "NotebookEdit",
 ];
 
-function buildPassiveArgs(config: any, opts: any = {}): string[] {
+interface PassiveArgConfig {
+  model: string;
+  systemPrompt?: string | null;
+  maxThinkingTokens?: number;
+}
+
+interface PassiveArgOptions {
+  allowedTools?: string[];
+  mcpConfigPath?: string;
+}
+
+function buildPassiveArgs(config: PassiveArgConfig, opts: PassiveArgOptions = {}): string[] {
   const args = [
     // Persistent stream-json transport (D2) — NO --print. The parked-IPC
     // model needs claude alive across the tool_use->tool_result boundary;

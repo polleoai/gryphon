@@ -15,10 +15,25 @@
  * Permission-gated like Write.
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
-const { attackDetector } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as path from "path";
+import { resolveVaultPath, PathOutsideVaultError } from "@polleoai/gryphon-protect";
+import { attackDetector } from "@polleoai/gryphon-protect";
+
+interface EditInput {
+  file_path?: unknown;
+  old_string?: unknown;
+  new_string?: unknown;
+  replace_all?: unknown;
+}
+
+// Tool-loop context. A type alias (not an interface) so it satisfies the
+// gate's Record<string, unknown> ctx parameter.
+type EditToolContext = {
+  vaultRoot: string;
+  plugin?: { settings?: { maxReadFileSizeMb?: unknown } } | null;
+  [key: string]: unknown;
+};
 
 // See write.js for the platform rationale.
 const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
@@ -30,10 +45,10 @@ const O_NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
 // Settings → Gryphon → Max file size (MB).
 const DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024;
 
-function _maxFileSize(ctx: any) {
+function _maxFileSize(ctx: EditToolContext | null | undefined) {
   const mb = ctx && ctx.plugin && ctx.plugin.settings &&
              Number(ctx.plugin.settings.maxReadFileSizeMb);
-  if (Number.isFinite(mb) && mb > 0) return Math.floor(mb * 1024 * 1024);
+  if (typeof mb === "number" && Number.isFinite(mb) && mb > 0) return Math.floor(mb * 1024 * 1024);
   return DEFAULT_MAX_FILE_SIZE;
 }
 
@@ -86,7 +101,7 @@ const SCHEMA = {
 // full while capping worst-case DOM load.
 const MAX_DIFF_PREVIEW_CHARS = 64 * 1024;
 
-async function execute(input: any, ctx: any) {
+async function execute(input: EditInput, ctx: EditToolContext) {
   const filePath = input.file_path;
   const oldString = input.old_string;
   const newString = input.new_string;
@@ -118,7 +133,7 @@ async function execute(input: any, ctx: any) {
   let stat;
   try {
     stat = fs.statSync(resolved);
-  } catch (e) {
+  } catch {
     return _error(`File not found: ${filePath}. Use Write to create new files.`);
   }
   if (stat.isDirectory()) {
@@ -186,13 +201,13 @@ async function execute(input: any, ctx: any) {
     { file_path: filePath, old_string: oldString, new_string: newString },
     ctx,
   );
-  const perm = await attackDetector.gate(classification, {
+  const perm = (await attackDetector.gate(classification, {
     ctx,
     action: replaceAll ? `edit (${occurrences}x)` : "edit",
     target: filePath,
     detail: _buildDiffPreview(oldString, newString),
     kind: "fileEdit",
-  });
+  }));
 
   if (!perm.allow) return _error(perm.reason);
 
@@ -230,7 +245,7 @@ async function execute(input: any, ctx: any) {
     }
     return _error(`Failed to write file: ${(e as Error).message}`);
   } finally {
-    if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* best-effort close */ } }
   }
 
   return _ok(
@@ -239,7 +254,7 @@ async function execute(input: any, ctx: any) {
   );
 }
 
-function _looksBinary(buf: any) {
+function _looksBinary(buf: Buffer) {
   // Null bytes are a reliable tell for binary formats — text files (UTF-8,
   // UTF-16 with BOM stripped, ASCII, most code) don't embed them. Scanning
   // the first 8 KB is enough to catch image/video headers and sqlite files.
@@ -250,7 +265,7 @@ function _looksBinary(buf: any) {
   return false;
 }
 
-function _countOccurrences(haystack: any, needle: any) {
+function _countOccurrences(haystack: string, needle: string) {
   if (!needle) return 0;
   let count = 0;
   let pos = 0;
@@ -261,13 +276,13 @@ function _countOccurrences(haystack: any, needle: any) {
   return count;
 }
 
-function _buildDiffPreview(oldString: any, newString: any) {
+function _buildDiffPreview(oldString: string, newString: string) {
   // Show the full diff — the modal's <pre> scrolls, so there's no reason
   // to truncate to N lines and risk hiding malicious content past line N
   // that the user would approve without seeing. Cap at MAX_DIFF_PREVIEW_CHARS
   // only as a DOM-render safety net.
-  const oldBlock = oldString.split("\n").map((l: any) => `- ${l}`).join("\n");
-  const newBlock = newString.split("\n").map((l: any) => `+ ${l}`).join("\n");
+  const oldBlock = oldString.split("\n").map((l: string) => `- ${l}`).join("\n");
+  const newBlock = newString.split("\n").map((l: string) => `+ ${l}`).join("\n");
   let preview = `--- old\n${oldBlock}\n\n+++ new\n${newBlock}`;
   if (preview.length > MAX_DIFF_PREVIEW_CHARS) {
     const elided = preview.length - MAX_DIFF_PREVIEW_CHARS;
@@ -277,11 +292,11 @@ function _buildDiffPreview(oldString: any, newString: any) {
   return preview;
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

@@ -36,22 +36,98 @@
 const setTimeoutFn = setTimeout;
 
 
-const { managedSpawn, killProcessTree } = require("../../subprocess-registry") as typeof import("../../subprocess-registry");
-const { buildEnhancedPath, resolveCliBinary } = require("../../utils");
-const {
-  computeCost,
-  coerceToVendorModel,
-  DEFAULT_MODEL,
-} = require("@gryphon/provider-config").pricing.google;
-const { hookDispatcher: dispatcher } = require("@gryphon/protect");
-const { winSpawn } = require("@gryphon/protect");
+import type { ChildProcessByStdio } from "child_process";
+import type { Readable } from "stream";
+import { managedSpawn, killProcessTree } from "../../subprocess-registry";
+import { pricing } from "@polleoai/gryphon-provider-config";
+import { hookDispatcher as dispatcher, winSpawn } from "@polleoai/gryphon-protect";
+import type { Result, SendOptions, StreamMessageType } from "../../types";
+
+import { buildEnhancedPath, resolveCliBinary } from "../../utils";
+import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
+import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
+import { BudgetExceededError } from "../../budget-error";
+import { HeadlessHostAdapter } from "../../host-adapter";
+const { computeCost, coerceToVendorModel } = pricing.google;
+// The registry's default model id (typed loosely upstream).
+const DEFAULT_MODEL = pricing.google.DEFAULT_MODEL;
+
+/** Where notices go (Obsidian Notice, console, or a test stub). */
+interface HostAdapterLike {
+  notify(message: string, opts?: { level?: string; timeoutMs?: number }): void;
+}
+
+/** The slice of the host plugin this provider reads (also handed to the hook dispatcher). */
+type GeminiHostPlugin = {
+  settings?: { googleApiKey?: string } | null;
+  consumeTaintedSession?: (sessionId: string) => boolean;
+  consumeForceFreshSpawn?: (kind: string) => boolean;
+  [key: string]: unknown;
+};
+
+/** Test-harness replacement for the real CLI turn. */
+type SpawnOverride = (prompt: string) => Promise<Result>;
+
+interface GeminiOptions {
+  model?: string | null;
+  permissionMode?: string;
+  resumeSessionId?: string;
+  extraArgs?: string[];
+  plugin?: GeminiHostPlugin | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride | null;
+  [key: string]: unknown;
+}
+
+/** Test-harness options-bag constructor form. */
+interface GeminiBag {
+  geminiPath?: string;
+  cwd?: string;
+  config?: { model?: string } | null;
+  hostAdapter?: HostAdapterLike;
+  _spawnOverride?: SpawnOverride;
+}
+
+/** What the hook dispatcher hands back for one spawn. */
+interface HookExtras {
+  ok: boolean;
+  mode?: string;
+  degradationReason?: string;
+  env?: Record<string, string | undefined>;
+  args?: string[];
+  cleanup?: (() => void) | null;
+}
+
+/** `gemini -p` spawns with stdio ["ignore", "pipe", "pipe"]. */
+type GeminiProc = ChildProcessByStdio<null, Readable, Readable>;
+
+interface GeminiStats {
+  input_tokens?: number;
+  output_tokens?: number;
+  cached?: number;
+  duration_ms?: number;
+}
+
+/** One `-o stream-json` stdout event (only the fields read here). */
+interface GeminiEvent {
+  type?: string;
+  session_id?: unknown;
+  model?: unknown;
+  role?: string;
+  content?: unknown;
+  delta?: unknown;
+  tool_name?: string;
+  message?: unknown;
+  severity?: string;
+  stats?: GeminiStats | null;
+}
 
 /**
  * R43-7 review: only hooks that gate EVERY tool call justify yolo. A
  * store-guard FALLBACK (Protected Mode on, full checks down) protects only
  * Gryphon's own settings, so Gemini keeps the user's own approval mode.
  */
-function _hooksGateTools(hookExtras: any): boolean {
+function _hooksGateTools(hookExtras: HookExtras | null | undefined): boolean {
   return !!(hookExtras && hookExtras.ok && hookExtras.mode !== "store-guard-fallback");
 }
 
@@ -68,7 +144,7 @@ function _hooksGateTools(hookExtras: any): boolean {
  *   plan             → "plan"      (read-only, no side effects)
  *   bypassPermissions→ "yolo"      (auto-approve everything)
  */
-function _mapPermissionToApproval(permissionMode: any) {
+function _mapPermissionToApproval(permissionMode: unknown) {
   if (permissionMode === "plan") return "plan";
   if (permissionMode === "acceptEdits") return "auto_edit";
   if (permissionMode === "bypassPermissions") return "yolo";
@@ -100,7 +176,7 @@ const _UNSUPPORTED_CLIENT_MESSAGE =
   "https://antigravity.google/cli/install.sh | bash`), or switch to the " +
   "Anthropic / OpenAI / Google API providers instead.";
 
-function _wrapSession(id: any) {
+function _wrapSession(id: unknown): string | null {
   if (!id) return null;
   if (typeof id !== "string") return null;
   if (FOREIGN_PREFIX_RE.test(id)) return null;
@@ -108,7 +184,7 @@ function _wrapSession(id: any) {
   return SESSION_PREFIX + id;
 }
 
-function _unwrapSession(id: any) {
+function _unwrapSession(id: string | null): string | null {
   if (typeof id !== "string") return id;
   if (id.startsWith(SESSION_PREFIX)) return id.slice(SESSION_PREFIX.length);
   return id;
@@ -121,7 +197,7 @@ function _unwrapSession(id: any) {
  * when reporting a deny, plus the trailing "Command: <echoed
  * shell>" line if it appears. See codex-cli for full rationale.
  */
-function _scrubInternalLeaks(text: any) {
+function _scrubInternalLeaks(text: string): string {
   if (typeof text !== "string" || !text) return text;
   let out = text;
   // Leading "Command blocked by ... hook:" prefix in any form.
@@ -143,7 +219,7 @@ function _scrubInternalLeaks(text: any) {
   // sits at end-of-message (no closing fence after), so a fence
   // anywhere in the candidate region is a code-block boundary.
   // See codex-cli.js _scrubInternalLeaks for the full rationale.
-  const _stripTrailerIfSafe = (s: any) => {
+  const _stripTrailerIfSafe = (s: string) => {
     const m = s.match(/(?:^|\n)\s*Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -151,7 +227,7 @@ function _scrubInternalLeaks(text: any) {
     return s.slice(0, m.index);
   };
   out = _stripTrailerIfSafe(out);
-  const _stripInlineTrailerIfSafe = (s: any) => {
+  const _stripInlineTrailerIfSafe = (s: string) => {
     const m = s.match(/\.[ \t]+Command:\s+[\s\S]+$/i);
     if (!m) return s;
     const tail = s.slice(m.index);
@@ -185,7 +261,7 @@ function _scrubInternalLeaks(text: any) {
  * surfaces the quota dimension Google actually hit so users can
  * tell whether waiting will help today or not.
  */
-function _formatRateLimitMessage(body: any) {
+function _formatRateLimitMessage(body: unknown) {
   if (typeof body !== "string" || body.length === 0) return null;
 
   // Quick reject: not a rate-limit body if no rate-limit markers.
@@ -198,7 +274,7 @@ function _formatRateLimitMessage(body: any) {
   // is present (rare — mostly daily-cap-exhausted bodies sometimes
   // omit a meaningful retry).
   const retryMatch = body.match(/[Pp]lease retry in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b/);
-  let seconds = null;
+  let seconds: number | null = null;
   if (retryMatch) {
     const value = parseFloat(retryMatch[1]);
     const unit = retryMatch[2];
@@ -254,8 +330,34 @@ function _formatRateLimitMessage(body: any) {
 }
 
 class GeminiCliProvider {
-  [key: string]: any;
-  constructor(geminiPath: any, cwd: any, options: Record<string, any> = {}) {
+  declare geminiPath: string;
+  declare cwd: string;
+  declare options: GeminiOptions;
+  declare _spawnOverride: SpawnOverride | null;
+  declare hostAdapter: HostAdapterLike;
+  declare process: GeminiProc | null;
+  declare alive: boolean;
+  declare sessionId: string | null;
+  declare resolvedModel: string;
+  declare contextTokens: number;
+  declare lastCumulativeCost: number;
+  declare _buffer: string;
+  declare _stderrTail: string;
+  declare _turnText: string;
+  declare _lastStats: GeminiStats | null;
+  declare _currentResolve: ((result: Result) => void) | null;
+  declare _currentReject: ((reason?: unknown) => void) | null;
+  declare _deprecatedClientDetected: boolean;
+  declare onMessage: ((text: string, type: StreamMessageType) => void) | null;
+  declare onError: ((text: string) => void) | null;
+  declare onDone: ((result: Result) => void) | null;
+  declare onSessionExpired: (() => void) | null;
+  declare _failed?: boolean;
+  declare _lastPrompt?: string;
+  declare _staleRecoveryFired?: boolean;
+  declare _hookCleanup?: (() => void) | null;
+
+  constructor(geminiPath: string | GeminiBag, cwd?: string, options: GeminiOptions = {}) {
     // Test-harness options-bag form: GeminiCliProvider({ config, hostAdapter,
     // _spawnOverride }) — no geminiPath or cwd required. The _spawnOverride
     // function replaces the real CLI spawn for unit tests.
@@ -269,14 +371,16 @@ class GeminiCliProvider {
         _spawnOverride: bag._spawnOverride,
       };
     }
-    this.geminiPath = geminiPath;
-    this.cwd = cwd;
+    // Bag form is resolved above; any other object here is passed through
+    // untouched, as before (the assertions only narrow the static type).
+    this.geminiPath = geminiPath as string;
+    this.cwd = cwd as string;
     this.options = options;
     // _spawnOverride: a function (prompt) => Promise<{text, sessionId, cost,
     // contextTokens, ...}> injected by tests to replace the real CLI spawn.
     this._spawnOverride = options._spawnOverride || null;
     this.hostAdapter = options.hostAdapter ||
-      new ((require("../../host-adapter") as typeof import("../../host-adapter")).HeadlessHostAdapter)();
+      new HeadlessHostAdapter();
     this.process = null;
     this.alive = false;
     this.sessionId = _wrapSession(options.resumeSessionId) || null;
@@ -301,7 +405,7 @@ class GeminiCliProvider {
     this.onSessionExpired = null;
   }
 
-  _buildArgs(prompt: any, { hooksWired = false } = {}) {
+  _buildArgs(prompt: string, { hooksWired = false }: { hooksWired?: boolean } = {}) {
     // When Gryphon's BeforeTool hook is installed, force Gemini to
     // yolo so the full tool palette is exposed in headless mode.
     // The hook is the authoritative gate — every tool call reaches
@@ -339,14 +443,13 @@ class GeminiCliProvider {
     // Resume the prior session if we captured one; else start fresh.
     // The CLI expects a raw session_id — strip our synthetic prefix.
     if (this.sessionId) {
-      args.push("--resume", _unwrapSession(this.sessionId));
+      args.push("--resume", _unwrapSession(this.sessionId) as string); // sessionId checked just above
     }
 
     // Issue #39: filter out flags that belong to other providers so a
     // multi-provider consumer can pass a shared extraArgs without
     // failing the gemini spawn on Claude- or Codex-only flags.
     if (this.options.extraArgs && Array.isArray(this.options.extraArgs)) {
-      const { filterExtraArgs } = require("@gryphon/provider-config");
       const { filtered, dropped } = filterExtraArgs(this.options.extraArgs, "gemini-cli");
       if (dropped.length > 0) {
         // Round 4 review (SFH-1): use console.error not warn — see
@@ -365,14 +468,14 @@ class GeminiCliProvider {
   }
 
   _buildEnv() {
-    const env: Record<string, any> = { ...process.env, PATH: buildEnhancedPath() };
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: buildEnhancedPath() };
     // Source the API key from settings preferentially, then fall back
     // to GOOGLE_API_KEY in process.env (same chain the factory uses to
     // gate availability — keeping them symmetric so a user with only
     // the env var doesn't pass `getActiveProviderKind === "gemini-cli"`
     // and then fail at spawn with "GEMINI_API_KEY not set"). Code review
     // V13-1.
-    const settings = (this.options.plugin && this.options.plugin.settings) || {};
+    const settings: { googleApiKey?: string } = (this.options.plugin && this.options.plugin.settings) || {};
     const settingsKey = settings.googleApiKey || "";
     const envKey = process.env.GOOGLE_API_KEY || "";
     const key = settingsKey || envKey;
@@ -380,7 +483,7 @@ class GeminiCliProvider {
     return env;
   }
 
-  send(prompt: any, options: any) {
+  send(prompt: string, options?: SendOptions): Promise<Result> {
     if (options && typeof options.maxUsdBudget === "number" && (!(options.maxUsdBudget > 0) || !isFinite(options.maxUsdBudget))) {
       throw new RangeError(`maxUsdBudget must be positive (got ${options.maxUsdBudget})`);
     }
@@ -390,7 +493,7 @@ class GeminiCliProvider {
     if (options && options.signal) {
       if (options.signal.aborted) return Promise.reject(new Error("Aborted"));
       if (typeof options.signal.addEventListener === "function") {
-        options.signal.addEventListener("abort", () => { try { this.abort(); } catch {} }, { once: true });
+        options.signal.addEventListener("abort", () => { try { this.abort(); } catch { /* best-effort */ } }, { once: true });
       }
     }
     // L6.1 — structured-output retry budget for CLI providers.
@@ -399,11 +502,6 @@ class GeminiCliProvider {
     // CliStructuredOutputError(reason: "budget-exhausted"). Backwards-compat
     // path (no option) falls through to _spawnTurn unchanged.
     if (options && options.structuredOutput) {
-      const {
-        injectSchemaHint,
-        parseAndValidate,
-        CliStructuredOutputError,
-      } = require("../../cli-structured-output") as typeof import("../../cli-structured-output");
 
       const maxRetries = options.structuredOutput.maxRetries ?? 3;
       const enrichedPrompt = injectSchemaHint(prompt, options.structuredOutput);
@@ -413,8 +511,8 @@ class GeminiCliProvider {
       // ourselves on success with the enriched result (json + text).
       this.onDone = null;
 
-      const loop = async () => {
-        let lastError = null;
+      const loop = async (): Promise<Result> => {
+        let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
         // Snapshot before the retry loop: each failed attempt still costs
         // money; the per-call cap covers all attempts within this send().
         const priorCallCumulative = this.lastCumulativeCost;
@@ -431,14 +529,13 @@ class GeminiCliProvider {
             if (options && typeof options.maxUsdBudget === "number") {
               const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
               if (cumCost === null) {
-                this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
                   `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
                   { level: "warn" },
                 );
               }
               const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
               if (perCallSpent >= options.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
                 throw new BudgetExceededError({
                   budget: options.maxUsdBudget,
                   spent: perCallSpent,
@@ -447,7 +544,8 @@ class GeminiCliProvider {
               }
             }
             try {
-              const json = parseAndValidate(turnResult.text, options.structuredOutput.schema);
+              // structuredOutput was checked truthy before the loop started.
+              const json = parseAndValidate(turnResult.text, (options.structuredOutput as NonNullable<SendOptions["structuredOutput"]>).schema);
               const result = { ...turnResult, json, text: JSON.stringify(json) };
               this.onDone = savedOnDone;
               if (this.onDone) this.onDone(result);
@@ -457,18 +555,18 @@ class GeminiCliProvider {
               lastError = e;
               try {
                 this.hostAdapter.notify(
-                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${(e as any).reason}`,
+                  `[gryphon] structured-output attempt ${attempt}/${maxRetries} failed: ${e.reason}`,
                   { level: "warn" },
                 );
-              } catch (_) { /* notify must never block */ }
+              } catch { /* notify must never block */ }
             }
           }
           throw new CliStructuredOutputError(
-            `structured-output budget exhausted after ${maxRetries} attempts on gemini-cli: ${lastError && (lastError as any).message}`,
+            `structured-output budget exhausted after ${maxRetries} attempts on gemini-cli: ${lastError && lastError.message}`,
             {
               reason: "budget-exhausted",
               attempts: maxRetries,
-              lastOutput: lastError && (lastError as any).lastOutput,
+              lastOutput: lastError && lastError.lastOutput,
             },
           );
         } finally {
@@ -488,22 +586,21 @@ class GeminiCliProvider {
     // (this call's cost < budget).
     if (options && typeof options.maxUsdBudget === "number") {
       const priorCallCumulative = this.lastCumulativeCost;
-      return this._spawnTurn(prompt).then((result: any) => {
+      return this._spawnTurn(prompt).then((result: Result) => {
         // Keep lastCumulativeCost in sync when _spawnOverride is active
         // (the real path updates it in _handleClose; the override bypasses that).
         if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
         const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
         if (cumCost === null) {
-          this.hostAdapter && this.hostAdapter.notify && this.hostAdapter.notify(
+          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
             `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
             { level: "warn" },
           );
         }
         const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= options.maxUsdBudget) {
-          const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
+        if (perCallSpent >= (options.maxUsdBudget as number)) {
           throw new BudgetExceededError({
-            budget: options.maxUsdBudget,
+            budget: options.maxUsdBudget as number, // checked as a number before .then
             spent: perCallSpent,
             lastTurnCost: result.cost || 0,
           });
@@ -521,7 +618,7 @@ class GeminiCliProvider {
    * contextTokens}. When _spawnOverride is set (test-harness injection),
    * delegates directly to the override function.
    */
-  _spawnTurn(prompt: any) {
+  _spawnTurn(prompt: string): Promise<Result> {
     if (this._spawnOverride) {
       return this._spawnOverride(prompt);
     }
@@ -540,10 +637,10 @@ class GeminiCliProvider {
       this.geminiPath = resolved.path; // self-heal to the newest valid binary
     }
 
-    return new Promise((resolve, reject) => {
+    return new Promise<Result>((resolve, reject) => {
       // Supersede an in-flight turn — same shape as CodexProvider.
       if (this.alive && this.process) {
-        try { killProcessTree(this.process, "SIGTERM"); } catch {}
+        try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
         if (this._currentReject) {
           const r = this._currentReject;
           this._currentReject = null;
@@ -599,7 +696,7 @@ class GeminiCliProvider {
         kind: "gemini-cli",
         plugin: this.options.plugin,
         options: this.options,
-      });
+      }) as HookExtras;
       if (!hookExtras.ok && hookExtras.degradationReason) {
         console.warn(`[gryphon/gemini-cli] hooks degraded: ${hookExtras.degradationReason}`);
       }
@@ -641,33 +738,35 @@ class GeminiCliProvider {
         Object.assign(spawnOpts, wrapped.options);
       }
 
-      let proc;
+      let proc: GeminiProc;
       try {
-        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" });
+        // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+        proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" }) as GeminiProc;
       } catch (err) {
         if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
-        reject(err);
+        // spawn throws Errors; anything else is wrapped so callers always get one.
+        reject(err instanceof Error ? err : new Error(typeof err === "string" ? err : JSON.stringify(err) ?? "spawn failed"));
         return;
       }
       this.process = proc;
       this.alive = true;
 
       const forThis = () => this.process === proc;
-      proc.stdout.on("data", (data: any) => { if (forThis()) this._handleStdout(data); });
-      proc.stderr.on("data", (data: any) => { if (forThis()) this._handleStderr(data); });
-      proc.on("close", (code: any) => { if (forThis()) this._handleClose(code); });
-      proc.on("error", (err: any) => { if (forThis()) this._handleProcessError(err); });
+      proc.stdout.on("data", (data: Buffer) => { if (forThis()) this._handleStdout(data); });
+      proc.stderr.on("data", (data: Buffer) => { if (forThis()) this._handleStderr(data); });
+      proc.on("close", (code: number | null) => { if (forThis()) this._handleClose(code); });
+      proc.on("error", (err: Error) => { if (forThis()) this._handleProcessError(err); });
     });
   }
 
-  _handleStdout(data: any) {
+  _handleStdout(data: Buffer | string) {
     this._buffer += data.toString();
     const lines = this._buffer.split("\n");
     this._buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
       try {
-        const parsed = JSON.parse(line);
+        const parsed = JSON.parse(line) as GeminiEvent | null;
         this._processEvent(parsed);
       } catch (e) {
         if (!(e instanceof SyntaxError)) {
@@ -677,7 +776,7 @@ class GeminiCliProvider {
     }
   }
 
-  _processEvent(raw: any) {
+  _processEvent(raw: GeminiEvent | null) {
     if (!raw || typeof raw !== "object") return;
 
     if (raw.type === "init") {
@@ -731,7 +830,7 @@ class GeminiCliProvider {
     }
 
     if (raw.type === "error") {
-      const rawMsg = raw.message ? String(raw.message) : "Gemini CLI turn failed";
+      const rawMsg = raw.message ? (typeof raw.message === "string" ? raw.message : JSON.stringify(raw.message)) : "Gemini CLI turn failed";
       // Normalize rate-limit / quota-exhausted bodies that arrive in
       // the JSONL `error` event. On Linux, the 429 from Google
       // arrives here (not as plain stderr in _handleClose) and the
@@ -768,7 +867,7 @@ class GeminiCliProvider {
     }
   }
 
-  _handleStderr(data: any) {
+  _handleStderr(data: Buffer | string) {
     const text = data.toString();
     if (!text) return;
     this._stderrTail = (this._stderrTail + text).slice(-4096);
@@ -802,7 +901,7 @@ class GeminiCliProvider {
     }
   }
 
-  _handleClose(code: any) {
+  _handleClose(code: number | null) {
     this.alive = false;
     this.process = null;
     if (this._hookCleanup) {
@@ -820,7 +919,8 @@ class GeminiCliProvider {
     }
 
     const resolve = this._currentResolve;
-    const reject = this._currentReject;
+    // Set together with resolve; the `!resolve` return below covers both.
+    const reject = this._currentReject as (reason?: unknown) => void;
     this._currentResolve = null;
     this._currentReject = null;
     if (!resolve) return;
@@ -846,7 +946,7 @@ class GeminiCliProvider {
       const { cost } = computeCost(mappedUsage, this.resolvedModel);
       this.lastCumulativeCost += cost;
 
-      const result = {
+      const result: Result = {
         text: this._turnText || "",
         cost,
         cumulativeCost: this.lastCumulativeCost,
@@ -893,7 +993,7 @@ class GeminiCliProvider {
         // notice when the user already got their answer).
         this.sessionId = null;
         this.options.resumeSessionId = undefined;
-        const result = {
+        const result: Result = {
           text: this._turnText || "",
           cost: 0,
           cumulativeCost: this.lastCumulativeCost,
@@ -913,7 +1013,7 @@ class GeminiCliProvider {
       // delta — which on a slow first byte produces a moment of
       // stale text. Cheap belt-and-suspenders.
       if (this.onMessage) {
-        try { this.onMessage("", "replace"); } catch (_) { /* best effort */ }
+        try { this.onMessage("", "replace"); } catch { /* best effort */ }
       }
       // Re-attach the resolve/reject so the recovery path can fire
       // them when the fresh spawn completes.
@@ -955,7 +1055,7 @@ class GeminiCliProvider {
 
     const tail = stderr
       .split(/\r?\n/)
-      .map((l: any) => l.trim())
+      .map((l) => l.trim())
       .filter(Boolean)
       .slice(-6)
       .join("\n");
@@ -986,12 +1086,12 @@ class GeminiCliProvider {
    */
   _handleStaleSession() {
     if (this.process) {
-      try { killProcessTree(this.process, "SIGTERM"); } catch {}
+      try { killProcessTree(this.process, "SIGTERM"); } catch { /* best-effort */ }
       this.process = null;
     }
     this.alive = false;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch {}
+      try { this._hookCleanup(); } catch { /* best-effort */ }
       this._hookCleanup = null;
     }
 
@@ -1002,7 +1102,7 @@ class GeminiCliProvider {
     // Tell the host (chat-view) to clear its persisted lastSessionId
     // so a fresh provider construction doesn't read it back.
     if (typeof this.onSessionExpired === "function") {
-      try { this.onSessionExpired(); } catch {}
+      try { this.onSessionExpired(); } catch { /* best-effort */ }
     }
 
     const prompt = this._lastPrompt;
@@ -1037,7 +1137,7 @@ class GeminiCliProvider {
     this._currentResolve = origResolve;
     this._currentReject = origReject;
 
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       try {
         this._respawnFresh(prompt);
       } catch (e) {
@@ -1053,12 +1153,12 @@ class GeminiCliProvider {
    * to the same _currentResolve / _currentReject so completion
    * resolves the original Promise.
    */
-  _respawnFresh(prompt: any) {
+  _respawnFresh(prompt: string) {
     const hookExtras = dispatcher.prepareSpawn({
       kind: "gemini-cli",
       plugin: this.options.plugin,
       options: this.options,
-    });
+    }) as HookExtras;
     if (!hookExtras.ok && hookExtras.degradationReason) {
       console.warn(`[gryphon/gemini-cli] hooks degraded on stale-session retry: ${hookExtras.degradationReason}`);
     }
@@ -1083,9 +1183,10 @@ class GeminiCliProvider {
       Object.assign(spawnOpts, wrapped.options);
     }
 
-    let proc;
+    let proc: GeminiProc;
     try {
-      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" });
+      // stdio is ["ignore", "pipe", "pipe"]: stdout/stderr are non-null.
+      proc = managedSpawn(spawnCommand, spawnArgs, spawnOpts, { label: "gemini-cli" }) as GeminiProc;
     } catch (err) {
       if (this._hookCleanup) { this._hookCleanup(); this._hookCleanup = null; }
       const reject = this._currentReject;
@@ -1097,17 +1198,17 @@ class GeminiCliProvider {
     this.process = proc;
     this.alive = true;
     const forThis = () => this.process === proc;
-    proc.stdout.on("data", (data: any) => { if (forThis()) this._handleStdout(data); });
-    proc.stderr.on("data", (data: any) => { if (forThis()) this._handleStderr(data); });
-    proc.on("close", (code: any) => { if (forThis()) this._handleClose(code); });
-    proc.on("error", (err: any) => { if (forThis()) this._handleProcessError(err); });
+    proc.stdout.on("data", (data: Buffer) => { if (forThis()) this._handleStdout(data); });
+    proc.stderr.on("data", (data: Buffer) => { if (forThis()) this._handleStderr(data); });
+    proc.on("close", (code: number | null) => { if (forThis()) this._handleClose(code); });
+    proc.on("error", (err: Error) => { if (forThis()) this._handleProcessError(err); });
   }
 
-  _handleProcessError(err: any) {
+  _handleProcessError(err: Error) {
     this.alive = false;
     this.process = null;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;
@@ -1121,13 +1222,13 @@ class GeminiCliProvider {
       const proc = this.process;
       // Tree-kill: gemini's child tree (incl. any MCP grandchildren) — not
       // just the direct pid. SIGKILL the group after 5s if still alive.
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
-      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 5000);
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* best-effort */ }
+      setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* best-effort */ } }, 5000);
       this.process = null;
     }
     this.alive = false;
     if (this._hookCleanup) {
-      try { this._hookCleanup(); } catch (_) { /* swallow — best effort */ }
+      try { this._hookCleanup(); } catch { /* swallow — best effort */ }
       this._hookCleanup = null;
     }
     const reject = this._currentReject;

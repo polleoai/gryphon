@@ -9,18 +9,51 @@
  * Phase 5). Permission-gated tools (Write/Edit/Bash) check the caller's
  * permissionMode in their execute() before performing the side effect.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getActiveTools = getActiveTools;
 exports.getToolSchemas = getToolSchemas;
 exports.executeTool = executeTool;
-const Read = require("./read");
-const Glob = require("./glob");
-const Grep = require("./grep");
-const Write = require("./write");
-const Edit = require("./edit");
-const WebFetch = require("./web-fetch");
-const WebSearch = require("./web-search");
-const Bash = require("./bash");
+const Read = __importStar(require("./read"));
+const Glob = __importStar(require("./glob"));
+const Grep = __importStar(require("./grep"));
+const Write = __importStar(require("./write"));
+const Edit = __importStar(require("./edit"));
+const WebFetch = __importStar(require("./web-fetch"));
+const WebSearch = __importStar(require("./web-search"));
+const Bash = __importStar(require("./bash"));
 // Tool sets, grouped by phase. Each phase gates additional capabilities
 // in the tool-loop so we can experiment with subsets if needed.
 const READ_ONLY_TOOLS = [Read, Glob, Grep];

@@ -1,10 +1,14 @@
 {
-  "name": "@gryphon/protect",
-  "version": "2.4.2",
+  "name": "@polleoai/gryphon-protect",
+  "version": "2.12.0",
   "description": "Runtime protection layer for Gryphon: HookDispatcher, IPC server, permission gate, injection-pattern catalog. Spawned-process safety for AI CLIs.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/polleoai/gryphon"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
@@ -12,17 +16,34 @@
       "types": "./dist/index.d.ts",
       "require": "./dist/index.js",
       "default": "./dist/index.js"
-    }
+    },
+    "./win-spawn": {
+      "types": "./dist/win-spawn.d.ts",
+      "require": "./dist/win-spawn.js",
+      "default": "./dist/win-spawn.js"
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist/",
-    "content/",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build:dist": "tsc -p tsconfig.build.json",
     "test": "node --import tsx --test tests/*.test.ts",
-    "gen:store-guard": "node --import tsx scripts/build-store-guard.ts"
+    "gen:store-guard": "node --import tsx scripts/build-store-guard.ts",
+    "prepack": "node -e \"const fs=require('fs');if(!fs.existsSync('dist/index.js')){console.error('prepack: dist/index.js missing - run npm run prebuild at the repo root first');process.exit(1)}fs.copyFileSync('../../LICENSE','LICENSE')\""
+  },
+  "dependencies": {
+    "@polleoai/gryphon-provider-runtime": "file:../provider-runtime"
+  },
+  "peerDependencies": {
+    "obsidian": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "obsidian": {
+      "optional": true
+    }
   }
 }

@@ -22,17 +22,89 @@
 const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
-const fs = require("fs") as typeof import("fs");
-const { isDeepStrictEqual } = require("node:util") as typeof import("node:util");
-const { managedSpawn, killProcessTree } = require("../subprocess-registry") as typeof import("../subprocess-registry");
-const { buildEnhancedPath, findClaudeBinary } = require("../utils");
-const { buildPassiveArgs } = require("./arg-builder") as typeof import("./arg-builder");
-const { PassiveStreamParser } = require("./stream-parser") as typeof import("./stream-parser");
-const { MCP_SERVER_NAME } = require("./mcp-config-builder") as typeof import("./mcp-config-builder");
+import * as fs from "fs";
+import { isDeepStrictEqual } from "node:util";
+import { managedSpawn, killProcessTree } from "../subprocess-registry";
+import { buildPassiveArgs } from "./arg-builder";
+import { PassiveStreamParser } from "./stream-parser";
+import { MCP_SERVER_NAME } from "./mcp-config-builder";
+import type { BridgeInvoke, JsonRpcId, PassiveBridge } from "./mcp-bridge";
+import type {
+  AnthropicMessage, ContentBlock, PassiveSessionConfig, PassiveUsage, SendRequest, SendResponse,
+} from "./types";
+
+import { buildEnhancedPath, findClaudeBinary } from "../utils";
 
 const NS_PREFIX = `mcp__${MCP_SERVER_NAME}__`;
 
-function lastUserContent(messages: any[]): any {
+type ToolResultBlock = Extract<ContentBlock, { type: "tool_result" }>;
+type TextBlock = Extract<ContentBlock, { type: "text" }>;
+
+interface UsageLike {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/** A content block as it arrives on claude's stream-json stdout. */
+interface StreamBlock {
+  type?: string;
+  text?: unknown;
+  id: string;
+  name: string;
+  input: object;
+}
+
+/** A parsed stream-json stdout event (only the fields read here). */
+interface StreamEvent {
+  type?: string;
+  subtype?: string;
+  session_id?: string;
+  message?: { content?: StreamBlock[]; usage?: UsageLike };
+}
+
+/** A tool call parked on the bridge, awaiting the caller's tool_result. */
+interface PendingToolCall {
+  toolUseId: string;
+  jsonrpcId: JsonRpcId;
+  bareName: string;
+  input: unknown;
+}
+
+/** The claude child (a ChildProcess, or a test double via _spawnOverride). */
+interface PassiveProc {
+  pid?: number | null;
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | null;
+  kill(signal?: NodeJS.Signals | number): boolean | void;
+  stdin: { write(chunk: string): unknown };
+  stdout: { on(event: "data", cb: (d: Buffer | string) => void): unknown };
+  stderr: { on(event: "data", cb: (d: Buffer | string) => void): unknown };
+  on(event: "close", cb: (code: number | null) => void): unknown;
+  on(event: "error", cb: (err: Error) => void): unknown;
+}
+
+// A type alias (not an interface) so it is assignable to managedSpawn's
+// Record<string, unknown> options.
+type PassiveSpawnOptions = {
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  stdio: string[];
+};
+
+/** Public config plus the internal fields createPassiveSession / tests inject. */
+interface PassiveSessionInit extends PassiveSessionConfig {
+  claudePath?: string;
+  requestTimeoutMs?: number;
+  _spawnOverride?: ((args: string[], spawnOpts: PassiveSpawnOptions) => PassiveProc) | null;
+  _mcpConfigPath?: string | null;
+  _allowedTools?: string[] | null;
+  _bridge?: PassiveBridge | null;
+  _bridgeOverride?: PassiveBridge | null;
+}
+
+function lastUserContent(messages: AnthropicMessage[]): string | ContentBlock[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     if (messages[i] && messages[i].role === "user") return messages[i].content;
   }
@@ -40,18 +112,18 @@ function lastUserContent(messages: any[]): any {
 }
 
 // tool_result blocks from the last user message (Phase B continuation turn).
-function extractToolResults(messages: any[]): any[] {
+function extractToolResults(messages: AnthropicMessage[]): ToolResultBlock[] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m && m.role === "user") {
-      if (Array.isArray(m.content)) return m.content.filter((b: any) => b && b.type === "tool_result");
+      if (Array.isArray(m.content)) return m.content.filter((b): b is ToolResultBlock => b && b.type === "tool_result");
       return [];
     }
   }
   return [];
 }
 
-function normalizeUsage(u: any): any {
+function normalizeUsage(u: UsageLike | null | undefined): PassiveUsage {
   u = u || {};
   return {
     input_tokens: u.input_tokens || 0,
@@ -62,8 +134,32 @@ function normalizeUsage(u: any): any {
 }
 
 class ClaudePassiveSession {
-  [key: string]: any;
-  constructor(config: any) {
+  declare config: PassiveSessionInit;
+  declare claudePath: string;
+  declare _spawnOverride: ((args: string[], spawnOpts: PassiveSpawnOptions) => PassiveProc) | null;
+  declare _mcpConfigPath: string | null;
+  declare _allowedTools: string[] | null;
+  declare _bridge: PassiveBridge | null;
+  declare _requestTimeoutMs: number;
+  declare process: PassiveProc | null;
+  declare sessionId: string | null;
+  declare _buffer: string;
+  declare _parser: PassiveStreamParser | null;
+  declare _pendingResolve: ((value: SendResponse) => void) | null;
+  declare _pendingReject: ((err: Error) => void) | null;
+  declare _turnTimer: ReturnType<typeof setTimeout> | null;
+  declare _stderrTail: string;
+  declare _closed: boolean;
+  declare _broken: Error | null;
+  declare _pendingToolCalls: PendingToolCall[];
+  declare _turnText: TextBlock[];
+  declare _turnDeclaredToolUse: StreamBlock[];
+  declare _turnParked: BridgeInvoke[];
+  declare _turnUsage: UsageLike | null;
+  declare _settled: boolean;
+  declare _malformed?: number;
+
+  constructor(config: PassiveSessionInit) {
     this.config = config;
     this.claudePath = config.claudePath || findClaudeBinary() || "claude";
     this._spawnOverride = config._spawnOverride || null;
@@ -86,8 +182,8 @@ class ClaudePassiveSession {
     this._pendingToolCalls = []; // {toolUseId, jsonrpcId, bareName, input} — survives the tool_use boundary
     this._resetTurn();
     if (this._bridge) {
-      this._bridge.onInvoke((inv: any) => this._onBridgeInvoke(inv));
-      this._bridge.onTransportError((err: any) => this._onBridgeDown(err));
+      this._bridge.onInvoke((inv: BridgeInvoke) => this._onBridgeInvoke(inv));
+      this._bridge.onTransportError((err: Error) => this._onBridgeDown(err));
     }
   }
 
@@ -99,12 +195,12 @@ class ClaudePassiveSession {
     this._settled = false;
   }
 
-  _isDeclared(name: any): boolean { return typeof name === "string" && name.indexOf(NS_PREFIX) === 0; }
-  _bareName(name: any): string { return this._isDeclared(name) ? name.slice(NS_PREFIX.length) : name; }
+  _isDeclared(name: unknown): boolean { return typeof name === "string" && name.indexOf(NS_PREFIX) === 0; }
+  _bareName(name: string): string { return this._isDeclared(name) ? name.slice(NS_PREFIX.length) : name; }
 
   // Drop non-declared tool_use (e.g. claude's internal ToolSearch); de-namespace declared ones.
-  _sanitize(content: any[]): any[] {
-    const out = [];
+  _sanitize(content: ContentBlock[]): ContentBlock[] {
+    const out: ContentBlock[] = [];
     for (const b of content || []) {
       if (b && b.type === "tool_use") {
         if (!this._isDeclared(b.name)) continue;
@@ -117,31 +213,32 @@ class ClaudePassiveSession {
   }
 
   _spawn(): void {
-    const opts: any = {};
+    const opts: { mcpConfigPath?: string; allowedTools?: string[] } = {};
     if (this._mcpConfigPath) opts.mcpConfigPath = this._mcpConfigPath;
     if (this._allowedTools && this._allowedTools.length > 0) opts.allowedTools = this._allowedTools;
     const args = buildPassiveArgs(this.config, opts);
-    const spawnOpts = { cwd: this.config.cwd, env: { ...process.env, PATH: buildEnhancedPath() }, stdio: ["pipe", "pipe", "pipe"] };
+    const spawnOpts: PassiveSpawnOptions = { cwd: this.config.cwd, env: { ...process.env, PATH: buildEnhancedPath() }, stdio: ["pipe", "pipe", "pipe"] };
     const proc = this._spawnOverride
       ? this._spawnOverride(args, spawnOpts)
-      : managedSpawn(this.claudePath, args, spawnOpts, { label: "claude-passive" });
+      // stdio is all "pipe", so stdin/stdout/stderr are non-null.
+      : managedSpawn(this.claudePath, args, spawnOpts, { label: "claude-passive" }) as PassiveProc;
     this.process = proc;
     this._buffer = "";
     const mine = () => this.process === proc;
-    proc.stdout.on("data", (d: any) => { if (mine()) this._onStdout(d); });
-    proc.stderr.on("data", (d: any) => { if (mine()) { this._stderrTail = (this._stderrTail + d.toString()).slice(-4096); } });
-    proc.on("close", (code: any) => { if (mine()) this._onClose(code); });
-    proc.on("error", (err: any) => { if (mine()) this._reject(err); });
+    proc.stdout.on("data", (d: Buffer | string) => { if (mine()) this._onStdout(d); });
+    proc.stderr.on("data", (d: Buffer | string) => { if (mine()) { this._stderrTail = (this._stderrTail + d.toString()).slice(-4096); } });
+    proc.on("close", (code: number | null) => { if (mine()) this._onClose(code); });
+    proc.on("error", (err: Error) => { if (mine()) this._reject(err); });
   }
 
-  _onStdout(data: any): void {
+  _onStdout(data: Buffer | string): void {
     this._buffer += data.toString();
     const lines = this._buffer.split("\n");
     this._buffer = lines.pop() || "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      let parsed;
-      try { parsed = JSON.parse(line); }
+      let parsed: StreamEvent;
+      try { parsed = JSON.parse(line) as StreamEvent; }
       catch {
         // H2: never silently drop a stdout protocol line — a lost `result`
         // event would hang the turn. Surface it for diagnosis.
@@ -153,7 +250,7 @@ class ClaudePassiveSession {
     }
   }
 
-  _handleEvent(parsed: any): void {
+  _handleEvent(parsed: StreamEvent): void {
     if (parsed.type === "system" && parsed.subtype === "init" && parsed.session_id) {
       this.sessionId = parsed.session_id;
     }
@@ -185,7 +282,7 @@ class ClaudePassiveSession {
     if (this._bridge) this._maybeSettleToolUse();
   }
 
-  _onBridgeInvoke(inv: any): void {
+  _onBridgeInvoke(inv: BridgeInvoke): void {
     if (!this._pendingResolve) {
       // Should not happen (claude parks within an active send). Don't drop silently.
       console.error("[gryphon/passive] bridge invoke arrived with no active send():", inv && inv.name);
@@ -198,7 +295,7 @@ class ClaudePassiveSession {
   // C2/H3: the MCP transport died. Mark the session broken and reject any
   // in-flight send(); a later send() rejects up front rather than respawning
   // a fresh claude that has lost all parked-IPC state and would hang.
-  _onBridgeDown(err: any): void {
+  _onBridgeDown(err: Error): void {
     if (!this._broken) this._broken = err instanceof Error ? err : new Error(String(err || "passive MCP transport down"));
     if (this._pendingReject) this._reject(this._broken);
   }
@@ -216,8 +313,8 @@ class ClaudePassiveSession {
     // parallel calls (same name AND input) are paired first-fit/arbitrarily —
     // an inherent, documented ambiguity (README "Identical parallel calls").
     // Distinct inputs always correlate exactly.
-    const pairs = [];
-    const used = new Set();
+    const pairs: PendingToolCall[] = [];
+    const used = new Set<number>();
     for (const pk of parked) {
       let idx = -1;
       for (let i = 0; i < declared.length; i++) {
@@ -231,9 +328,9 @@ class ClaudePassiveSession {
     if (pairs.length < declared.length) return;
 
     this._pendingToolCalls = pairs;
-    const content = [
+    const content: ContentBlock[] = [
       ...this._turnText,
-      ...declared.map((d: any) => ({ type: "tool_use", id: d.id, name: this._bareName(d.name), input: d.input })),
+      ...declared.map((d) => ({ type: "tool_use" as const, id: d.id, name: this._bareName(d.name), input: d.input })),
     ];
     this._settle({
       content,
@@ -244,7 +341,7 @@ class ClaudePassiveSession {
     });
   }
 
-  _onClose(code: any): void {
+  _onClose(code: number | null): void {
     this.process = null;
     const tail = (this._stderrTail || "").trim();
     const err = new Error(`claude (passive) exited before producing a result (code ${code}).` + (tail ? `\n${tail}` : ""));
@@ -259,19 +356,19 @@ class ClaudePassiveSession {
   }
 
   _clearTurnTimer(): void {
-    if (this._turnTimer) { try { clearTimeoutFn(this._turnTimer); } catch {} this._turnTimer = null; }
+    if (this._turnTimer) { try { clearTimeoutFn(this._turnTimer); } catch { /* best-effort */ } this._turnTimer = null; }
   }
 
-  _resolve(value: any): void {
+  _resolve(value: SendResponse): void {
     this._clearTurnTimer();
     const r = this._pendingResolve;
     this._pendingResolve = null; this._pendingReject = null; this._parser = null;
     if (r) r(value);
   }
 
-  _settle(value: any): void { this._settled = true; this._resolve(value); }
+  _settle(value: SendResponse): void { this._settled = true; this._resolve(value); }
 
-  _reject(err: any): void {
+  _reject(err: unknown): void {
     this._clearTurnTimer();
     const r = this._pendingReject;
     this._pendingResolve = null; this._pendingReject = null; this._parser = null;
@@ -280,7 +377,7 @@ class ClaudePassiveSession {
 
   // Phase B: route trailing tool_result blocks back through the bridge to unblock
   // the parked MCP calls. Phase A / plain user turn: write a stdin user frame.
-  _routeOrWrite(messages: any[]): void {
+  _routeOrWrite(messages: AnthropicMessage[]): void {
     if (this._bridge && this._pendingToolCalls.length > 0) {
       // Continuation turn: every parked call MUST be answered, exactly once.
       const toolResults = extractToolResults(messages);
@@ -290,15 +387,15 @@ class ClaudePassiveSession {
           `the next send() must carry matching tool_result block(s)`,
         );
       }
-      const answered = new Set();
+      const answered = new Set<string>();
       for (const tr of toolResults) {
-        const pc = this._pendingToolCalls.find((c: any) => c.toolUseId === tr.tool_use_id);
+        const pc = this._pendingToolCalls.find((c) => c.toolUseId === tr.tool_use_id);
         if (!pc) throw new Error(`passive: tool_result for unknown tool_use_id "${tr.tool_use_id}"`);
         const ok = this._bridge.resolve(pc.jsonrpcId, { content: tr.content, is_error: !!tr.is_error });
         if (!ok) throw new Error(`passive: could not deliver tool_result for "${tr.tool_use_id}" — MCP transport is gone`);
         answered.add(pc.toolUseId);
       }
-      const missing = this._pendingToolCalls.filter((c: any) => !answered.has(c.toolUseId));
+      const missing = this._pendingToolCalls.filter((c) => !answered.has(c.toolUseId));
       if (missing.length > 0) {
         throw new Error(`passive: all parked tool calls must be answered in one send() (missing ${missing.length})`);
       }
@@ -312,10 +409,11 @@ class ClaudePassiveSession {
       }
     }
     const frame = JSON.stringify({ type: "user", message: { role: "user", content: lastUserContent(messages) } });
-    this.process.stdin.write(frame + "\n");
+    // send() spawned the process before routing, so it is non-null here.
+    (this.process as PassiveProc).stdin.write(frame + "\n");
   }
 
-  send(req: any): Promise<any> {
+  send(req: SendRequest): Promise<SendResponse> {
     const signal = req && req.signal;
     if (signal && signal.aborted) return Promise.reject(new Error("Aborted"));
     if (this._closed) return Promise.reject(new Error("session is closed"));
@@ -325,14 +423,14 @@ class ClaudePassiveSession {
     if (!this.process) this._spawn();
 
     if (signal && typeof signal.addEventListener === "function") {
-      signal.addEventListener("abort", () => { try { this._abort(); } catch {} }, { once: true });
+      signal.addEventListener("abort", () => { try { this._abort(); } catch { /* best-effort abort */ } }, { once: true });
     }
 
     this._resetTurn();
     this._parser = new PassiveStreamParser();
     if (this.sessionId) this._parser.sessionId = this.sessionId;
 
-    return new Promise((resolve, reject) => {
+    return new Promise<SendResponse>((resolve, reject) => {
       this._pendingResolve = resolve;
       this._pendingReject = reject;
       if (this._requestTimeoutMs) {
@@ -350,7 +448,7 @@ class ClaudePassiveSession {
 
   _abort(): void {
     this._pendingToolCalls = []; // M2: drop stale parked state
-    if (this.process) { const proc = this.process; this.process = null; try { killProcessTree(proc, "SIGTERM"); } catch {} }
+    if (this.process) { const proc = this.process; this.process = null; try { killProcessTree(proc, "SIGTERM"); } catch { /* already dead */ } }
     this._reject(new Error("Aborted"));
   }
 
@@ -366,14 +464,15 @@ class ClaudePassiveSession {
     this._clearTurnTimer();
     if (this.process) {
       const proc = this.process; this.process = null;
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
-      const t = setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch {} }, 2000);
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* already dead */ }
+      const t = setTimeoutFn(() => { try { killProcessTree(proc, "SIGKILL"); } catch { /* already dead */ } }, 2000);
       if (t && typeof t.unref === "function") t.unref(); // CR-M1: don't pin the event loop
     }
-    if (this._bridge) { try { await this._bridge.close(); } catch {} }
+    if (this._bridge) { try { await this._bridge.close(); } catch { /* best-effort teardown */ } }
     this._cleanupConfigFile(); // CR-H1: don't leak the temp --mcp-config file
     if (this._pendingReject) this._reject(new Error("session closed"));
   }
 }
 
 export { ClaudePassiveSession };
+export type { PassiveSessionInit };

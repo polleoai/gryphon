@@ -11,21 +11,21 @@
  * Fire-and-forget. CC stdout always `{}` — observation-only hook.
  */
 
-const {
+import {
   readStdinJson,
   writeStdoutJson,
   sendToGryphon,
   traceHook,
   SOCKET_ENV_VAR,
-} = require("./common/ipc-client");
+} from "./common/ipc-client";
 
 const NOTICE_TIMEOUT_MS = 1000;
 
 async function main() {
-  let input = null;
+  let input: Record<string, unknown> | null = null;
   try {
     input = await readStdinJson();
-  } catch (_) { /* tolerate */ }
+  } catch { /* tolerate */ }
   traceHook("Notification", input);
 
   const message = input && typeof input.message === "string" ? input.message : "";
@@ -36,12 +36,13 @@ async function main() {
           req: "notice",
           level: "info",
           message: message.length > 280 ? message.slice(0, 277) + "..." : message,
-          notificationType: input.notification_type || null,
-          sessionId: input.session_id || null,
+          // `message` is only non-empty when `input` is an object.
+          notificationType: (input as Record<string, unknown>).notification_type || null,
+          sessionId: (input as Record<string, unknown>).session_id || null,
         },
         { timeoutMs: NOTICE_TIMEOUT_MS },
       );
-    } catch (_) { /* fire-and-forget */ }
+    } catch { /* fire-and-forget */ }
   }
 
   await writeStdoutJson({});
@@ -49,6 +50,6 @@ async function main() {
 }
 
 main().catch(async () => {
-  try { await writeStdoutJson({}); } catch (_) { /* ignore */ }
+  try { await writeStdoutJson({}); } catch { /* ignore */ }
   process.exit(0);
 });

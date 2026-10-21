@@ -11,11 +11,63 @@
  * without paying shell-spawn costs. `clearBinaryDiscoveryCache()` is the
  * escape hatch for a "re-detect" button or a settings-reload flow.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const { execFileSync } = require("child_process");
+exports.binaryFinders = void 0;
+exports.findClaudeBinary = findClaudeBinary;
+exports.findCodexBinary = findCodexBinary;
+exports.findGeminiBinary = findGeminiBinary;
+exports.findAntigravityBinary = findAntigravityBinary;
+exports.findNodeBinary = findNodeBinary;
+exports.buildEnhancedPath = buildEnhancedPath;
+exports.detectFlatpakSandbox = detectFlatpakSandbox;
+exports.clearBinaryDiscoveryCache = clearBinaryDiscoveryCache;
+exports.displayPath = displayPath;
+exports.parseVersion = parseVersion;
+exports.compareVersions = compareVersions;
+exports.probeVersion = probeVersion;
+exports._versionProbeTimeoutFor = _versionProbeTimeoutFor;
+exports.resolveCliBinary = resolveCliBinary;
+exports._pickNewestValid = _pickNewestValid;
+exports._collectPresentBinaries = _collectPresentBinaries;
+exports._versionSignatureFor = _versionSignatureFor;
+exports._findViaLoginShell = _findViaLoginShell;
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const child_process_1 = require("child_process");
 // Module-level caches. `undefined` means "not yet probed"; a string or
 // null means "probed, got this result". Explicit-undefined sentinel lets
 // null be a valid cached answer (= known not found).
@@ -146,7 +198,7 @@ function _runVersion(binPath) {
     // spaces (e.g. C:\Program Files\nodejs\claude.cmd — a default candidate)
     // would fail; quote the path so cmd parses it as one token.
     const file = isWinShim ? `"${binPath}"` : binPath;
-    return execFileSync(file, ["--version"], {
+    return (0, child_process_1.execFileSync)(file, ["--version"], {
         timeout: _versionProbeTimeoutFor(binPath),
         stdio: ["ignore", "pipe", "pipe"],
         encoding: "utf8",
@@ -178,7 +230,7 @@ function probeVersion(binPath, run = _runVersion, signature) {
     try {
         realKey = fs.realpathSync(binPath);
     }
-    catch (_) { /* keep binPath */ }
+    catch { /* keep binPath */ }
     for (const k of [binPath, realKey]) {
         if (Object.prototype.hasOwnProperty.call(_versionCache, k))
             return _versionCache[k];
@@ -193,8 +245,9 @@ function probeVersion(binPath, run = _runVersion, signature) {
             return null;
         // execFileSync throws on nonzero exit / timeout but attaches the captured
         // streams; some CLIs print `--version` to stderr.
-        const tail = (e && e.stdout && e.stdout.toString()) ||
-            (e && e.stderr && e.stderr.toString()) ||
+        const err = e;
+        const tail = (err && err.stdout && err.stdout.toString()) ||
+            (err && err.stderr && err.stderr.toString()) ||
             "";
         parsed = parseVersion(tail);
     }
@@ -241,7 +294,7 @@ function _pickNewestValid(present, minVersion, signature) {
  * Cached after the first call. Use `clearBinaryDiscoveryCache()` to
  * force a fresh probe (e.g. from a "re-detect" settings button).
  */
-function findClaudeBinary() {
+function _findClaudeBinaryCached() {
     // Only a successful (truthy) detection is cached; a null is a transient miss
     // (cold-start probe timeout) that must re-run next call so it self-heals.
     if (_claudeBinaryCache)
@@ -267,7 +320,7 @@ function _collectPresentBinaries(candidates, binName, isWindows) {
             seen.add(c);
             present.push(c);
         }
-        catch { }
+        catch { /* best-effort probe */ }
     };
     for (const c of candidates)
         add(c);
@@ -347,7 +400,7 @@ function _findClaudeBinaryUncached() {
  * silently fails. We probe common Node install locations, fall back to
  * PATH, and finally try the user's login shell.
  */
-function findNodeBinary() {
+function _findNodeBinaryCached() {
     if (_nodeBinaryCache !== undefined)
         return _nodeBinaryCache;
     _nodeBinaryCache = _findNodeBinaryUncached();
@@ -380,7 +433,7 @@ function _findNodeBinaryUncached() {
                     fs.accessSync(c, fs.constants.X_OK);
                     return c;
                 }
-                catch { }
+                catch { /* best-effort probe */ }
             }
             else if (stat.isDirectory()) {
                 // nvm-style version manager: pick highest version dir that has
@@ -395,11 +448,11 @@ function _findNodeBinaryUncached() {
                         fs.accessSync(cand, fs.constants.X_OK);
                         return cand;
                     }
-                    catch { }
+                    catch { /* best-effort probe */ }
                 }
             }
         }
-        catch { }
+        catch { /* best-effort probe */ }
     }
     const exts = isWindows ? [".exe", ".cmd", ""] : [""];
     for (const dir of (process.env.PATH || "").split(path.delimiter)) {
@@ -411,7 +464,7 @@ function _findNodeBinaryUncached() {
                 fs.accessSync(c, fs.constants.X_OK);
                 return c;
             }
-            catch { }
+            catch { /* best-effort probe */ }
         }
     }
     if (isWindows || detectFlatpakSandbox().isFlatpak)
@@ -433,7 +486,7 @@ function _findNodeBinaryUncached() {
 // _findViaLoginShell) so tests can simulate a cold-start timeout vs a clean
 // miss without forking a shell.
 function _defaultLoginShellRunner(shell, args) {
-    return execFileSync(shell, args, {
+    return (0, child_process_1.execFileSync)(shell, args, {
         timeout: 2000,
         stdio: ["ignore", "pipe", "ignore"],
         encoding: "utf8",
@@ -472,7 +525,8 @@ function _findViaLoginShellUncached(binName, runner) {
         // EXIT (e.status is a number) means the shell ran and `command -v` reported
         // the binary absent → DEFINITIVE (cacheable). A timeout / kill / spawn
         // error has no numeric exit status → TRANSIENT (cold start) → do NOT cache.
-        const cleanExit = e && typeof e.status === "number" && !e.killed && e.code !== "ETIMEDOUT";
+        const err = e;
+        const cleanExit = err && typeof err.status === "number" && !err.killed && err.code !== "ETIMEDOUT";
         return { path: null, definitive: !!cleanExit };
     }
     // `command -v` may print the alias form ("alias x='...'") if the binary is a
@@ -499,7 +553,7 @@ function _findViaLoginShellUncached(binName, runner) {
  *
  * Returns absolute path or null. Cached.
  */
-function findCodexBinary() {
+function _findCodexBinaryCached() {
     if (_codexBinaryCache)
         return _codexBinaryCache;
     _codexBinaryCache = _findCodexBinaryUncached();
@@ -541,7 +595,7 @@ function _findCodexBinaryUncached() {
  * Locate the Google Gemini CLI. Search pattern matches findClaudeBinary.
  * Returns absolute path or null. Cached.
  */
-function findGeminiBinary() {
+function _findGeminiBinaryCached() {
     if (_geminiBinaryCache)
         return _geminiBinaryCache;
     _geminiBinaryCache = _findGeminiBinaryUncached();
@@ -588,7 +642,7 @@ function _findGeminiBinaryUncached() {
  *
  * Returns absolute path or null. Cached.
  */
-function findAntigravityBinary() {
+function _findAntigravityBinaryCached() {
     // `!== undefined`, not truthiness: null is a CACHED MISS. A truthy check
     // re-runs the whole filesystem + login-shell PATH scan on every readiness
     // poll and factory call whenever `agy` isn't installed — which is the
@@ -654,25 +708,10 @@ function detectFlatpakSandbox() {
             return _flatpakCache;
         }
     }
-    catch { }
+    catch { /* best-effort probe */ }
     _flatpakCache = { isFlatpak: false, appId: null };
     return _flatpakCache;
 }
-/**
- * Collapse the user's home-directory prefix in a filesystem path to `~`
- * so the OS username isn't exposed in UI strings, detection pills,
- * welcome cards, or screenshots. Unchanged if the path is outside
- * home or if `home` is unknown.
- *
- * Example:
- *   displayPath("/Users/alice/.npm-global/bin/claude")
- *     → "~/.npm-global/bin/claude"
- *
- * Screenshot exposure is the concrete risk this guards against —
- * the welcome card and Settings CLI-path pill both render detection
- * results that could otherwise leak the OS username into README
- * screenshots and demo recordings.
- */
 function displayPath(p) {
     if (typeof p !== "string" || !p)
         return p;
@@ -698,19 +737,34 @@ const _LABEL_BY_KIND = {
     "gemini-cli": "gemini",
     "antigravity-cli": "agy",
 };
-// Dispatch detection through module.exports (not the local fn refs) so the
-// finder stays patchable at runtime — tests reassign utils.findClaudeBinary,
-// and this picks up the override. Same rationale factory.ts documents for
-// re-reading require("./utils").find* fresh on each call.
+/**
+ * The binary finders every caller goes through: this module's own resolution
+ * (_detectFor) and other modules, via the exported wrappers below. It is the
+ * one replaceable seam — a test substitutes a finder here, because ESM exports
+ * are read-only bindings and can't be patched in place.
+ */
+const binaryFinders = {
+    findClaudeBinary: _findClaudeBinaryCached,
+    findCodexBinary: _findCodexBinaryCached,
+    findGeminiBinary: _findGeminiBinaryCached,
+    findAntigravityBinary: _findAntigravityBinaryCached,
+    findNodeBinary: _findNodeBinaryCached,
+};
+exports.binaryFinders = binaryFinders;
+function findClaudeBinary() { return binaryFinders.findClaudeBinary(); }
+function findCodexBinary() { return binaryFinders.findCodexBinary(); }
+function findGeminiBinary() { return binaryFinders.findGeminiBinary(); }
+function findAntigravityBinary() { return binaryFinders.findAntigravityBinary(); }
+function findNodeBinary() { return binaryFinders.findNodeBinary(); }
 function _detectFor(kind) {
     if (kind === "claude-code")
-        return module.exports.findClaudeBinary();
+        return binaryFinders.findClaudeBinary();
     if (kind === "codex-cli")
-        return module.exports.findCodexBinary();
+        return binaryFinders.findCodexBinary();
     if (kind === "gemini-cli")
-        return module.exports.findGeminiBinary();
+        return binaryFinders.findGeminiBinary();
     if (kind === "antigravity-cli")
-        return module.exports.findAntigravityBinary();
+        return binaryFinders.findAntigravityBinary();
     return null;
 }
 /**
@@ -736,7 +790,7 @@ function _fileIdOf(p) {
         const st = fs.statSync(p, { bigint: true });
         return st.ino === BigInt(0) ? null : `${st.dev}:${st.ino}`;
     }
-    catch (_) {
+    catch {
         return null;
     }
 }
@@ -746,12 +800,12 @@ function _insideVault(p, vaultRoot) {
     try {
         roots.push(fs.realpathSync(vaultRoot));
     }
-    catch (_) { /* gone */ }
+    catch { /* gone */ }
     const cands = [p];
     try {
         cands.push(fs.realpathSync(p));
     }
-    catch (_) { /* missing */ }
+    catch { /* missing */ }
     for (const c of cands) {
         for (const r of roots) {
             const a = norm(c), b = norm(r);
@@ -797,7 +851,7 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride, opts = {}) {
             fs.accessSync(configuredPath, fs.constants.X_OK);
             executable = true;
         }
-        catch { }
+        catch { /* best-effort probe */ }
         if (executable) {
             const v = probe(configuredPath);
             if (v && compareVersions(v, floor) >= 0) {
@@ -834,25 +888,3 @@ function resolveCliBinary(kind, configuredPath, minVersionOverride, opts = {}) {
     }
     return { ok: false, error: "not-found", detail: label };
 }
-module.exports = {
-    findClaudeBinary,
-    findCodexBinary,
-    findGeminiBinary,
-    findAntigravityBinary,
-    findNodeBinary,
-    buildEnhancedPath,
-    detectFlatpakSandbox,
-    clearBinaryDiscoveryCache,
-    displayPath,
-    // Version-aware resolution (v2.4.3)
-    parseVersion,
-    compareVersions,
-    probeVersion,
-    _versionProbeTimeoutFor,
-    resolveCliBinary,
-    // Exported for unit tests (internal ranking primitives).
-    _pickNewestValid,
-    _collectPresentBinaries,
-    _versionSignatureFor,
-    _findViaLoginShell,
-};

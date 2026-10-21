@@ -232,3 +232,24 @@ test("absent autoDenyProtected defaults to OFF (modal path)", async () => {
   // earlier). Confirms auto-deny isn't silently forced when absent.
   assert.match(result.reason, /Plan mode/);
 });
+
+test("no permission prompt registered → refused with a reason that says so (not 'user denied')", async () => {
+  const errors: unknown[] = [];
+  const origError = console.error;
+  console.error = (...a: unknown[]) => { errors.push(a); };
+  try {
+    const r = await checkPermission({
+      ctx: { permissionMode: "default", plugin: { app: {}, settings: {} } },
+      action: "write",
+      target: "notes/a.md",
+      kind: "fileEdit",
+      cacheable: true,
+    });
+    assert.equal(r.allow, false);
+    assert.match(r.reason, /Cannot prompt user \(no permission prompt is available in this host\)/);
+    assert.doesNotMatch(r.reason, /User denied/);
+    assert.equal(errors.length, 1);
+  } finally {
+    console.error = origError;
+  }
+});

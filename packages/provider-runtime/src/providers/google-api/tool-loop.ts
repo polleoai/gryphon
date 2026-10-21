@@ -21,11 +21,43 @@
  * error. Do not clone the array internally.
  */
 
-const { translateSchemasToGemini } = require("./tool-schema-translator") as typeof import("./tool-schema-translator");
-const {
+import type {
+  Content,
+  FunctionCall,
+  FunctionResponse,
+  GenerateContentConfig,
+  GenerateContentResponseUsageMetadata,
+  GoogleGenAI,
+  Part,
+  Tool,
+} from "@google/genai";
+import { translateSchemasToGemini } from "./tool-schema-translator";
+import {
   getActiveTools,
   executeTool,
-} = require("../anthropic-api/tools/tool-registry") as typeof import("../anthropic-api/tools/tool-registry");
+} from "../anthropic-api/tools/tool-registry";
+import { BudgetExceededError } from "../../budget-error";
+
+type GeminiStream = Awaited<ReturnType<GoogleGenAI["models"]["generateContentStream"]>>;
+
+// Execution context shared with the tool registry. A type alias (not an
+// interface) so it also satisfies the tools' Record<string, unknown> ctx.
+type GeminiToolLoopContext = {
+  responseSchema?: GenerateContentConfig["responseSchema"];
+  maxUsdBudget?: number | null;
+  computeIterationCost?: ((usage: GenerateContentResponseUsageMetadata) => number) | null;
+  priorCumulativeCost?: number;
+  _loopCost?: number;
+  hostAdapter?: { notify?: (message: string, opts: { level: string }) => void } | null;
+  [key: string]: unknown;
+};
+
+interface GeminiToolLoopCallbacks {
+  onMessage?: (text: string, type: string) => void;
+  onTool?: (name: string) => void;
+  onError?: (text: string) => void;
+  onStream?: (stream: GeminiStream) => void;
+}
 
 const MAX_ITERATIONS = 25;
 
@@ -36,15 +68,22 @@ async function runGeminiToolLoop({
   history,
   ctx,
   callbacks,
-}: { client: any; model: any; systemPrompt: any; history: any; ctx: any; callbacks: any }) {
+}: {
+  client: GoogleGenAI;
+  model: string;
+  systemPrompt: string | null | undefined;
+  history: Content[];
+  ctx: GeminiToolLoopContext;
+  callbacks: GeminiToolLoopCallbacks;
+}) {
   const anthropicSchemas = getActiveTools({
     allowWrite: true,
     allowWeb: true,
     allowBash: true,
-  }).map((t: any) => t.SCHEMA);
+  }).map((t) => t.SCHEMA);
   // Gemini wants a single tools[] entry containing all functionDeclarations.
   const toolsConfig = anthropicSchemas.length > 0
-    ? [translateSchemasToGemini(anthropicSchemas)]
+    ? [translateSchemasToGemini(anthropicSchemas) as Tool]
     : undefined;
 
   // Aggregate token usage across iterations. Gemini's GenerateContentResponse
@@ -68,7 +107,7 @@ async function runGeminiToolLoop({
   // calls a tool that gets denied, then emits a follow-up message, the
   // bubble preserves the earlier prose instead of having it overwritten.
   let priorTurnText = "";
-  let finalMessage = null;
+  let finalMessage: Content | null = null;
   let iterations = 0;
 
   while (iterations < MAX_ITERATIONS) {
@@ -77,7 +116,7 @@ async function runGeminiToolLoop({
     // Gemini's `contents` is the full chat history; system instruction lives
     // separately in `config.systemInstruction`. History items are role
     // "user" or "model" (NOT "assistant" — that's OpenAI).
-    const generationConfig: Record<string, any> = {};
+    const generationConfig: GenerateContentConfig = {};
     // L6 structured output: inject responseSchema + responseMimeType when set.
     // ctx.responseSchema is only present when the caller passed
     // { structuredOutput: { name, schema } } to send(). Google enforces the
@@ -98,9 +137,9 @@ async function runGeminiToolLoop({
     if (callbacks.onStream) callbacks.onStream(stream);
 
     let iterationText = "";
-    const collectedParts = [];   // assistant ("model") parts assembled across chunks
-    let lastUsage = null;
-    let lastFinishReason = null;
+    const collectedParts: Part[] = [];   // assistant ("model") parts assembled across chunks
+    let lastUsage: GenerateContentResponseUsageMetadata | null = null;
+    let lastFinishReason: string | null = null;
 
     for await (const chunk of stream) {
       const candidate = chunk.candidates && chunk.candidates[0];
@@ -165,14 +204,13 @@ async function runGeminiToolLoop({
         if (ctx.hostAdapter && ctx.hostAdapter.notify) {
           try {
             ctx.hostAdapter.notify(`[gryphon] iteration cost unmeasurable: ${(e as Error).message}`, { level: "warn" });
-          } catch (_) { /* notify must not block */ }
+          } catch { /* notify must not block */ }
         }
       }
       if (!ctx._loopCost) ctx._loopCost = 0;
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
       if (callCumulative >= ctx.maxUsdBudget) {
-        const { BudgetExceededError } = require("../../budget-error") as typeof import("../../budget-error");
         throw new BudgetExceededError({
           budget: ctx.maxUsdBudget,
           spent: callCumulative,
@@ -207,7 +245,7 @@ async function runGeminiToolLoop({
     // Pull function-call parts for dispatch.
     const functionCalls = collectedParts
       .filter((p) => p.functionCall)
-      .map((p) => p.functionCall);
+      .map((p) => p.functionCall as FunctionCall);
 
     if (functionCalls.length === 0) {
       // No tool calls → done. Honour finishReason for diagnostic surfacing.
@@ -222,9 +260,9 @@ async function runGeminiToolLoop({
     // Dispatch tool calls. Gryphon's executeTool returns Anthropic-shape
     // `{ content: [{type:"text", text}], isError }` — we serialize that
     // into a Gemini functionResponse `response` object.
-    const responseParts = [];
+    const responseParts: Part[] = [];
     for (const call of functionCalls) {
-      const name = call.name;
+      const name = call.name as string;
       const input = call.args || {};
       const callId = call.id; // optional per Gemini contract; preserve when present
 
@@ -232,9 +270,9 @@ async function runGeminiToolLoop({
       const result = await executeTool(name, input, ctx);
 
       const responseObj = serializeToolResultAsGeminiResponse(result);
-      const part: Record<string, any> = { functionResponse: { name, response: responseObj } };
-      if (callId) part.functionResponse.id = callId;
-      responseParts.push(part);
+      const functionResponse: FunctionResponse = { name, response: responseObj };
+      if (callId) functionResponse.id = callId;
+      responseParts.push({ functionResponse });
     }
 
     // Tool results land as a single user-role Content with all
@@ -269,11 +307,13 @@ async function runGeminiToolLoop({
  * the model reads as state rather than as a presentational tag.
  * User report 2026-05-04 (Windows VM, google-api).
  */
-function serializeToolResultAsGeminiResponse(result: any) {
+function serializeToolResultAsGeminiResponse(
+  result: { content?: unknown; isError?: boolean } | null | undefined,
+) {
   if (!result) return { result: "", success: true };
-  const parts = [];
+  const parts: string[] = [];
   if (Array.isArray(result.content)) {
-    for (const block of result.content) {
+    for (const block of result.content as Array<{ text?: unknown } | null | undefined>) {
       if (block && typeof block.text === "string") parts.push(block.text);
     }
   } else if (typeof result.content === "string") {

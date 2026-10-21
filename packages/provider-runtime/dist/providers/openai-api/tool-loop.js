@@ -25,8 +25,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAX_ITERATIONS = void 0;
 exports.runOpenAIToolLoop = runOpenAIToolLoop;
 exports.serializeToolResultContent = serializeToolResultContent;
-const { translateSchemasToOpenAI } = require("./tool-schema-translator");
-const { getActiveTools, executeTool, } = require("../anthropic-api/tools/tool-registry");
+const tool_schema_translator_1 = require("./tool-schema-translator");
+const tool_registry_1 = require("../anthropic-api/tools/tool-registry");
+const budget_error_1 = require("../../budget-error");
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
 async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }) {
@@ -38,12 +39,12 @@ async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, ca
     // feature (a structuredOutput send is a single-shot request, not an
     // agentic loop). If future callers combine both, this co-exists: OpenAI
     // honours response_format on assistant text even when tools are present.
-    const anthropicSchemas = getActiveTools({
+    const anthropicSchemas = (0, tool_registry_1.getActiveTools)({
         allowWrite: true,
         allowWeb: true,
         allowBash: true,
     }).map((t) => t.SCHEMA);
-    const tools = translateSchemasToOpenAI(anthropicSchemas);
+    const tools = (0, tool_schema_translator_1.translateSchemasToOpenAI)(anthropicSchemas);
     // OpenAI returns separate prompt/completion/cached counts per call;
     // we sum across iterations so the caller sees the full turn cost.
     const totalUsage = {
@@ -137,14 +138,15 @@ async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, ca
         // SDK providers throw here; CLI providers can only check post-turn
         // (subprocess owns its internal loop; cannot abort mid-stream).
         if (ctx && ctx.maxUsdBudget !== null && ctx.computeIterationCost) {
+            // The `as number` casts below are compile-time only: an undefined
+            // budget still compares false at runtime, exactly as before.
             const iterCost = ctx.computeIterationCost(u);
             if (!ctx._loopCost)
                 ctx._loopCost = 0;
             ctx._loopCost += iterCost;
             const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;
             if (callCumulative >= ctx.maxUsdBudget) {
-                const { BudgetExceededError } = require("../../budget-error");
-                throw new BudgetExceededError({
+                throw new budget_error_1.BudgetExceededError({
                     budget: ctx.maxUsdBudget,
                     spent: callCumulative,
                     lastTurnCost: iterCost,
@@ -191,7 +193,7 @@ async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, ca
             try {
                 input = JSON.parse(argsRaw);
             }
-            catch (e) {
+            catch {
                 // The model emitted malformed JSON — return a tool error so it
                 // can self-correct rather than throwing the loop.
                 history.push({
@@ -203,7 +205,7 @@ async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, ca
             }
             if (callbacks.onTool)
                 callbacks.onTool(name);
-            const result = await executeTool(name, input, ctx);
+            const result = await (0, tool_registry_1.executeTool)(name, input, ctx);
             // Translate Anthropic-shape tool_result content (array of {type, text})
             // into the single string OpenAI expects on `role: "tool"` messages.
             history.push({

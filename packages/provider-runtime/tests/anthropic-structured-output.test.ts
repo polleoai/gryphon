@@ -15,8 +15,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("module");
 
-// Stub the Anthropic SDK before requiring the provider — we inject a
-// fake client so the constructor doesn't touch the real SDK.
+// Fake SDK client, injected via options.client, so the provider never
+// loads the real SDK.
 class FakeAnthropic {
   constructor(opts) {
     this.opts = opts;
@@ -27,12 +27,6 @@ class FakeAnthropic {
     };
   }
 }
-
-const originalLoad = Module._load;
-Module._load = function (request, ...args) {
-  if (request === "@anthropic-ai/sdk") return { default: FakeAnthropic };
-  return originalLoad.call(this, request, ...args);
-};
 
 const stubPath = require.resolve("./_stubs/obsidian.js");
 const origResolve = Module._resolveFilename;
@@ -82,6 +76,7 @@ function makeMockStream({ content, stop_reason, usage, id = "msg_mock" }) {
 function makeProvider() {
   const p = new AnthropicAPIProvider("test-api-key", "/fake/cwd", {
     model: "claude-sonnet-4-6",
+    client: new FakeAnthropic({ apiKey: "test-api-key", dangerouslyAllowBrowser: true, maxRetries: 3 }),
   });
   return p;
 }

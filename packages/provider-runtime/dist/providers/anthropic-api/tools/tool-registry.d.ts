@@ -8,16 +8,37 @@
  * Phase 5). Permission-gated tools (Write/Edit/Bash) check the caller's
  * permissionMode in their execute() before performing the side effect.
  */
+interface ToolResult {
+    content: string | Array<{
+        type: string;
+        text: string;
+    }>;
+    isError?: boolean;
+}
+interface ToolSchema {
+    name: string;
+    description: string;
+    input_schema: Record<string, unknown>;
+}
+interface ToolModule {
+    SCHEMA: ToolSchema;
+    execute(input: unknown, ctx: unknown): Promise<ToolResult>;
+}
+interface ToolPhaseOpts {
+    allowWrite?: boolean;
+    allowWeb?: boolean;
+    allowBash?: boolean;
+}
 /**
  * Returns the active tool set based on which phases are enabled.
  * @param {object} opts — { allowWrite, allowWeb, allowBash }
  * @returns {Array<{SCHEMA, execute}>}
  */
-declare function getActiveTools(opts?: Record<string, any>): any[];
+declare function getActiveTools(opts?: ToolPhaseOpts): ToolModule[];
 /**
  * Returns the schema array shipped to the Anthropic API.
  */
-declare function getToolSchemas(opts?: Record<string, any>): any[];
+declare function getToolSchemas(opts?: ToolPhaseOpts): ToolSchema[];
 /**
  * Dispatch a tool_use block to its execute() handler.
  * Always returns a tool_result-shaped object; throws never escape.
@@ -34,5 +55,5 @@ declare function getToolSchemas(opts?: Record<string, any>): any[];
  * @param {object} ctx    — { vaultRoot, permissionMode, plugin, ... }
  * @returns {Promise<{content, isError}>}
  */
-declare function executeTool(name: any, input: any, ctx: any): Promise<any>;
+declare function executeTool(name: string, input: unknown, ctx: unknown): Promise<ToolResult>;
 export { getActiveTools, getToolSchemas, executeTool };

@@ -15,19 +15,51 @@
  * and `container.__created` (the chrome elements that were drawn).
  */
 
+// Obsidian's keymap scope; every Modal owns one (Modal.open pushes it).
+class Scope {}
+
 class Modal {
-  constructor() { this.titleEl = _el(); this.contentEl = _el(); Modal.opened.push(this); }
+  constructor() { this.titleEl = _el(); this.contentEl = _el(); this.scope = new Scope(); Modal.opened.push(this); }
   open() { this.isOpen = true; }
   close() { this.isOpen = false; }
 }
 Modal.opened = [] as any[];
 
+// Obsidian's activeDocument global, as far as plugin code uses it: text nodes
+// and fragments (obsidian-compat.noticeWithElement). A fragment message is
+// rendered into the Notice's element below, as real Obsidian does.
+if (typeof (globalThis as any).activeDocument === "undefined") {
+  (globalThis as any).activeDocument = {
+    createTextNode(text) { return { nodeType: 3, textContent: String(text), parentElement: null }; },
+    createDocumentFragment() {
+      const f = {
+        __nodes: [] as any[],
+        appendChild(n) { f.__nodes.push(n); return n; },
+        get textContent() { return f.__nodes.map((n) => n.textContent).join(""); },
+      };
+      return f;
+    },
+  };
+}
+// …and activeWindow.createFragment, Obsidian's fragment helper on every window.
+if (typeof (globalThis as any).activeWindow === "undefined") {
+  (globalThis as any).activeWindow = { createFragment: () => (globalThis as any).activeDocument.createDocumentFragment() };
+}
+
 // Records every Notice so tests can assert on the message and its DOM.
+// Like Obsidian ≥ 1.8.7, noticeEl and messageEl are one element, and a
+// fragment message's nodes end up inside it.
 class Notice {
   constructor(message, timeout) {
-    this.message = message;
     this.timeout = timeout;
     this.noticeEl = _el();
+    this.messageEl = this.noticeEl;
+    if (message && Array.isArray(message.__nodes)) {
+      this.message = message.textContent;
+      for (const n of message.__nodes) n.parentElement = this.noticeEl;
+    } else {
+      this.message = message;
+    }
     this.hidden = false;
     Notice.shown.push(this);
   }
@@ -55,8 +87,10 @@ function _control(type) {
     setDisabled(d) { c.disabled = d; return c; },
     setButtonText(t) { c.buttonText = t; return c; },
     setTooltip() { return c; },
-    setCta() { return c; },
+    setCta() { c.cta = true; return c; },
     setWarning() { return c; },
+    setDestructive() { c.destructive = true; return c; },
+    buttonEl: _el(),
     setIcon() { return c; },
     addOption(id, label) { c.options.push({ id, label }); return c; },
     onChange(fn) { c.changeHandler = fn; return c; },
@@ -238,10 +272,12 @@ class Plugin {
 }
 
 module.exports = {
-  Modal, Notice, Setting, TFile, TFolder,
+  Modal, Notice, Scope, Setting, TFile, TFolder,
   ItemView, MarkdownView, Menu, MarkdownRenderer,
   Plugin, PluginSettingTab,
   setTooltip, requestUrl,
+  // Tests model the current Obsidian (every guarded API is available).
+  requireApiVersion() { return true; },
   // Test helpers: the recording element factory + recursive collectors.
   // _el() builds a recording container; _allSettings/_allCreated recurse into
   // child elements created via createDiv/createEl/createSpan.

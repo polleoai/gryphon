@@ -1,13 +1,16 @@
-// Hand-maintained public type declarations for @gryphon/provider-runtime (R4/R5).
+// Public type declarations for @polleoai/gryphon-provider-runtime (R4/R5).
 //
 // Lives at the package root (committed, not in dist/) so `types`/`exports` can
-// point here without requiring a build. The runtime is CommonJS
-// (`module.exports = {...}` in src/index.ts), which tsc cannot statically
-// analyze into named declarations — so the public surface is declared by hand
-// here, sourced from the compiled dist/types.d.ts for the shared types.
+// point here. src/index.ts is an ES module, so tsc emits accurate declarations
+// for every runtime export into dist/index.d.ts; they are re-exported below.
+// The passive-backend section keeps its published type names (DeclaredTool,
+// PassiveContentBlock, PassiveSend*), which a local declaration takes
+// precedence over the star export for.
 //
-// Keep in sync with src/index.ts's module.exports. Consumers (Metis):
-//   import { createProvider, type LLMProvider, type SendOptions } from "@gryphon/provider-runtime";
+// Consumers (Metis):
+//   import { createProvider, type LLMProvider, type SendOptions } from "@polleoai/gryphon-provider-runtime";
+
+export * from "./dist/index";
 
 export type {
   LLMProvider,
@@ -17,57 +20,6 @@ export type {
   StreamMessageType,
   ProviderKind,
 } from "./dist/types";
-
-import type { LLMProvider, ProviderKind } from "./dist/types";
-
-// ── provider selection / instantiation (factory) ──────────────────────
-/** Construct a provider from a plugin instance OR a `{kind, config, cwd?, options?, hostAdapter?}` bag. Returns null when the selected provider is unavailable. */
-export declare function createProvider(
-  pluginOrBag: any,
-  cwd?: string,
-  options?: Record<string, any>,
-): LLMProvider | null;
-/** Human-readable reason the active provider can't run (missing key/CLI, etc.). */
-export declare function explainUnavailable(plugin: any): string;
-/** Probe which providers are usable in the current environment. */
-export declare function detectAvailable(plugin: any): any;
-/** The resolved active provider kind, or null if none is available. */
-export declare function getActiveProviderKind(plugin: any): ProviderKind | null;
-
-// ── binary / environment discovery (utils) ────────────────────────────
-export declare function findClaudeBinary(): string | null;
-export declare function findCodexBinary(): string | null;
-export declare function findGeminiBinary(): string | null;
-export declare function findNodeBinary(): string | null;
-export declare function buildEnhancedPath(): string;
-export declare function detectFlatpakSandbox(): { isFlatpak: boolean; appId: string | null };
-export declare function clearBinaryDiscoveryCache(): void;
-export declare function displayPath(p: unknown): unknown;
-
-// ── namespaces (advanced/internal access) ─────────────────────────────
-export declare const factory: any;
-export declare const utils: any;
-export declare const pricing: {
-  anthropic: any;
-  openai: any;
-  google: any;
-};
-
-// ── subprocess lifecycle (registry) ───────────────────────────────────
-/** Reap every CLI child process tree the runtime spawned. Call from the host's shutdown path (Obsidian onunload). Idempotent; never throws. Returns the number of trees signalled. */
-export declare function killAllSubprocesses(signal?: NodeJS.Signals): number;
-/** Number of currently-tracked (presumed-live) CLI children. Diagnostics. */
-export declare function liveSubprocessCount(): number;
-export declare const subprocessRegistry: any;
-
-// ── error types thrown by send() ──────────────────────────────────────
-export declare class BudgetExceededError extends Error {
-  constructor(...args: any[]);
-}
-export declare class CliStructuredOutputError extends Error {
-  reason?: string;
-  constructor(...args: any[]);
-}
 
 // ── passive-backend mode (passive/) ───────────────────────────────────
 // claude as a structured LLM backend: emits Anthropic Messages-API content

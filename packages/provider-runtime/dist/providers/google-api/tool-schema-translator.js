@@ -25,10 +25,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.translateSchemaToGemini = translateSchemaToGemini;
 exports.translateSchemasToGemini = translateSchemasToGemini;
 exports.stripAdditionalProperties = stripAdditionalProperties;
-function translateSchemaToGemini(schema) {
-    if (!schema || typeof schema !== "object") {
+function translateSchemaToGemini(input) {
+    if (!input || typeof input !== "object") {
         throw new Error("translateSchemaToGemini: SCHEMA must be an object");
     }
+    const schema = input;
     if (!schema.name) {
         throw new Error("translateSchemaToGemini: SCHEMA.name is required");
     }
@@ -83,11 +84,12 @@ function _validateGeminiSchemaDialect(node, toolName, path = "") {
     }
     if (!node || typeof node !== "object")
         return;
-    if (Array.isArray(node.enum)) {
-        const badIndex = node.enum.findIndex((v) => typeof v !== "string");
+    const enumValues = node.enum;
+    if (Array.isArray(enumValues)) {
+        const badIndex = enumValues.findIndex((v) => typeof v !== "string");
         if (badIndex >= 0) {
             throw new Error(`translateSchemaToGemini(${toolName}): non-string enum value at ${path || "<root>"}` +
-                ` — Gemini's JSON Schema dialect only accepts string enums. Got ${typeof node.enum[badIndex]}.`);
+                ` — Gemini's JSON Schema dialect only accepts string enums. Got ${typeof enumValues[badIndex]}.`);
         }
     }
     for (const [k, v] of Object.entries(node)) {

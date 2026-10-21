@@ -23,4 +23,19 @@
  * SDK-specific class (the three SDKs use different error classes, and the
  * CLIs throw none).
  */
-export {};
+type FailureKind = "availability" | "content" | "runtime";
+type FailureReason = "no-api-key" | "auth" | "insufficient-credit" | "quota" | "rate-limit" | "construct-null" | null;
+/**
+ * Classify a provider failure.
+ *
+ * @param errOrNull  the thrown error, OR `null`/`undefined` to signal a
+ *                   construct-time failure (createProvider returned null).
+ * @returns { kind, reason }
+ *   - kind "availability" → safe to retry on a fallback. `reason` names why.
+ *   - kind "content" / "runtime" → do NOT fail over. `reason` is null.
+ */
+declare function classifyProviderFailure(errOrNull: unknown): {
+    kind: FailureKind;
+    reason: FailureReason;
+};
+export { classifyProviderFailure };

@@ -1,6 +1,51 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.PRESERVED_FROM_REAL_HOME = exports.kind = void 0;
+exports.buildSpawnExtras = buildSpawnExtras;
+exports.buildTrustOnlyOverlay = buildTrustOnlyOverlay;
+exports._projectTrustToml = _projectTrustToml;
+exports._tomlString = _tomlString;
+exports._buildHooksToml = _buildHooksToml;
+exports._codexHookTrustHash = _codexHookTrustHash;
+exports._renderTrustState = _renderTrustState;
+exports._buildStoreGuardToml = _buildStoreGuardToml;
+exports._buildModelInstructions = _buildModelInstructions;
+exports._createCodexHomeOverlay = _createCodexHomeOverlay;
+exports._cleanupOverlay = _cleanupOverlay;
 /**
  * Codex CLI hook adapter.
  *
@@ -20,15 +65,16 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * etc.) are reused unchanged — Codex consumes them with the same
  * stdin/stdout JSON contract Claude Code uses.
  */
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const crypto = require("crypto");
-const { hookCommandLine } = require("../../../provider-runtime/dist/shell-quote");
-const { DEFAULT_HOOK_TIMEOUTS, HOOK_FILES, POSTTOOL_MATCHER, } = require("../../../provider-runtime/dist/providers/claude-code/hook-settings-builder");
-const { GRYPHON_SYSTEM_PROMPT_HINT, GRYPHON_FALLBACK_DENY_HINT, } = require("../system-prompt-hints");
-const { storeGuardCommand, STORE_GUARD_TIMEOUT_S } = require("./store-guard-command");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
+const shell_quote_1 = require("@polleoai/gryphon-provider-runtime/shell-quote");
+const hook_settings_builder_1 = require("@polleoai/gryphon-provider-runtime/providers/claude-code/hook-settings-builder");
+const system_prompt_hints_1 = require("../system-prompt-hints");
+const store_guard_command_1 = require("./store-guard-command");
 const KIND = "codex-cli";
+exports.kind = KIND;
 // Files we symlink from the real ~/.codex/ into our overlay so Codex
 // retains login state and can resume prior sessions. Kept minimal:
 //
@@ -54,6 +100,7 @@ const PRESERVED_FROM_REAL_HOME = [
     "sessions",
     "models_cache.json",
 ];
+exports.PRESERVED_FROM_REAL_HOME = PRESERVED_FROM_REAL_HOME;
 /**
  * R2-2: a TOML basic string. JSON.stringify is close but not TOML: it
  * leaves U+007F raw (forbidden in TOML) and emits \uDXXX for a lone
@@ -231,7 +278,7 @@ function _renderTrustState(configPath, hooks) {
  * more reliably than inline "·" separators).
  */
 function _buildModelInstructions() {
-    const bullets = GRYPHON_SYSTEM_PROMPT_HINT.split("· ").map((s) => s.trim()).filter(Boolean);
+    const bullets = system_prompt_hints_1.GRYPHON_SYSTEM_PROMPT_HINT.split("· ").map((s) => s.trim()).filter(Boolean);
     const head = bullets[0];
     const rest = bullets.slice(1).map((b) => `- ${b}`).join("\n\n");
     return [
@@ -243,7 +290,7 @@ function _buildModelInstructions() {
         "",
         "## On terse environment refusals (fallback path)",
         "",
-        GRYPHON_FALLBACK_DENY_HINT.replace(/^· /, ""),
+        system_prompt_hints_1.GRYPHON_FALLBACK_DENY_HINT.replace(/^· /, ""),
         "",
     ].join("\n");
 }
@@ -265,15 +312,15 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
         const scriptPath = path.join(hooksDir, scriptName);
         // R43-1: real shell quoting (the script path is under the vault folder,
         // and #31 makes Codex trust exactly this string).
-        return hookCommandLine(nodePath, scriptPath, isWindows ? "win32" : process.platform);
+        return (0, shell_quote_1.hookCommandLine)(nodePath, scriptPath, isWindows ? "win32" : process.platform);
     };
     const events = [
-        ["PreToolUse", "", HOOK_FILES.PreToolUse],
-        ["PostToolUse", POSTTOOL_MATCHER, HOOK_FILES.PostToolUse],
-        ["SessionStart", "", HOOK_FILES.SessionStart],
-        ["SessionEnd", "", HOOK_FILES.SessionEnd],
-        ["UserPromptSubmit", "", HOOK_FILES.UserPromptSubmit],
-        ["Notification", "", HOOK_FILES.Notification],
+        ["PreToolUse", "", hook_settings_builder_1.HOOK_FILES.PreToolUse],
+        ["PostToolUse", hook_settings_builder_1.POSTTOOL_MATCHER, hook_settings_builder_1.HOOK_FILES.PostToolUse],
+        ["SessionStart", "", hook_settings_builder_1.HOOK_FILES.SessionStart],
+        ["SessionEnd", "", hook_settings_builder_1.HOOK_FILES.SessionEnd],
+        ["UserPromptSubmit", "", hook_settings_builder_1.HOOK_FILES.UserPromptSubmit],
+        ["Notification", "", hook_settings_builder_1.HOOK_FILES.Notification],
     ];
     // Header: Codex distinguishes [hooks] (single table) from
     // [[hooks.<event>]] (array of tables). Each event can have multiple
@@ -289,9 +336,9 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
     const rendered = [];
     for (const [event, matcher, scriptName] of events) {
         const cmd = makeCommand(scriptName);
-        toml += _renderHookBlock(event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]);
+        toml += _renderHookBlock(event, matcher, cmd, hook_settings_builder_1.DEFAULT_HOOK_TIMEOUTS[event]);
         toml += "\n";
-        rendered.push([event, matcher, cmd, DEFAULT_HOOK_TIMEOUTS[event]]);
+        rendered.push([event, matcher, cmd, hook_settings_builder_1.DEFAULT_HOOK_TIMEOUTS[event]]);
     }
     if (configPath)
         toml += _renderTrustState(configPath, rendered);
@@ -303,11 +350,11 @@ function _buildHooksToml({ pluginDir, nodePath, modelInstructionsFile, configPat
  * the only thing Gryphon adds is the trust-store check.
  */
 function _buildStoreGuardToml({ nodePath, storeGuard, configPath }) {
-    const { command } = storeGuardCommand({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "codex" });
+    const { command } = (0, store_guard_command_1.storeGuardCommand)({ nodePath, scriptPath: storeGuard.scriptPath, approvalsDir: storeGuard.approvalsDir, dialect: "codex" });
     // #31: an untrusted hook is skipped silently by Codex, so the guard must be trusted too.
     return "# Gryphon-managed Codex hook config (regenerated per spawn): store guard only.\n\n" +
-        _renderHookBlock("PreToolUse", "", command, STORE_GUARD_TIMEOUT_S) + "\n" +
-        (configPath ? _renderTrustState(configPath, [["PreToolUse", "", command, STORE_GUARD_TIMEOUT_S]]) : "");
+        _renderHookBlock("PreToolUse", "", command, store_guard_command_1.STORE_GUARD_TIMEOUT_S) + "\n" +
+        (configPath ? _renderTrustState(configPath, [["PreToolUse", "", command, store_guard_command_1.STORE_GUARD_TIMEOUT_S]]) : "");
 }
 /**
  * Create a CODEX_HOME overlay directory: a fresh tmpdir containing our
@@ -476,19 +523,3 @@ function buildTrustOnlyOverlay({ projectDir }) {
     const overlay = _createCodexHomeOverlay({ projectDir, trustOnly: true });
     return { env: { CODEX_HOME: overlay }, cleanup: () => _cleanupOverlay(overlay) };
 }
-module.exports = {
-    kind: KIND,
-    buildSpawnExtras,
-    buildTrustOnlyOverlay,
-    _projectTrustToml,
-    _tomlString,
-    // Internals exposed for tests:
-    _buildHooksToml,
-    _codexHookTrustHash,
-    _renderTrustState,
-    _buildStoreGuardToml,
-    _buildModelInstructions,
-    _createCodexHomeOverlay,
-    _cleanupOverlay,
-    PRESERVED_FROM_REAL_HOME,
-};

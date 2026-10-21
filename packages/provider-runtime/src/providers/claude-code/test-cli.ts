@@ -29,16 +29,30 @@ const setTimeoutFn = setTimeout;
 // would throw in the headless paths these probes run in.
 const clearTimeoutFn = clearTimeout;
 
-const { spawn } = require("child_process") as typeof import("child_process");
-const os = require("os") as typeof import("os");
-const { buildEnhancedPath } = require("../../utils");
-const { killProcessTree } = require("../../subprocess-registry");
+import { spawn } from "child_process";
+import type { SpawnOptionsWithStdioTuple, StdioNull, StdioPipe } from "child_process";
+import * as os from "os";
+import { buildEnhancedPath } from "../../utils";
+import { killProcessTree } from "../../subprocess-registry";
 
 const _LIVENESS_TIMEOUT_MS = 45000;   // CC cold start is slower than the others
 const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
 
-function testCli(claudePath: any) {
-  return new Promise((resolve) => {
+/** Result of a liveness probe: never throws, always settles. */
+interface CliTestResult {
+  ok: boolean;
+  message: string;
+}
+
+/** One stream-json line (only the fields read here). */
+interface ProbeEvent {
+  type?: string;
+  message?: { content?: Array<{ type?: string; text?: unknown } | null> };
+  result?: unknown;
+}
+
+function testCli(claudePath: unknown): Promise<CliTestResult> {
+  return new Promise<CliTestResult>((resolve) => {
     if (!claudePath || typeof claudePath !== "string") {
       resolve({ ok: false, message: "No Claude Code CLI path configured." });
       return;
@@ -46,7 +60,7 @@ function testCli(claudePath: any) {
 
     const isWindowsShim =
       process.platform === "win32" && /\.(cmd|bat)$/i.test(claudePath);
-    const opts: Record<string, any> = {
+    const opts: SpawnOptionsWithStdioTuple<StdioNull, StdioPipe, StdioPipe> = {
       env: { ...process.env, PATH: buildEnhancedPath() },
       // Never Obsidian's own cwd: launched from a shell that can be a vault
       // or project dir, and --print skips Claude Code's workspace-trust check,
@@ -86,19 +100,19 @@ function testCli(claudePath: any) {
     // The liveness timer is also captured and cleared: unstored, it keeps the
     // event loop alive for its full duration after a fast probe, delaying exit of
     // the very script the gate runs.
-    let timer: any = null;
-    const finish = (result: any) => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (result: CliTestResult) => {
       if (settled) return;
       settled = true;
-      if (timer) { try { clearTimeoutFn(timer); } catch {} timer = null; }
-      try { killProcessTree(proc, "SIGTERM"); } catch {}
+      if (timer) { try { clearTimeoutFn(timer); } catch { /* best-effort */ } timer = null; }
+      try { killProcessTree(proc, "SIGTERM"); } catch { /* already exited */ }
       resolve(result);
     };
 
-    proc.stdout.on("data", (d: any) => { out += d.toString(); });
-    proc.stderr.on("data", (d: any) => { err += d.toString(); });
-    proc.on("error", (e: any) => finish({ ok: false, message: `Spawn error: ${e.message}` }));
-    proc.on("close", (code: any) => {
+    proc.stdout.on("data", (d: Buffer) => { out += d.toString(); });
+    proc.stderr.on("data", (d: Buffer) => { err += d.toString(); });
+    proc.on("error", (e: Error) => finish({ ok: false, message: `Spawn error: ${e.message}` }));
+    proc.on("close", (code: number | null) => {
       // Auth phrasing is classified by the caller (live-cli-probe.sh treats
       // account/tier failures as environment, not a release blocker), so the
       // wording here needs to stay recognisable to that matcher.
@@ -146,8 +160,8 @@ function _extractAssistantText(stdout: string): string {
   let resultText: string | null = null;
   for (const line of stdout.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    let evt: any;
-    try { evt = JSON.parse(line); } catch { continue; }
+    let evt: ProbeEvent | null;
+    try { evt = JSON.parse(line) as ProbeEvent | null; } catch { continue; }
     if (!evt || typeof evt !== "object") continue;
     if (evt.type === "assistant" && evt.message && Array.isArray(evt.message.content)) {
       for (const block of evt.message.content) {

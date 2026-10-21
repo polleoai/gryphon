@@ -24,8 +24,11 @@
  * CLI kind with no binary → "construct-null").
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-const { getActiveProviderKind } = require("./factory");
-const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
+exports.describeProviderReadiness = describeProviderReadiness;
+exports.humanizeFailureReason = humanizeFailureReason;
+exports.friendlyProviderLabel = friendlyProviderLabel;
+const factory_1 = require("./factory");
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
 /**
  * Is the selected provider actually usable, and if not, why?
  *
@@ -44,15 +47,15 @@ const { DEFAULT_PROVIDER_PREFERENCE } = require("@gryphon/provider-config");
  */
 function describeProviderReadiness(plugin, preference) {
     const settings = (plugin && plugin.settings) || {};
-    const pref = preference || settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE;
+    const pref = preference || settings.providerPreference || gryphon_provider_config_1.DEFAULT_PROVIDER_PREFERENCE;
     // Built on getActiveProviderKind so the verdict can never diverge from
     // createProvider's selection. When the caller overrides the preference, probe
     // with a shallow settings clone carrying that preference — never mutate the
     // host's settings.
-    const probe = pref === (settings.providerPreference || DEFAULT_PROVIDER_PREFERENCE)
+    const probe = pref === (settings.providerPreference || gryphon_provider_config_1.DEFAULT_PROVIDER_PREFERENCE)
         ? plugin
         : { ...plugin, settings: { ...settings, providerPreference: pref } };
-    const kind = getActiveProviderKind(probe);
+    const kind = (0, factory_1.getActiveProviderKind)(probe);
     if (kind)
         return { ready: true, reason: null, kind };
     return { ready: false, reason: _readinessReason(pref, settings), kind: null };
@@ -78,6 +81,8 @@ function _readinessReason(pref, settings) {
  * Shared by the Settings chip and the chat fallback attribution so both
  * surfaces speak identically.
  */
+// Takes any failover reason ("no-api-key" | "auth" | "insufficient-credit" |
+// "quota" | "rate-limit" | "construct-null") or null; unknown → "unavailable".
 function humanizeFailureReason(reason) {
     switch (reason) {
         case "no-api-key": return "no API key";
@@ -106,8 +111,3 @@ function friendlyProviderLabel(kind) {
         default: return kind || "the provider";
     }
 }
-module.exports = {
-    describeProviderReadiness,
-    humanizeFailureReason,
-    friendlyProviderLabel,
-};

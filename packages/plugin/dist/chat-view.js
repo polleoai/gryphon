@@ -85,16 +85,80 @@
  * All coupling comes through the options bag; consumers wire their own
  * behavior via autocompleteSources, stopStreamingHooks, onBeforeSend.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const { ItemView, MarkdownRenderer, Menu, MarkdownView, setTooltip, requestUrl } = require("obsidian");
-const path = require("path");
-const fs = require("fs");
-const os = require("os");
-const { createProvider, createProviderForKind, explainUnavailable, detectAvailable } = require("@gryphon/provider-runtime");
-const { TOOL_STATUS_CORE, MODELS, EFFORTS, PERMS, MODEL_CONTEXT, SLASH_COMMANDS, CC_BLOCKED_IN_STREAM_JSON, CONTEXT_WARN_PCT, CONTEXT_WARN_RESET_PCT, AUTO_COMPACT_SDK_THRESHOLD_PCT, resolveConnectionTimeoutMs, } = require("./constants");
-const { collectContextSources, summarizeContext } = require("./context-budget");
-const securityUi = require("./security-settings");
-const { securitySettings: _securityStore } = require("@gryphon/protect");
+exports.GryphonChatView = void 0;
+exports.filterMessagesForSave = filterMessagesForSave;
+exports.computeContextPct = computeContextPct;
+exports.shouldStartAutoCompact = shouldStartAutoCompact;
+exports.nextContextWarningState = nextContextWarningState;
+exports.modelButtonText = modelButtonText;
+exports.modelButtonTitle = modelButtonTitle;
+exports._modelOptionsForKind = _modelOptionsForKind;
+exports._providerLabelFor = _providerLabelFor;
+exports._separateCanonicalBlocks = _separateCanonicalBlocks;
+exports._dedupeConsecutiveParagraphs = _dedupeConsecutiveParagraphs;
+exports._collapseSummaryDrafts = _collapseSummaryDrafts;
+exports._isRateLimitError = _isRateLimitError;
+exports._parseRetryAfterSeconds = _parseRetryAfterSeconds;
+exports._replaceNoResponsePlaceholder = _replaceNoResponsePlaceholder;
+const obsidian_1 = require("obsidian");
+const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
+const providerRuntime = __importStar(require("@polleoai/gryphon-provider-runtime"));
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+const constants_1 = require("./constants");
+const context_budget_1 = require("./context-budget");
+const securityUi = __importStar(require("./security-settings"));
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const obsidian_host_adapter_1 = require("./obsidian-host-adapter");
+const mcp_approval_ui_1 = require("./mcp-approval-ui");
+const audit = __importStar(require("./memory-audit"));
+const obsidian_compat_1 = require("./obsidian-compat");
+// protect never loads "obsidian" itself (it must run headless); hand it
+// Obsidian's Modal and Setting for the permission prompt.
+(0, gryphon_protect_1.setPermissionModalUi)({ Modal: obsidian_1.Modal, Setting: obsidian_1.Setting });
+// Called through the module object so tests that replace a store function
+// (e.g. checkSecurityStoreTamper) still take effect.
+const _securityStore = gryphon_protect_1.securitySettings;
+const runtimeExtras = providerRuntime;
+const { createProvider } = providerRuntime;
+const { createProviderForKind, explainUnavailable, detectAvailable } = runtimeExtras;
+const openaiPricingOf = () => providerRuntime.pricing.openai;
+const googlePricingOf = () => providerRuntime.pricing.google;
 // F1 (v1.7.0) — debounce window for re-projecting context on keyup.
 // 300ms is long enough that bursty typing (10+ chars/sec) doesn't fire
 // per-char while short enough that the chip feels responsive when the
@@ -418,34 +482,14 @@ function _separateCanonicalBlocks(text) {
     }
     return out;
 }
-/**
- * Issue #29: short brand-y label used in the provider-change status
- * notice ("will continue with Gemini"). Different from PROVIDER_PREFS's
- * `label` field — that one carries qualifier suffixes ("(recommended)",
- * "(advanced)") which clutter a one-line status bar string.
- */
-/**
- * Issue #34: classify a thrown send() error as a rate-limit / quota
- * error so the chat-view can preserve the user's prompt for retry.
- *
- * Covers wire shapes from all four SDK providers + the two CLI providers:
- *   - HTTP 429 status (status / statusCode property, or "429" in message)
- *   - "Too Many Requests" / "rate limited" / "rate-limit" / "rate_limit"
- *   - Gemini's "RESOURCE_EXHAUSTED" + quota markers
- *   - "Please retry in <Xs>" copy from Gemini's friendly formatter
- *
- * Conservative — false negatives (missing a real rate-limit) just
- * preserve the existing behavior (user re-types). False positives
- * (treating a non-rate-limit error as one) only cost a prompt restore,
- * which is harmless for the user.
- */
 function _isRateLimitError(err) {
     if (!err)
         return false;
-    const status = err.status || err.statusCode || (err.error && err.error.status);
+    const e = err;
+    const status = e.status || e.statusCode || (e.error && e.error.status);
     if (status === 429)
         return true;
-    const msg = String(err.message || err);
+    const msg = String(e.message || err);
     if (!msg)
         return false;
     return /\b429\b|Too Many Requests|rate[\s\-_]?limit(?:ed)?|RESOURCE_EXHAUSTED|[Pp]lease retry in|quota[ _]?(?:exceeded|exhausted)/i.test(msg);
@@ -470,19 +514,20 @@ function _isRateLimitError(err) {
 function _parseRetryAfterSeconds(err) {
     if (!err)
         return null;
+    const e = err;
     const tooLong = (s) => s == null || !isFinite(s) || s <= 0 || s > 60;
     // Direct fields some SDKs expose.
-    if (typeof err.retryAfterSeconds === "number" && !tooLong(err.retryAfterSeconds)) {
-        return err.retryAfterSeconds;
+    if (typeof e.retryAfterSeconds === "number" && !tooLong(e.retryAfterSeconds)) {
+        return e.retryAfterSeconds;
     }
-    if (typeof err.retry_after === "number" && !tooLong(err.retry_after)) {
-        return err.retry_after;
+    if (typeof e.retry_after === "number" && !tooLong(e.retry_after)) {
+        return e.retry_after;
     }
     // HTTP Retry-After header — fetch shape (`err.headers.get`) or plain object.
-    const headers = (err.headers && (typeof err.headers.get === "function"
-        ? { "retry-after": err.headers.get("retry-after") }
-        : err.headers)) ||
-        (err.response && err.response.headers) ||
+    const headers = (e.headers && (typeof e.headers.get === "function"
+        ? { "retry-after": e.headers.get("retry-after") }
+        : e.headers)) ||
+        (e.response && e.response.headers) ||
         null;
     if (headers) {
         const raw = headers["retry-after"] || headers["Retry-After"];
@@ -500,7 +545,7 @@ function _parseRetryAfterSeconds(err) {
         }
     }
     // "Please retry in 12.3s" / "retry in 500ms" body parse.
-    const msg = String(err.message || err || "");
+    const msg = String(e.message || err || "");
     const m = msg.match(/\b[Pp]lease retry in\s+(\d+(?:\.\d+)?)\s*(ms|s)\b/);
     if (m) {
         const v = parseFloat(m[1]);
@@ -509,6 +554,16 @@ function _parseRetryAfterSeconds(err) {
             return seconds;
     }
     return null;
+}
+/** `err.message || err`, stringified — the form chat-view's error copy uses. */
+function _errText(err) {
+    const e = err;
+    return String(e.message || e);
+}
+/** `(err && err.message) || err`, stringified — tolerates a nullish throw. */
+function _errTextOrNullish(err) {
+    const e = err;
+    return String((e && e.message) || e);
 }
 /**
  * Claude Code emits the synthetic placeholder `"No response requested."`
@@ -549,7 +604,7 @@ function _providerLabelFor(preference) {
         return "Auto-selected provider";
     const known = ["anthropic-api", "claude-code", "openai-api", "google-api", "codex-cli", "gemini-cli", "antigravity-cli"];
     if (known.includes(preference)) {
-        return require("@gryphon/provider-runtime").friendlyProviderLabel(preference);
+        return runtimeExtras.friendlyProviderLabel(preference);
     }
     return preference || "the new provider";
 }
@@ -672,21 +727,20 @@ function labelFor(list, value) {
 function _isHiddenVendorModel(id, vendor) {
     if (typeof id !== "string")
         return false;
-    const { registry } = require("@gryphon/provider-config");
-    return registry.modelsByVendor(vendor).some((m) => m.id === id && !m.dropdown);
+    return gryphon_provider_config_1.registry.modelsByVendor(vendor).some((m) => m.id === id && !m.dropdown);
 }
 function modelButtonText(settingsOrPlugin) {
     const settings = settingsOrPlugin && settingsOrPlugin.settings
         ? settingsOrPlugin.settings : settingsOrPlugin;
     const plugin = settingsOrPlugin && settingsOrPlugin.settings
         ? settingsOrPlugin : { settings };
-    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+    const { getActiveProviderKind } = runtimeExtras;
     const kind = getActiveProviderKind(plugin) || settings.providerPreference;
     if (kind === "openai-api" || kind === "codex-cli") {
         // codex-cli reuses OpenAI's pricing tables but its ChatGPT-account
         // auth path supports a smaller subset (gpt-5.5 / gpt-5.4 / gpt-5.4-
         // mini). API-only ids fall back to the codex-specific default.
-        const { getModelDropdownOptions, getCodexCliModelDropdownOptions, resolveModel: resolveOpenAIModel, coerceToCodexCliModel, DEFAULT_MODEL: OPENAI_DEFAULT_MODEL, CODEX_CLI_DEFAULT_MODEL, } = require("@gryphon/provider-runtime").pricing.openai;
+        const { getModelDropdownOptions, getCodexCliModelDropdownOptions, resolveModel: resolveOpenAIModel, coerceToCodexCliModel, DEFAULT_MODEL: OPENAI_DEFAULT_MODEL, CODEX_CLI_DEFAULT_MODEL, } = openaiPricingOf();
         const isCodex = kind === "codex-cli";
         const options = (isCodex ? getCodexCliModelDropdownOptions() : getModelDropdownOptions())
             .map((o) => ({ value: o.id, label: o.label }));
@@ -712,7 +766,7 @@ function modelButtonText(settingsOrPlugin) {
     if (kind === "google-api" || kind === "gemini-cli" || kind === "antigravity-cli") {
         // All three reuse Google's pricing tables; antigravity-cli has its own
         // dropdown + coercion (agy's catalog), mirroring codex-cli above.
-        const googlePricing = require("@gryphon/provider-runtime").pricing.google;
+        const googlePricing = googlePricingOf();
         const isAgy = kind === "antigravity-cli";
         const options = (isAgy
             ? googlePricing.getAntigravityCliModelDropdownOptions()
@@ -738,12 +792,12 @@ function modelButtonText(settingsOrPlugin) {
     // and persisted "gpt-5.4-mini" carries over), use the Sonnet tier as the
     // default so the toolbar doesn't show a raw OpenAI id like "gpt-5.4-mini".
     const requested = settings && settings.model;
-    if (MODELS.some((m) => m.value === requested)) {
-        return labelFor(MODELS, requested);
+    if (constants_1.MODELS.some((m) => m.value === requested)) {
+        return labelFor(constants_1.MODELS, requested);
     }
     if (_isHiddenVendorModel(requested, "anthropic"))
         return requested;
-    return labelFor(MODELS, "claude-sonnet-5-5");
+    return labelFor(constants_1.MODELS, "claude-sonnet-5-5");
 }
 /**
  * The model list a given provider kind can actually serve, as
@@ -759,7 +813,7 @@ function _modelOptionsForKind(kind) {
     if (kind === "openai-api" || kind === "codex-cli") {
         // codex-cli reuses the OpenAI model list — both target the same
         // gpt-5 family models on the backend.
-        const openaiPricing = require("@gryphon/provider-runtime").pricing.openai;
+        const openaiPricing = openaiPricingOf();
         const opts = (kind === "codex-cli")
             ? openaiPricing.getCodexCliModelDropdownOptions()
             : openaiPricing.getModelDropdownOptions();
@@ -767,21 +821,21 @@ function _modelOptionsForKind(kind) {
     }
     if (kind === "antigravity-cli") {
         // Only the ids agy's own catalog accepts (registry antigravityCliSupported).
-        const { getAntigravityCliModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+        const { getAntigravityCliModelDropdownOptions } = googlePricingOf();
         return getAntigravityCliModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
     }
     if (kind === "google-api" || kind === "gemini-cli") {
-        const { getModelDropdownOptions } = require("@gryphon/provider-runtime").pricing.google;
+        const { getModelDropdownOptions } = googlePricingOf();
         return getModelDropdownOptions().map((o) => ({ value: o.id, label: o.label }));
     }
-    return MODELS;
+    return constants_1.MODELS;
 }
 function modelButtonTitle(settingsOrPlugin) {
     const settings = settingsOrPlugin && settingsOrPlugin.settings
         ? settingsOrPlugin.settings : settingsOrPlugin;
     const plugin = settingsOrPlugin && settingsOrPlugin.settings
         ? settingsOrPlugin : { settings };
-    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+    const { getActiveProviderKind } = runtimeExtras;
     const kind = getActiveProviderKind(plugin) || settings.providerPreference;
     // Brand-only label — API and CLI variants share the same name so
     // the toolbar matches the approve/deny modal's "Codex / Gemini /
@@ -800,7 +854,7 @@ const CARET_KEYS = new Set([
     "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
     "Home", "End", "PageUp", "PageDown",
 ]);
-class GryphonChatView extends ItemView {
+class GryphonChatView extends obsidian_1.ItemView {
     constructor(leaf, plugin, options = {}) {
         super(leaf);
         this.plugin = plugin;
@@ -866,7 +920,7 @@ class GryphonChatView extends ItemView {
         this._pendingQueuedTexts = [];
         // Extension points for consuming plugins — see file header for the
         // full contract.
-        this.toolStatusMap = { ...TOOL_STATUS_CORE, ...(options.extraToolStatus || {}) };
+        this.toolStatusMap = { ...constants_1.TOOL_STATUS_CORE, ...(options.extraToolStatus || {}) };
         this.extraProcessArgs = options.extraProcessArgs || [];
         // Issue #39: per-provider extra CLI args. Each provider's adapter
         // receives only its own bucket merged with the legacy extraProcessArgs
@@ -918,7 +972,7 @@ class GryphonChatView extends ItemView {
                 suggest: (text) => {
                     const source = (this.plugin && this.plugin.skillRegistry)
                         ? this.plugin.skillRegistry.effectiveSlashCommands()
-                        : SLASH_COMMANDS;
+                        : constants_1.SLASH_COMMANDS;
                     return source.filter((c) => c.cmd.toLowerCase().startsWith(text.toLowerCase()));
                 },
             },
@@ -945,7 +999,7 @@ class GryphonChatView extends ItemView {
                 e.preventDefault();
                 const href = link.getAttribute("data-href") || link.getAttribute("href");
                 if (href) {
-                    this.app.workspace.openLinkText(href, "");
+                    void this.app.workspace.openLinkText(href, "");
                 }
             }
         });
@@ -1006,7 +1060,7 @@ class GryphonChatView extends ItemView {
                 if (inChat)
                     return;
             }
-            catch { }
+            catch { /* treat an unreadable selection anchor as outside the chat */ }
             this._cachedSelection = {
                 text,
                 file: this.app.workspace.getActiveFile(),
@@ -1017,7 +1071,7 @@ class GryphonChatView extends ItemView {
         // tool activity ("Editing…", "Searching the web…") during a turn, and
         // "Done · 2.3s" when it finishes.
         const statusBar = container.createDiv("gryphon-statusbar");
-        this.toolbarStatus = statusBar.createEl("span", {
+        this.toolbarStatus = statusBar.createSpan({
             text: "",
             cls: "gryphon-statusbar-text",
         });
@@ -1030,29 +1084,29 @@ class GryphonChatView extends ItemView {
         }
         // Toolbar (model, effort, permission, context, stop)
         const toolbar = container.createDiv("gryphon-toolbar");
-        this.modelBtn = toolbar.createEl("span", {
+        this.modelBtn = toolbar.createSpan({
             text: modelButtonText(this.plugin) + " \u25BE",
             cls: "gryphon-toolbar-btn",
             attr: { title: modelButtonTitle(this.plugin) },
         });
         this.modelBtn.addEventListener("click", (e) => this.showModelMenu(e));
-        toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
-        this.effortBtn = toolbar.createEl("span", {
-            text: labelFor(EFFORTS, this.plugin.settings.effort) + " \u25BE",
+        toolbar.createSpan({ text: "\u00B7", cls: "gryphon-toolbar-sep" });
+        this.effortBtn = toolbar.createSpan({
+            text: labelFor(constants_1.EFFORTS, this.plugin.settings.effort) + " \u25BE",
             cls: "gryphon-toolbar-btn",
             attr: { title: "Effort" },
         });
         this.effortBtn.addEventListener("click", (e) => this.showEffortMenu(e));
-        toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
-        this.permBtn = toolbar.createEl("span", {
+        toolbar.createSpan({ text: "\u00B7", cls: "gryphon-toolbar-sep" });
+        this.permBtn = toolbar.createSpan({
             text: "",
             cls: "gryphon-toolbar-btn",
             attr: { title: "Permission mode" },
         });
         this._refreshPermBadge();
         this.permBtn.addEventListener("click", (e) => this.showPermMenu(e));
-        toolbar.createEl("span", { text: "\u00B7", cls: "gryphon-toolbar-sep" });
-        this.contextBtn = toolbar.createEl("span", {
+        toolbar.createSpan({ text: "\u00B7", cls: "gryphon-toolbar-sep" });
+        this.contextBtn = toolbar.createSpan({
             text: "Used 0%",
             cls: "gryphon-toolbar-item gryphon-context-meter gryphon-context-clickable",
         });
@@ -1064,7 +1118,7 @@ class GryphonChatView extends ItemView {
         // setTooltip supports multi-line text + Obsidian's positioning logic,
         // both important for surfaces like this where the explanation is
         // pedagogical rather than just numeric.
-        setTooltip(this.contextBtn, "How much of the model's context window your last prompt used.\n\n"
+        (0, obsidian_1.setTooltip)(this.contextBtn, "How much of the model's context window your last prompt used.\n\n"
             + "Every model has a fixed context window — the maximum amount of\n"
             + "text it can take in at once. Two things fill it up: the system\n"
             + "prompt, which combines the model's built-in instructions with\n"
@@ -1083,7 +1137,7 @@ class GryphonChatView extends ItemView {
         // compare actual-from-last-turn vs projected-for-next-turn at a
         // glance. Initial text "—" because we don't have a snapshot yet;
         // _refreshContextProjection() fills it on plugin load.
-        this.projectionBtn = toolbar.createEl("span", {
+        this.projectionBtn = toolbar.createSpan({
             text: "—",
             cls: "gryphon-toolbar-item gryphon-projection-meter gryphon-context-clickable",
         });
@@ -1092,7 +1146,7 @@ class GryphonChatView extends ItemView {
         this.projectionBtn.addEventListener("click", () => {
             this._showContextBreakdownModal().catch(() => { });
         });
-        setTooltip(this.projectionBtn, "Gryphon's estimate of how much of the model's context window\n"
+        (0, obsidian_1.setTooltip)(this.projectionBtn, "Gryphon's estimate of how much of the model's context window\n"
             + "your next prompt will use.\n\n"
             + "The context window is the maximum amount of text the model can\n"
             + "take in at once. Gryphon arrives at the estimate by summing the\n"
@@ -1106,35 +1160,37 @@ class GryphonChatView extends ItemView {
             + "before sending, because the model is likely to reject the\n"
             + "message at that point. It updates a moment after you stop\n"
             + "typing, and whenever you switch models.", { placement: "bottom" });
-        toolbar.createEl("span", { text: "·", cls: "gryphon-toolbar-sep" });
+        toolbar.createSpan({ text: "·", cls: "gryphon-toolbar-sep" });
         // F4 (v1.7.0) — REST API access chip. Mirrors the setting at the
         // toolbar so users can flip per-session without opening settings.
         // Both chip + setting write `obsidianRestApiPolicy`; the chip
         // listens for `gryphon:settings-changed` to stay in sync if the
         // setting is changed elsewhere.
-        this.restApiBtn = toolbar.createEl("span", {
+        this.restApiBtn = toolbar.createSpan({
             text: "REST: off",
             cls: "gryphon-toolbar-btn gryphon-rest-api-toggle",
         });
         this._updateRestApiChip();
-        this.restApiBtn.addEventListener("click", async () => {
-            // Issue #29: a security setting — stored on this machine, never
-            // trusted from the vault's data.json. A failed write leaves the
-            // effective value (and so the chip) unchanged, and says why.
-            const eff = this._effectiveSecurity();
-            if (eff.source.obsidianRestApiPolicy === "override")
-                return;
-            const next = eff.obsidianRestApiPolicy === "blocked" ? "allowed" : "blocked";
-            await this.applySecuritySetting("obsidianRestApiPolicy", next);
-            this._updateRestApiChip();
+        this.restApiBtn.addEventListener("click", () => {
+            void (async () => {
+                // Issue #29: a security setting — stored on this machine, never
+                // trusted from the vault's data.json. A failed write leaves the
+                // effective value (and so the chip) unchanged, and says why.
+                const eff = this._effectiveSecurity();
+                if (eff.source.obsidianRestApiPolicy === "override")
+                    return;
+                const next = eff.obsidianRestApiPolicy === "blocked" ? "allowed" : "blocked";
+                await this.applySecuritySetting("obsidianRestApiPolicy", next);
+                this._updateRestApiChip();
+            })();
         });
-        toolbar.createEl("span", { cls: "gryphon-toolbar-spacer" });
+        toolbar.createSpan({ cls: "gryphon-toolbar-spacer" });
         const stopBtn = toolbar.createEl("button", { text: "Stop", cls: "gryphon-btn-stop" });
         stopBtn.addEventListener("click", () => this.stopStreaming());
         this.stopBtn = stopBtn;
         // Input area
         const inputArea = container.createDiv("gryphon-input-area");
-        inputArea.createEl("span", { text: ">", cls: "gryphon-input-prompt" });
+        inputArea.createSpan({ text: ">", cls: "gryphon-input-prompt" });
         this.inputEl = inputArea.createEl("textarea", {
             cls: "gryphon-input",
             attr: { placeholder: "Enter to send, Shift+Enter for newline", rows: "1" },
@@ -1203,7 +1259,7 @@ class GryphonChatView extends ItemView {
             }
             if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                this.sendMessage();
+                void this.sendMessage();
                 return;
             }
             // Visual-line-aware Up/Down behavior (issues #10, #12, #13, #14).
@@ -1340,7 +1396,9 @@ class GryphonChatView extends ItemView {
         const keys = Object.keys(this.securityOverrides || {});
         if (keys.length === 0)
             return;
-        console.info(`[gryphon] ${this.viewDisplayText || "host"} security overrides for this spawn: ` +
+        // Debug level (Obsidian keeps the default console quiet); in DevTools it
+        // shows with the Verbose level on.
+        console.debug(`[gryphon] ${this.viewDisplayText || "host"} security overrides for this spawn: ` +
             keys.map((k) => `${k}=${JSON.stringify(security[k])}`).join(", "));
     }
     /**
@@ -1400,12 +1458,10 @@ class GryphonChatView extends ItemView {
         if (this.plugin && this.plugin.hostAdapter)
             return this.plugin.hostAdapter;
         if (!this._fallbackHostAdapter) {
-            const { ObsidianHostAdapter } = require("./obsidian-host-adapter");
-            const { handlePendingApprovals } = require("./mcp-approval-ui");
             // R44 CC-1: the same MCP-approval hook Gryphon's own adapter has — one
             // notice per vault with a Review action, not a bare notice per spawn.
-            this._fallbackHostAdapter = new ObsidianHostAdapter({
-                onMcpApprovalsPending: (report) => handlePendingApprovals(this.plugin, report),
+            this._fallbackHostAdapter = new obsidian_host_adapter_1.ObsidianHostAdapter({
+                onMcpApprovalsPending: (report) => (0, mcp_approval_ui_1.handlePendingApprovals)(this.plugin, report),
             });
         }
         return this._fallbackHostAdapter;
@@ -1419,7 +1475,7 @@ class GryphonChatView extends ItemView {
      * validates falls back to detection and is reported once.
      */
     _resolveCliPaths() {
-        const { resolveCliPath } = require("@gryphon/protect");
+        const resolveCliPath = gryphon_protect_1.resolveCliPath;
         const out = {};
         for (const kind of ["claude-code", "codex-cli", "gemini-cli", "antigravity-cli"]) {
             const r = resolveCliPath(kind, {
@@ -1494,7 +1550,7 @@ class GryphonChatView extends ItemView {
             try {
                 this.claudeProcess.abort();
             }
-            catch (_) { /* best-effort */ }
+            catch { /* best-effort */ }
             this.claudeProcess = null;
             this._providerSpawnSignature = null;
         }
@@ -1533,7 +1589,7 @@ class GryphonChatView extends ItemView {
      * @returns {{kind: string, model: any, effort: any, permissionMode: any}}
      */
     _computeProviderSignature() {
-        const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+        const { getActiveProviderKind } = runtimeExtras;
         const s = (this.plugin && this.plugin.settings) || {};
         return {
             // Resolve the kind exactly as the spawn path does (getActiveProviderKind
@@ -1621,7 +1677,7 @@ class GryphonChatView extends ItemView {
         try {
             this.claudeProcess.abort();
         }
-        catch (_) { /* best-effort */ }
+        catch { /* best-effort */ }
         this.claudeProcess = null;
         this._providerSpawnSignature = null;
         if (typeof this.addSystemMessage === "function") {
@@ -1647,7 +1703,7 @@ class GryphonChatView extends ItemView {
         const cs = getComputedStyle(el);
         const lineHeight = parseFloat(cs.lineHeight) ||
             (parseFloat(cs.fontSize) || 13) * 1.5;
-        const mirror = activeDocument.createElement("div");
+        const mirror = activeWindow.createDiv();
         const props = [
             "boxSizing", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
             "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth",
@@ -1669,7 +1725,7 @@ class GryphonChatView extends ItemView {
         mirror.style.width = el.clientWidth + "px";
         const caretPos = el.selectionEnd;
         mirror.textContent = el.value.substring(0, caretPos);
-        const marker = activeDocument.createElement("span");
+        const marker = activeWindow.createSpan();
         // Marker needs measurable layout. A trailing newline produces a
         // zero-width final span — use a period as fallback so offsetTop is
         // computed relative to the new visual line rather than the previous one.
@@ -1799,11 +1855,11 @@ class GryphonChatView extends ItemView {
         //   \u2022 claude-code / anthropic-api \u2192 Anthropic MODELS
         //   \u2022 openai-api \u2192 OpenAI dropdown options (Stage 2 shipped)
         //   \u2022 google-api \u2192 still adapter-pending, Notice instead of menu (Stage 3)
-        const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+        const { getActiveProviderKind } = runtimeExtras;
         const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
             this.plugin.settings.providerPreference;
         const modelList = _modelOptionsForKind(kind);
-        const menu = new Menu();
+        const menu = new obsidian_1.Menu();
         for (const m of modelList) {
             menu.addItem((item) => {
                 item.setTitle(m.label + (m.value === this.plugin.settings.model ? " \u2713" : ""))
@@ -1833,7 +1889,7 @@ class GryphonChatView extends ItemView {
             this.modelBtn.setAttribute("title", modelButtonTitle(this.plugin));
         }
         if (this.effortBtn) {
-            this.effortBtn.setText(labelFor(EFFORTS, this.plugin.settings.effort) + " \u25be");
+            this.effortBtn.setText(labelFor(constants_1.EFFORTS, this.plugin.settings.effort) + " \u25be");
         }
         this._refreshPermBadge();
     }
@@ -1847,7 +1903,7 @@ class GryphonChatView extends ItemView {
             return;
         const eff = this._effectiveSecurity();
         const warn = !eff.scopeAvailable || eff.unconfirmed.length > 0 || (eff.unconfirmedPaths || []).length > 0;
-        this.permBtn.setText(labelFor(PERMS, eff.permissionMode) + (warn ? " \u26a0" : "") + " \u25be");
+        this.permBtn.setText(labelFor(constants_1.PERMS, eff.permissionMode) + (warn ? " \u26a0" : "") + " \u25be");
         // YOLO highlight class \u2014 toggled to match the active mode each refresh.
         this.permBtn.classList.toggle("gryphon-perm-yolo", eff.permissionMode === "bypassPermissions");
         this.permBtn.classList.toggle("gryphon-perm-unconfirmed", warn);
@@ -1868,7 +1924,7 @@ class GryphonChatView extends ItemView {
     _permMenuEntries() {
         const eff = this._effectiveSecurity();
         const overridden = eff.source.permissionMode === "override";
-        return PERMS.map((p) => ({
+        return constants_1.PERMS.map((p) => ({
             value: p.value,
             title: p.label + " \u2014 " + p.desc + (p.value === eff.permissionMode ? " \u2713" : ""),
             disabled: overridden,
@@ -1876,12 +1932,12 @@ class GryphonChatView extends ItemView {
         }));
     }
     showEffortMenu(e) {
-        const menu = new Menu();
-        for (const ef of EFFORTS) {
+        const menu = new obsidian_1.Menu();
+        for (const ef of constants_1.EFFORTS) {
             menu.addItem((item) => {
                 item.setTitle(ef.label + (ef.value === this.plugin.settings.effort ? " \u2713" : ""))
                     .setSection("effort")
-                    .onClick(() => this.changeSetting("effort", ef.value, this.effortBtn, EFFORTS));
+                    .onClick(() => this.changeSetting("effort", ef.value, this.effortBtn, constants_1.EFFORTS));
             });
         }
         this._showMenuAbove(menu, e.target);
@@ -1891,7 +1947,7 @@ class GryphonChatView extends ItemView {
         // confirm prompt (the persistent, actionable affordance).
         if (this._maybePromptVaultSecurity(true))
             return;
-        const menu = new Menu();
+        const menu = new obsidian_1.Menu();
         for (const p of this._permMenuEntries()) {
             menu.addItem((item) => {
                 item.setTitle(p.disabled ? `${p.title} (${p.tooltip})` : p.title)
@@ -1899,7 +1955,7 @@ class GryphonChatView extends ItemView {
                     .onClick(() => {
                     if (p.disabled)
                         return;
-                    void this.changeSetting("permissionMode", p.value, this.permBtn, PERMS);
+                    void this.changeSetting("permissionMode", p.value, this.permBtn, constants_1.PERMS);
                 });
                 if (p.disabled && typeof item.setDisabled === "function")
                     item.setDisabled(true);
@@ -2004,7 +2060,7 @@ class GryphonChatView extends ItemView {
         this.restApiBtn.removeClass("gryphon-rest-api-on");
         this.restApiBtn.removeClass("gryphon-rest-api-off");
         this.restApiBtn.addClass(blocked ? "gryphon-rest-api-off" : "gryphon-rest-api-on");
-        setTooltip(this.restApiBtn, blocked
+        (0, obsidian_1.setTooltip)(this.restApiBtn, blocked
             ? "REST API: off.\n\n"
                 + "Gryphon is blocking WebFetch calls to the Obsidian REST API "
                 + "plugin (loopback 127.0.0.1:27124). Click to allow this "
@@ -2019,7 +2075,7 @@ class GryphonChatView extends ItemView {
     }
     updateContextMeter(contextTokens) {
         const model = this.plugin.settings.model || "claude-sonnet-5-5";
-        const windowSize = MODEL_CONTEXT[model] || 200000;
+        const windowSize = constants_1.MODEL_CONTEXT[model] || 200000;
         const pct = Math.min(Math.round(contextTokens / windowSize * 100), 100);
         // v1.7.0 — persist the absolute token count so a model switch
         // (which destroys the provider instance and resets its
@@ -2066,7 +2122,7 @@ class GryphonChatView extends ItemView {
         const usedK = Math.round(contextTokens / 1000);
         const remK = Math.max(0, Math.round((windowSize - contextTokens) / 1000));
         const winK = Math.round(windowSize / 1000);
-        setTooltip(this.contextBtn, `Your last prompt used ${usedK}K — ${pct}% of the ${winK}K context window (${remK}K still free).\n\n`
+        (0, obsidian_1.setTooltip)(this.contextBtn, `Your last prompt used ${usedK}K — ${pct}% of the ${winK}K context window (${remK}K still free).\n\n`
             + "The total combines the system prompt — the model's built-in\n"
             + "instructions plus your Gryphon configuration, any loaded\n"
             + "skills, and any MCP tools — with the user prompt, which is\n"
@@ -2077,23 +2133,23 @@ class GryphonChatView extends ItemView {
             + "long.\"", { placement: "bottom" });
         this.contextBtn.removeClass("gryphon-context-warn");
         this.contextBtn.removeClass("gryphon-context-danger");
-        if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT)
+        if (pct >= constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT)
             this.contextBtn.addClass("gryphon-context-danger");
-        else if (pct >= CONTEXT_WARN_PCT)
+        else if (pct >= constants_1.CONTEXT_WARN_PCT)
             this.contextBtn.addClass("gryphon-context-warn");
         // Proactive warning — flash once when the user crosses CONTEXT_WARN_PCT
         // (80%) so they can /compact manually before SDK auto-compact triggers
         // at AUTO_COMPACT_SDK_THRESHOLD_PCT (95%). Wording is provider-aware:
         // SDK names Gryphon's auto-compact, CC names Claude Code's. Reset
         // below CONTEXT_WARN_RESET_PCT (75%) so the next climb re-warns.
-        if (pct >= CONTEXT_WARN_PCT && pct < AUTO_COMPACT_SDK_THRESHOLD_PCT && !this._contextWarningShown) {
+        if (pct >= constants_1.CONTEXT_WARN_PCT && pct < constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT && !this._contextWarningShown) {
             const note = this._isSdkMode()
-                ? `Gryphon will auto-compact at ${AUTO_COMPACT_SDK_THRESHOLD_PCT}%`
+                ? `Gryphon will auto-compact at ${constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT}%`
                 : "Claude Code will auto-compact near the limit";
             this._flashStatus(`Context at ${pct}% \u2014 type /compact to summarize now, or ${note}`);
             this._contextWarningShown = true;
         }
-        else if (pct < CONTEXT_WARN_RESET_PCT && this._contextWarningShown) {
+        else if (pct < constants_1.CONTEXT_WARN_RESET_PCT && this._contextWarningShown) {
             this._contextWarningShown = false;
         }
     }
@@ -2142,7 +2198,7 @@ class GryphonChatView extends ItemView {
         }
         this._projectionDebounceTimer = window.setTimeout(() => {
             this._projectionDebounceTimer = null;
-            this._refreshContextProjection();
+            void this._refreshContextProjection();
         }, PROJECTION_DEBOUNCE_MS);
     }
     /**
@@ -2158,7 +2214,7 @@ class GryphonChatView extends ItemView {
             const userInput = (this.inputEl && this.inputEl.value) || "";
             const settings = (this.plugin && this.plugin.settings) || {};
             const modelId = settings.model || "claude-sonnet-5-5";
-            const windowSize = MODEL_CONTEXT[modelId] || 200000;
+            const windowSize = constants_1.MODEL_CONTEXT[modelId] || 200000;
             // Lazy-load the filesystem snapshot. Repopulated on session boundary
             // via _reloadContextSources(); kept across keystrokes for cheapness.
             if (!this._projectionSources) {
@@ -2182,7 +2238,7 @@ class GryphonChatView extends ItemView {
                 // to use it directly. The bySource breakdown is still populated
                 // from the snapshot so F2's popover renders coherent labels;
                 // they just won't sum exactly to totalTokens (that's expected).
-                result = summarizeContext({
+                result = (0, context_budget_1.summarizeContext)({
                     sources: this._projectionSources,
                     messages: this.messages || [],
                     userInput,
@@ -2206,7 +2262,7 @@ class GryphonChatView extends ItemView {
                     && this.claudeProcess.contextTokens > 0
                     ? this.claudeProcess.contextTokens
                     : (this._lastMeasuredTokens || 0);
-                result = summarizeContext({
+                result = (0, context_budget_1.summarizeContext)({
                     sources: this._projectionSources,
                     messages: this.messages || [],
                     userInput,
@@ -2243,7 +2299,7 @@ class GryphonChatView extends ItemView {
             || "claude-code";
         const vaultPath = (typeof this.plugin._vaultRoot === "function")
             ? this.plugin._vaultRoot() : null;
-        this._projectionSources = await collectContextSources({
+        this._projectionSources = await (0, context_budget_1.collectContextSources)({
             kind, vaultPath, settings,
         });
     }
@@ -2277,7 +2333,7 @@ class GryphonChatView extends ItemView {
         const modeLine = result.mode === "exact"
             ? "Exact count from the model (free, no charge)."
             : "This estimate sharpens as you keep using Gryphon.";
-        setTooltip(this.projectionBtn, `Gryphon estimates your next prompt at ${prefix}${totalK}K — ${prefix}${result.rawPct}% of the ${windowK}K context window. ${modeLine}\n\n`
+        (0, obsidian_1.setTooltip)(this.projectionBtn, `Gryphon estimates your next prompt at ${prefix}${totalK}K — ${prefix}${result.rawPct}% of the ${windowK}K context window. ${modeLine}\n\n`
             + "The estimate sums the system prompt — the model's built-in\n"
             + "instructions plus your Gryphon configuration, any loaded\n"
             + "skills, and any MCP tools — with the user prompt, which is the\n"
@@ -2286,10 +2342,10 @@ class GryphonChatView extends ItemView {
             + "confirm before sending.", { placement: "bottom" });
         this.projectionBtn.removeClass("gryphon-context-warn");
         this.projectionBtn.removeClass("gryphon-context-danger");
-        if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+        if (pct >= constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT) {
             this.projectionBtn.addClass("gryphon-context-danger");
         }
-        else if (pct >= CONTEXT_WARN_PCT) {
+        else if (pct >= constants_1.CONTEXT_WARN_PCT) {
             this.projectionBtn.addClass("gryphon-context-warn");
         }
         // Mirror the danger state onto the send button so the visual cue
@@ -2297,10 +2353,10 @@ class GryphonChatView extends ItemView {
         if (this.sendBtn) {
             this.sendBtn.removeClass("gryphon-send-warn");
             this.sendBtn.removeClass("gryphon-send-danger");
-            if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+            if (pct >= constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT) {
                 this.sendBtn.addClass("gryphon-send-danger");
             }
-            else if (pct >= CONTEXT_WARN_PCT) {
+            else if (pct >= constants_1.CONTEXT_WARN_PCT) {
                 this.sendBtn.addClass("gryphon-send-warn");
             }
         }
@@ -2312,7 +2368,7 @@ class GryphonChatView extends ItemView {
      * back up.
      */
     _maybeFlashProjectionWarning(result) {
-        if (!result || result.pct < CONTEXT_WARN_PCT)
+        if (!result || result.pct < constants_1.CONTEXT_WARN_PCT)
             return;
         if (this._projectionWarningShown)
             return;
@@ -2348,7 +2404,7 @@ class GryphonChatView extends ItemView {
         if (!tokens)
             return 0;
         const model = this.plugin.settings.model || "claude-sonnet-5-5";
-        const windowSize = MODEL_CONTEXT[model] || 200000;
+        const windowSize = constants_1.MODEL_CONTEXT[model] || 200000;
         return Math.min(100, Math.round(tokens / windowSize * 100));
     }
     // ── Plugin-handled slash commands ──
@@ -2380,13 +2436,13 @@ class GryphonChatView extends ItemView {
             { match: (c) => c.startsWith("/model "), run: () => {
                     // Validate against the ACTIVE provider's list, not Anthropic's —
                     // same source as the toolbar menu (see _modelOptionsForKind).
-                    const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+                    const { getActiveProviderKind } = runtimeExtras;
                     const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                         this.plugin.settings.providerPreference;
-                    this._applyDirectSetting("model", text.trim().substring(7).trim(), _modelOptionsForKind(kind), this.modelBtn, "Model");
+                    void this._applyDirectSetting("model", text.trim().substring(7).trim(), _modelOptionsForKind(kind), this.modelBtn, "Model");
                 } },
             { match: (c) => c === "/effort", run: () => this.effortBtn && this.showEffortMenu({ target: this.effortBtn }) },
-            { match: (c) => c.startsWith("/effort "), run: () => this._applyDirectSetting("effort", text.trim().substring(8).trim(), EFFORTS, this.effortBtn, "Effort") },
+            { match: (c) => c.startsWith("/effort "), run: () => this._applyDirectSetting("effort", text.trim().substring(8).trim(), constants_1.EFFORTS, this.effortBtn, "Effort") },
             { match: (c) => c === "/perm" || c === "/permissions", run: () => this.permBtn && this.showPermMenu({ target: this.permBtn }) },
             { match: (c) => c === "/stop", run: () => this.isStreaming ? this.stopStreaming() : this._flashStatus("Nothing to stop") },
             { match: (c) => c === "/settings", run: () => this._cmdOpenSettings() },
@@ -2432,7 +2488,7 @@ class GryphonChatView extends ItemView {
         // Return true = consumed locally (no LLM turn).
         // Return false = caller should forward to the LLM.
         const first = cmd.split(/\s+/)[0];
-        if (CC_BLOCKED_IN_STREAM_JSON.has(first)) {
+        if (constants_1.CC_BLOCKED_IN_STREAM_JSON.has(first)) {
             this._flashStatus(`${first} isn't supported in Gryphon \u2014 use the local CLI's own terminal for that`);
             return true;
         }
@@ -2449,9 +2505,8 @@ class GryphonChatView extends ItemView {
      * a doomed prompt.
      */
     _confirmOverflowSend(projection) {
-        const { Modal, Setting } = require("obsidian");
         return new Promise((resolve) => {
-            const modal = new Modal(this.app);
+            const modal = new obsidian_1.Modal(this.app);
             const pctLabel = projection.mode === "exact"
                 ? `${projection.rawPct}%` : `~${projection.rawPct}%`;
             const usedK = Math.round(projection.totalTokens / 1000);
@@ -2479,9 +2534,9 @@ class GryphonChatView extends ItemView {
                 modal.close();
                 resolve(ok);
             };
-            new Setting(modal.contentEl)
+            new obsidian_1.Setting(modal.contentEl)
                 .addButton((btn) => btn.setButtonText("Cancel").onClick(() => finish(false)))
-                .addButton((btn) => btn.setButtonText("Send anyway").setWarning().onClick(() => finish(true)));
+                .addButton((btn) => (0, obsidian_compat_1.warningButton)(btn.setButtonText("Send anyway")).onClick(() => finish(true)));
             modal.onClose = () => finish(false);
             modal.open();
         });
@@ -2499,7 +2554,6 @@ class GryphonChatView extends ItemView {
      * first open before any keystroke has triggered a debounce.
      */
     async _showContextBreakdownModal() {
-        const { Modal } = require("obsidian");
         let result = this._projectionLastResult;
         if (!result || typeof result.totalTokens !== "number") {
             try {
@@ -2510,7 +2564,7 @@ class GryphonChatView extends ItemView {
                 // Fall through; we'll render a "no data" state below.
             }
         }
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Context budget breakdown");
         if (!result || typeof result.totalTokens !== "number") {
             modal.contentEl.createEl("p", {
@@ -2596,9 +2650,8 @@ class GryphonChatView extends ItemView {
         modal.open();
     }
     _confirmClear() {
-        const { Modal, Setting } = require("obsidian");
         return new Promise((resolve) => {
-            const modal = new Modal(this.app);
+            const modal = new obsidian_1.Modal(this.app);
             modal.titleEl.setText("Clear conversation?");
             modal.contentEl.createEl("p", {
                 text: "This deletes the entire chat history for this session and " +
@@ -2612,9 +2665,9 @@ class GryphonChatView extends ItemView {
                 modal.close();
                 resolve(ok);
             };
-            new Setting(modal.contentEl)
+            new obsidian_1.Setting(modal.contentEl)
                 .addButton((btn) => btn.setButtonText("Cancel").onClick(() => finish(false)))
-                .addButton((btn) => btn.setButtonText("Clear").setWarning().onClick(() => finish(true)));
+                .addButton((btn) => (0, obsidian_compat_1.warningButton)(btn.setButtonText("Clear")).onClick(() => finish(true)));
             modal.onClose = () => finish(false);
             modal.open();
         });
@@ -2684,7 +2737,7 @@ class GryphonChatView extends ItemView {
         // can re-fire if the new session also climbs back up.
         this._projectionSources = null;
         this._projectionWarningShown = false;
-        this._refreshContextProjection();
+        void this._refreshContextProjection();
         // F4 (v1.7.0) — also reset the REST API GET counter so the warning
         // toast can re-fire in this fresh chat if enumeration recurs.
         if (typeof this.plugin._resetRestApiCounter === "function") {
@@ -2705,7 +2758,7 @@ class GryphonChatView extends ItemView {
     _cmdShowContext() {
         const contextTokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
         const model = this.plugin.settings.model || "claude-sonnet-5-5";
-        const windowSize = MODEL_CONTEXT[model] || 200000;
+        const windowSize = constants_1.MODEL_CONTEXT[model] || 200000;
         if (contextTokens === 0) {
             this._flashStatus(`Context: 0 / ${Math.round(windowSize / 1000)}K tokens (send a message to populate)`);
             return;
@@ -2715,8 +2768,8 @@ class GryphonChatView extends ItemView {
         const usedK = Math.round(contextTokens / 1000);
         const remK = Math.round(remaining / 1000);
         const winK = Math.round(windowSize / 1000);
-        const warnTokens = Math.max(0, Math.round(windowSize * CONTEXT_WARN_PCT / 100) - contextTokens);
-        const compactTokens = Math.max(0, Math.round(windowSize * AUTO_COMPACT_SDK_THRESHOLD_PCT / 100) - contextTokens);
+        const warnTokens = Math.max(0, Math.round(windowSize * constants_1.CONTEXT_WARN_PCT / 100) - contextTokens);
+        const compactTokens = Math.max(0, Math.round(windowSize * constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT / 100) - contextTokens);
         const isSdk = this._isSdkMode();
         const autoCompactOn = this.plugin.settings.autoCompactSdk !== false;
         const userMsgs = this.messages.filter((m) => m.role === "user").length;
@@ -2726,19 +2779,19 @@ class GryphonChatView extends ItemView {
         lines.push(`Used: ${usedK}K tokens (${pct}%)`);
         lines.push(`Remaining: ${remK}K tokens (${100 - pct}%)`);
         if (warnTokens > 0) {
-            lines.push(`Headroom to ${CONTEXT_WARN_PCT}% warning: ${Math.round(warnTokens / 1000)}K tokens`);
+            lines.push(`Headroom to ${constants_1.CONTEXT_WARN_PCT}% warning: ${Math.round(warnTokens / 1000)}K tokens`);
         }
         if (compactTokens > 0) {
             const label = isSdk
-                ? `${AUTO_COMPACT_SDK_THRESHOLD_PCT}% auto-compact`
-                : `${AUTO_COMPACT_SDK_THRESHOLD_PCT}% (CC auto-compact threshold)`;
+                ? `${constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT}% auto-compact`
+                : `${constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT}% (CC auto-compact threshold)`;
             lines.push(`Headroom to ${label}: ${Math.round(compactTokens / 1000)}K tokens`);
         }
         lines.push("");
         lines.push(`Messages: ${this.messages.length} (${userMsgs} user · ${asstMsgs} assistant).`);
         lines.push("");
         lines.push("**Options**");
-        if (pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT) {
+        if (pct >= constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT) {
             if (isSdk && autoCompactOn) {
                 lines.push("- Auto-compact will fire at the end of this turn.");
             }
@@ -2750,11 +2803,11 @@ class GryphonChatView extends ItemView {
             }
             lines.push("- `/clear` to start a fresh session immediately.");
         }
-        else if (pct >= CONTEXT_WARN_PCT) {
+        else if (pct >= constants_1.CONTEXT_WARN_PCT) {
             lines.push("- `/compact` to summarize and continue with a fresh session seeded by the summary.");
             lines.push("- `/recap` to see a summary without resetting.");
             if (isSdk && autoCompactOn) {
-                lines.push(`- Continue — auto-compact will fire at ${AUTO_COMPACT_SDK_THRESHOLD_PCT}%.`);
+                lines.push(`- Continue — auto-compact will fire at ${constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT}%.`);
             }
             else {
                 lines.push("- Continue — but consider `/compact` soon.");
@@ -2848,7 +2901,7 @@ class GryphonChatView extends ItemView {
             this._compactionPending = false;
             this._compactionInProgress = false;
             this._compactSummaryPending = false;
-            this._flashStatus(`Compaction failed: ${err.message || err}`);
+            this._flashStatus(`Compaction failed: ${_errText(err)}`);
         }
     }
     /**
@@ -2867,7 +2920,7 @@ class GryphonChatView extends ItemView {
             this._autoCompactInProgress = false;
             const retryText = this._autoCompactRetryText;
             this._autoCompactRetryText = null;
-            (async () => {
+            void (async () => {
                 await this._commitCompaction(summaryText, { auto: true });
                 this._compactionPending = false;
                 // Retry the user's pre-compact text first (lag-failsafe path),
@@ -2875,7 +2928,7 @@ class GryphonChatView extends ItemView {
                 if (retryText) {
                     window.setTimeout(() => {
                         this.inputEl.value = retryText;
-                        this.sendMessage();
+                        void this.sendMessage();
                     }, 0);
                 }
                 else {
@@ -2896,11 +2949,13 @@ class GryphonChatView extends ItemView {
             controls.remove();
             this._compactionPending = false;
         };
-        commitBtn.addEventListener("click", async () => {
-            commitBtn.disabled = true;
-            cancelBtn.disabled = true;
-            await this._commitCompaction(summaryText);
-            cleanup();
+        commitBtn.addEventListener("click", () => {
+            void (async () => {
+                commitBtn.disabled = true;
+                cancelBtn.disabled = true;
+                await this._commitCompaction(summaryText);
+                cleanup();
+            })();
         });
         cancelBtn.addEventListener("click", () => {
             this._flashStatus("Compaction cancelled \u2014 history unchanged");
@@ -2950,7 +3005,7 @@ class GryphonChatView extends ItemView {
             this._setIdleStatus();
         }
         catch (err) {
-            this._flashStatus(`Compaction commit failed: ${err.message || err}`);
+            this._flashStatus(`Compaction commit failed: ${_errText(err)}`);
         }
     }
     _cmdOpenSettings() {
@@ -3000,7 +3055,7 @@ class GryphonChatView extends ItemView {
         })();
         const tokens = (this.claudeProcess && this.claudeProcess.contextTokens) || 0;
         const model = settings.model || "claude-sonnet-5-5";
-        const windowSize = MODEL_CONTEXT[model] || 200000;
+        const windowSize = constants_1.MODEL_CONTEXT[model] || 200000;
         const ctxPct = tokens > 0 ? Math.round(tokens / windowSize * 100) : 0;
         let obsidianVersion = "unknown";
         try {
@@ -3014,13 +3069,12 @@ class GryphonChatView extends ItemView {
                 }
             }
         }
-        catch { }
+        catch { /* best-effort */ }
         let osDesc = "unknown";
         try {
-            const os = require("os");
             osDesc = `${os.platform()} ${os.release()}`;
         }
-        catch { }
+        catch { /* best-effort */ }
         return {
             pluginVersion: (this.plugin.manifest && this.plugin.manifest.version) || "unknown",
             provider,
@@ -3080,13 +3134,11 @@ class GryphonChatView extends ItemView {
         this._flashStatus("Running diagnostics …");
         const d = this._buildDiagnosticContext();
         const settings = this.plugin.settings || {};
-        const path = require("path");
-        const fs = require("fs");
         let pluginDir = null;
         try {
             pluginDir = path.join(this.app.vault.adapter.basePath, this.app.vault.configDir, "plugins", this.plugin.manifest.id);
         }
-        catch { }
+        catch { /* best-effort */ }
         const expectHooks = [
             "hooks/pretool.js",
             "hooks/posttool.js",
@@ -3109,13 +3161,13 @@ class GryphonChatView extends ItemView {
             // requestUrl has no abort signal, so bound the wait with a timeout race;
             // throw:false keeps a 401/403/404 counting as "reachable".
             const resp = await Promise.race([
-                requestUrl({ url: "https://api.anthropic.com/v1/", method: "HEAD", throw: false }),
+                (0, obsidian_1.requestUrl)({ url: "https://api.anthropic.com/v1/", method: "HEAD", throw: false }),
                 new Promise((_resolve, reject) => window.setTimeout(() => reject(new Error("timed out after 5s")), 5000)),
             ]);
             networkLine = `Network: api.anthropic.com reachable (HTTP ${resp.status})`;
         }
         catch (e) {
-            networkLine = `Network: api.anthropic.com unreachable — ${(e && e.message) || e}`;
+            networkLine = `Network: api.anthropic.com unreachable — ${_errTextOrNullish(e)}`;
         }
         let ipcLine = "IPC: not tested";
         try {
@@ -3125,7 +3177,7 @@ class GryphonChatView extends ItemView {
             }
         }
         catch (e) {
-            ipcLine = `IPC: error — ${(e && e.message) || e}`;
+            ipcLine = `IPC: error — ${_errTextOrNullish(e)}`;
         }
         const lines = [
             `**Gryphon diagnostics**`,
@@ -3175,17 +3227,15 @@ class GryphonChatView extends ItemView {
      * it was created.
      */
     async _cmdInitManual() {
-        const path = require("path");
-        const fs = require("fs");
         const vaultPath = this.app.vault.adapter.basePath;
         const manualRel = "Gryphon/MANUAL.md";
         const manualAbs = path.join(vaultPath, manualRel);
         if (fs.existsSync(manualAbs)) {
             this._flashStatus(`Gryphon/MANUAL.md already exists — opening`);
             try {
-                this.app.workspace.openLinkText(manualRel, "");
+                void this.app.workspace.openLinkText(manualRel, "");
             }
-            catch { }
+            catch { /* best-effort */ }
             return;
         }
         const template = "# Gryphon — Vault Manual\n\n" +
@@ -3212,12 +3262,12 @@ class GryphonChatView extends ItemView {
             fs.writeFileSync(manualAbs, template);
             this.addSystemMessage(`Created [[Gryphon/MANUAL]] — opening for editing`);
             try {
-                this.app.workspace.openLinkText(manualRel, "");
+                void this.app.workspace.openLinkText(manualRel, "");
             }
-            catch { }
+            catch { /* best-effort */ }
         }
         catch (e) {
-            this._flashStatus(`Failed to create MANUAL.md: ${(e && e.message) || e}`);
+            this._flashStatus(`Failed to create MANUAL.md: ${_errTextOrNullish(e)}`);
         }
     }
     /**
@@ -3255,7 +3305,7 @@ class GryphonChatView extends ItemView {
         try {
             window.open(url);
         }
-        catch { }
+        catch { /* best-effort */ }
         this._flashStatus("Opened feedback email — review and send from your mail app");
     }
     _openFeedbackIssueTracker(userText) {
@@ -3268,12 +3318,11 @@ class GryphonChatView extends ItemView {
         try {
             window.open(url);
         }
-        catch { }
+        catch { /* best-effort */ }
         this._flashStatus("Opened issue tracker — review and submit");
     }
     _showFeedbackModal() {
-        const { Modal, Setting } = require("obsidian");
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Send feedback");
         const note = modal.contentEl.createEl("p");
         note.setCssStyles({ marginBottom: "0.8em" });
@@ -3290,21 +3339,21 @@ class GryphonChatView extends ItemView {
             marginBottom: "1em",
         });
         diagBox.setText(this._buildFeedbackDiagText());
-        new Setting(modal.contentEl)
+        new obsidian_1.Setting(modal.contentEl)
             .setName("Report a bug")
             .setDesc("Opens a GitHub issue draft with diagnostic context prefilled.")
             .addButton((b) => b.setButtonText("Open issue tracker").onClick(() => {
             modal.close();
             this._openFeedbackIssueTracker("");
         }));
-        new Setting(modal.contentEl)
+        new obsidian_1.Setting(modal.contentEl)
             .setName("Send a quick note")
             .setDesc("Opens a draft email to contact@polleo.ai.")
             .addButton((b) => b.setButtonText("Open email").onClick(() => {
             modal.close();
             this._openFeedbackMailto("");
         }));
-        new Setting(modal.contentEl)
+        new obsidian_1.Setting(modal.contentEl)
             .setName("Browse issues")
             .setDesc("Opens the public issue tracker without prefilling anything.")
             .addButton((b) => b.setButtonText("Open issues page").onClick(() => {
@@ -3312,7 +3361,7 @@ class GryphonChatView extends ItemView {
             try {
                 window.open("https://github.com/polleoai/gryphon/issues");
             }
-            catch { }
+            catch { /* best-effort */ }
         }));
         modal.open();
     }
@@ -3322,14 +3371,13 @@ class GryphonChatView extends ItemView {
      * this stays drift-free as commands are added.
      */
     _cmdShowHelp() {
-        const { Modal } = require("obsidian");
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Gryphon — commands & shortcuts");
         const body = modal.contentEl;
         body.createEl("h3", { text: "Slash commands" });
         const cmdTable = body.createEl("table", { cls: "gryphon-help-table" });
         const cmdBody = cmdTable.createEl("tbody");
-        for (const c of SLASH_COMMANDS) {
+        for (const c of constants_1.SLASH_COMMANDS) {
             const row = cmdBody.createEl("tr");
             row.createEl("td", { text: c.cmd, cls: "gryphon-help-key" });
             row.createEl("td", { text: c.desc });
@@ -3370,7 +3418,7 @@ class GryphonChatView extends ItemView {
         manualLink.addEventListener("click", (e) => {
             e.preventDefault();
             modal.close();
-            this.app.workspace.openLinkText("Gryphon/MANUAL", "");
+            void this.app.workspace.openLinkText("Gryphon/MANUAL", "");
         });
         manualP.createSpan({ text: " in your vault." });
         modal.open();
@@ -3386,13 +3434,10 @@ class GryphonChatView extends ItemView {
      * the batch.
      */
     async _cmdMemoryAudit() {
-        const { Modal, Notice } = require("obsidian");
-        const audit = require("./memory-audit");
-        const os = require("os");
         const vaultPath = this.app && this.app.vault && this.app.vault.adapter && this.app.vault.adapter.basePath;
         const homeDir = os.homedir();
         const memoryDir = audit.findMemoryDir({ vaultPath, homeDir });
-        const modal = new Modal(this.app);
+        const modal = new obsidian_1.Modal(this.app);
         modal.titleEl.setText("Auto-memory audit");
         if (!memoryDir) {
             modal.contentEl.createEl("p", {
@@ -3406,9 +3451,8 @@ class GryphonChatView extends ItemView {
             // Show the path Gryphon looked at so a mismatch is visible
             // without having to grep source.
             if (vaultPath && homeDir) {
-                const { escapeVaultPath } = require("./context-budget");
-                const expected = require("path").join(homeDir, ".claude", "projects", escapeVaultPath(vaultPath), "memory");
-                const hintEl = modal.contentEl.createEl("div");
+                const expected = path.join(homeDir, ".claude", "projects", (0, context_budget_1.escapeVaultPath)(vaultPath), "memory");
+                const hintEl = modal.contentEl.createDiv();
                 hintEl.setCssStyles({ fontSize: "0.85em", color: "var(--text-muted)", marginTop: "0.6em" });
                 hintEl.setText(`Looked for: ${expected}`);
             }
@@ -3425,13 +3469,13 @@ class GryphonChatView extends ItemView {
         });
         const totalBytes = files.reduce((s, f) => s + (f.size || 0), 0);
         const headerEl = modal.contentEl.createDiv("gryphon-memory-header");
-        headerEl.createEl("div", { text: `Memory directory: ${memoryDir}` });
-        headerEl.createEl("div", {
+        headerEl.createDiv({ text: `Memory directory: ${memoryDir}` });
+        headerEl.createDiv({
             text: `Total: ${(totalBytes / 1024).toFixed(1)} KB across ${files.length} files`,
         });
         const indexFile = files.find((f) => f.name === audit.MEMORY_INDEX_NAME);
         if (indexFile && indexFile.size > 24 * 1024) {
-            const warn = headerEl.createEl("div", {
+            const warn = headerEl.createDiv({
                 text: `MEMORY.md is ${(indexFile.size / 1024).toFixed(1)} KB — past CC's `
                     + `24 KB cap; the tail is being truncated at load time.`,
                 cls: "gryphon-memory-warn",
@@ -3466,7 +3510,7 @@ class GryphonChatView extends ItemView {
                     selected.delete(f.name);
             });
             const labelText = `${f.name}  ·  ${(f.size / 1024).toFixed(1)} KB  ·  ${f.ageDays}d old`;
-            row.createEl("span", { text: " " + labelText });
+            row.createSpan({ text: " " + labelText });
         }
         const actions = modal.contentEl.createDiv("gryphon-memory-actions");
         const cancelBtn = actions.createEl("button", { text: "Cancel" });
@@ -3487,7 +3531,7 @@ class GryphonChatView extends ItemView {
             }
             catch (e) {
                 try {
-                    new Notice(`Gryphon: couldn't create memory-archive/ — ${(e && e.message) || e}`, 8000);
+                    new obsidian_1.Notice(`Gryphon: couldn't create memory-archive/ — ${_errTextOrNullish(e)}`, 8000);
                 }
                 catch { /* headless */ }
                 modal.close();
@@ -3511,20 +3555,20 @@ class GryphonChatView extends ItemView {
                         attempted: toMove.map((f) => f.name),
                         moved: moved.map((m) => m.name),
                     });
-                    new Notice(`Archived ${moved.length} of ${attempted} files — ${attempted - moved.length} couldn't be moved (see console).`, 8000);
+                    new obsidian_1.Notice(`Archived ${moved.length} of ${attempted} files — ${attempted - moved.length} couldn't be moved (see console).`, 8000);
                 }
                 if (indexResult && indexResult.indexWriteError) {
-                    new Notice(`Gryphon archived the files but couldn't update MEMORY.md — ${indexResult.indexWriteError}. Open MEMORY.md and remove or comment out the archived entries manually.`, 12000);
+                    new obsidian_1.Notice(`Gryphon archived the files but couldn't update MEMORY.md — ${indexResult.indexWriteError}. Open MEMORY.md and remove or comment out the archived entries manually.`, 12000);
                 }
                 // Only show the Undo toast on the happy path. If anything above
                 // already fired, the user has more important things to read.
                 if (moved.length > 0 && moved.length === attempted && !(indexResult && indexResult.indexWriteError)) {
-                    const n = new Notice(`Archived ${moved.length} memory file${moved.length === 1 ? "" : "s"}. Click to undo.`, 5000);
-                    // Notice exposes its DOM as `noticeEl`; clicks anywhere on the
-                    // toast reverse the archive batch within the 5-second window.
-                    if (n && n.noticeEl) {
-                        n.noticeEl.setCssStyles({ cursor: "pointer" });
-                        n.noticeEl.addEventListener("click", () => {
+                    const { notice: n, el: noticeEl } = (0, obsidian_compat_1.noticeWithElement)(`Archived ${moved.length} memory file${moved.length === 1 ? "" : "s"}. Click to undo.`, 5000);
+                    // The toast's message element (what Notice.noticeEl was); clicks on
+                    // it reverse the archive batch within the 5-second window.
+                    if (noticeEl) {
+                        noticeEl.setCssStyles({ cursor: "pointer" });
+                        noticeEl.addEventListener("click", () => {
                             const restored = audit.unarchiveMemoryFiles(moved);
                             const undoIndex = audit.updateMemoryIndex({
                                 memoryDir,
@@ -3532,7 +3576,7 @@ class GryphonChatView extends ItemView {
                                 restoredNames: restored.map((r) => r.name),
                             });
                             try {
-                                new Notice(`Restored ${restored.length} of ${moved.length} files.`
+                                new obsidian_1.Notice(`Restored ${restored.length} of ${moved.length} files.`
                                     + (undoIndex && undoIndex.indexWriteError
                                         ? ` (MEMORY.md update failed: ${undoIndex.indexWriteError})`
                                         : ""), 4000);
@@ -3554,12 +3598,12 @@ class GryphonChatView extends ItemView {
             const RECENT_SHOWN = 10;
             for (const f of recent.slice(0, RECENT_SHOWN)) {
                 const row = recentList.createDiv("gryphon-memory-row");
-                row.createEl("span", {
+                row.createSpan({
                     text: `${f.name}  ·  ${(f.size / 1024).toFixed(1)} KB  ·  ${f.ageDays}d old`,
                 });
             }
             if (recent.length > RECENT_SHOWN) {
-                recentList.createEl("div", {
+                recentList.createDiv({
                     text: `… and ${recent.length - RECENT_SHOWN} more.`,
                     cls: "gryphon-memory-more",
                 });
@@ -3692,9 +3736,9 @@ class GryphonChatView extends ItemView {
     _enqueuePrompt(text) {
         const msgEl = this.messagesEl.createDiv("gryphon-message gryphon-user gryphon-queued");
         const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-user gryphon-bubble-queued");
-        bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
-        bubble.createEl("span", { text, cls: "gryphon-text" });
-        bubble.createEl("span", { text: " · queued", cls: "gryphon-queued-tag" });
+        bubble.createSpan({ text: "> ", cls: "gryphon-prompt-prefix" });
+        bubble.createSpan({ text, cls: "gryphon-text" });
+        bubble.createSpan({ text: " · queued", cls: "gryphon-queued-tag" });
         this._queuedPrompts.push({ text, bubbleEl: msgEl });
         this._pendingQueuedTexts.push(text);
         // Up-arrow recall reads merged history; queued texts need to show
@@ -3759,7 +3803,7 @@ class GryphonChatView extends ItemView {
         // flash in the textarea — sendMessage clears it on entry.
         window.setTimeout(() => {
             this.inputEl.value = next.text;
-            this.sendMessage();
+            void this.sendMessage();
         }, 0);
     }
     // ── SDK auto-compact gate (issue #5 / v1.1.0) ──
@@ -3791,7 +3835,7 @@ class GryphonChatView extends ItemView {
         if (!this._isSdkMode())
             return false;
         const pct = this._currentContextPct();
-        const overThreshold = pct >= AUTO_COMPACT_SDK_THRESHOLD_PCT;
+        const overThreshold = pct >= constants_1.AUTO_COMPACT_SDK_THRESHOLD_PCT;
         // Opt-out path: at threshold, surface a louder warning instead of
         // triggering. Below threshold, just stay silent — the 80% warning
         // already fired.
@@ -3816,7 +3860,7 @@ class GryphonChatView extends ItemView {
             this._autoCompactInProgress = false;
             const retryText = this._autoCompactRetryText;
             this._autoCompactRetryText = null;
-            this._flashStatus(`Auto-compact failed: ${err.message || err}`);
+            this._flashStatus(`Auto-compact failed: ${_errText(err)}`);
             // Recovery: drain queued prompts so the user's pending sends still
             // dispatch (against the still-bloated provider, which may itself
             // overflow — but that surfaces as a normal error rather than a
@@ -3824,7 +3868,7 @@ class GryphonChatView extends ItemView {
             if (retryText) {
                 window.setTimeout(() => {
                     this.inputEl.value = retryText;
-                    this.sendMessage();
+                    void this.sendMessage();
                 }, 0);
             }
             else {
@@ -3908,7 +3952,7 @@ class GryphonChatView extends ItemView {
         const SEED_CAP_BASE = 100;
         const SEED_CAP_BASE_WINDOW = 200_000;
         const model = (this.plugin && this.plugin.settings && this.plugin.settings.model) || "";
-        const window = MODEL_CONTEXT[model] || SEED_CAP_BASE_WINDOW;
+        const window = constants_1.MODEL_CONTEXT[model] || SEED_CAP_BASE_WINDOW;
         const MAX_SDK_SEED_TURNS = Math.max(SEED_CAP_BASE, Math.round(SEED_CAP_BASE * (window / SEED_CAP_BASE_WINDOW)));
         // Reset the truncation stats up front so a no-history return below
         // doesn't leave a stale value from a prior call. The notice path
@@ -3988,11 +4032,11 @@ class GryphonChatView extends ItemView {
         // chat scroll. Distinguished from regular system banners by class
         // so it can be styled as a divider rather than a notice card.
         const sepEl = this.messagesEl.createDiv("gryphon-message gryphon-context-reset");
-        sepEl.createEl("span", {
+        sepEl.createSpan({
             text: marker.text,
             cls: "gryphon-context-reset-text",
         });
-        this._saveChatHistory();
+        void this._saveChatHistory();
         // Drop any pre-built seed history for the active provider; it will
         // be recomputed on the next send and naturally honor the marker.
         this._pendingSdkHistory = null;
@@ -4125,9 +4169,7 @@ class GryphonChatView extends ItemView {
         // AND "RunAs" so a user typing "elevate with runas" triggers.
         // _extractKeyword from cc-disallow-translator only returns the
         // first token; we do fuller token extraction here.
-        const { DEFAULT_PROTECTED_COMMANDS, DEFAULT_PROTECTED_PATHS } = require("./constants");
-        const { resolveActivePatterns } = require("@gryphon/protect");
-        const activeCmds = resolveActivePatterns(DEFAULT_PROTECTED_COMMANDS, sec.protectedCommandsDisabled, sec.protectedCommandsCustom);
+        const activeCmds = (0, gryphon_protect_1.resolveActivePatterns)(constants_1.DEFAULT_PROTECTED_COMMANDS, sec.protectedCommandsDisabled, sec.protectedCommandsCustom);
         for (const p of activeCmds) {
             if (typeof p !== "string")
                 continue;
@@ -4138,7 +4180,7 @@ class GryphonChatView extends ItemView {
             // "sudo", "curl" etc., which are all distinctive enough.
             const stripped = p
                 .replace(/\\[bBsSwWdD]/g, " ")
-                .replace(/[(){}\[\]^$+*?|.\\]/g, " ")
+                .replace(/[(){}[\]^$+*?|.\\]/g, " ")
                 .replace(/\\\s/g, " ");
             const tokens = stripped.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g) || [];
             for (const tok of tokens) {
@@ -4159,7 +4201,7 @@ class GryphonChatView extends ItemView {
         // the reminder on every turn, burning tokens. Only add the full
         // path (entered as-is by the user) and, for deep paths, the
         // more distinctive tail segment.
-        const activePaths = resolveActivePatterns(DEFAULT_PROTECTED_PATHS, sec.protectedPathsDisabled, sec.protectedPathsCustom);
+        const activePaths = (0, gryphon_protect_1.resolveActivePatterns)(constants_1.DEFAULT_PROTECTED_PATHS, sec.protectedPathsDisabled, sec.protectedPathsCustom);
         for (const p of activePaths) {
             if (typeof p !== "string")
                 continue;
@@ -4490,7 +4532,7 @@ class GryphonChatView extends ItemView {
      * future ones.
      */
     async _saveChatHistory() {
-        const prev = this._saveQueue || Promise.resolve();
+        const prev = this._saveQueue ?? Promise.resolve();
         this._saveQueue = prev
             .catch(() => { })
             .then(() => this._doSaveChatHistory());
@@ -4611,7 +4653,7 @@ class GryphonChatView extends ItemView {
                             }
                         }
                     }
-                    catch (parseErr) {
+                    catch {
                         // Corrupted non-empty file — preserve for user inspection.
                         const backup = `${localPath}.bak-${Date.now()}`;
                         try {
@@ -4773,20 +4815,20 @@ class GryphonChatView extends ItemView {
      *                                       block sits ABOVE the response text)
      */
     _renderThinkingBlock(bubbleEl, thinking, insertBefore = null) {
-        const details = activeDocument.createElement("details");
+        const details = activeWindow.createEl("details");
         details.className = "gryphon-thinking";
-        const summary = activeDocument.createElement("summary");
+        const summary = activeWindow.createEl("summary");
         summary.className = "gryphon-thinking-summary";
         summary.textContent = thinking.length > 1
             ? `\u{1F4AD} Thinking (${thinking.length} blocks)`
             : "\u{1F4AD} Thinking";
         details.appendChild(summary);
-        const body = activeDocument.createElement("div");
+        const body = activeWindow.createDiv();
         body.className = "gryphon-thinking-body";
         for (let i = 0; i < thinking.length; i++) {
             if (i > 0)
-                body.appendChild(activeDocument.createElement("hr"));
-            const pre = activeDocument.createElement("pre");
+                body.appendChild(activeWindow.createEl("hr"));
+            const pre = activeWindow.createEl("pre");
             pre.className = "gryphon-thinking-text";
             pre.textContent = thinking[i];
             body.appendChild(pre);
@@ -4801,7 +4843,7 @@ class GryphonChatView extends ItemView {
     }
     _renderMessage(msg) {
         if (msg.role === "user") {
-            const msgEl = activeDocument.createElement("div");
+            const msgEl = activeWindow.createDiv();
             msgEl.className = msg.sideNote
                 ? "gryphon-message gryphon-user gryphon-sidenote"
                 : "gryphon-message gryphon-user";
@@ -4816,7 +4858,7 @@ class GryphonChatView extends ItemView {
             // box / blank space on those systems. User report 2026-05-04
             // (Linux Claude Code: "the current Linux version doesn't have
             // [the > prefix]"). ASCII `>` round-trips through every font.
-            bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
+            bubble.createSpan({ text: "> ", cls: "gryphon-prompt-prefix" });
             // Defense-in-depth render-time strip: ANY persisted composite that
             // slipped past the load/save/migrate gates (e.g. a chat-history.json
             // entry from a session that ran before the migration shipped, OR a
@@ -4827,14 +4869,14 @@ class GryphonChatView extends ItemView {
             // session even after the load/save fix; this render-layer strip
             // closes the residual path independently of any caller's discipline.
             const renderText = this._stripContextBlock(msg.text);
-            bubble.createEl("span", { text: renderText, cls: "gryphon-text" });
+            bubble.createSpan({ text: renderText, cls: "gryphon-text" });
             if (msg.sideNote) {
-                bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
+                bubble.createSpan({ text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
             }
             return msgEl;
         }
         else if (msg.role === "assistant") {
-            const msgEl = activeDocument.createElement("div");
+            const msgEl = activeWindow.createDiv();
             msgEl.className = "gryphon-message gryphon-assistant";
             const bubble = msgEl.createDiv("gryphon-bubble gryphon-bubble-assistant");
             // Issue #4: render persisted thinking blocks above the assistant
@@ -4844,11 +4886,11 @@ class GryphonChatView extends ItemView {
                 this._renderThinkingBlock(bubble, msg.thinking);
             }
             const contentEl = bubble.createDiv("gryphon-text");
-            MarkdownRenderer.render(this.app, msg.text, contentEl, "", this.plugin);
+            void obsidian_1.MarkdownRenderer.render(this.app, msg.text, contentEl, "", this.plugin);
             return msgEl;
         }
         else if (msg.role === "system") {
-            const msgEl = activeDocument.createElement("div");
+            const msgEl = activeWindow.createDiv();
             // Issue #28: context-reset markers render as a thin divider, not
             // a system notice card. Distinguished by the source field so the
             // CSS class can style them as a horizontal separator.
@@ -4856,7 +4898,7 @@ class GryphonChatView extends ItemView {
             msgEl.className = isReset
                 ? "gryphon-message gryphon-context-reset"
                 : "gryphon-message gryphon-system";
-            msgEl.createEl("span", {
+            msgEl.createSpan({
                 text: msg.text,
                 cls: isReset ? "gryphon-context-reset-text" : "gryphon-system-text",
             });
@@ -4910,9 +4952,9 @@ class GryphonChatView extends ItemView {
         }
         if (!this._historyLoadedUpTo || this._historyLoadedUpTo <= 0)
             return;
-        this._loadMoreHint = activeDocument.createElement("div");
+        this._loadMoreHint = activeWindow.createDiv();
         this._loadMoreHint.className = "gryphon-system";
-        const span = activeDocument.createElement("span");
+        const span = activeWindow.createSpan();
         span.className = "gryphon-system-text";
         span.textContent = `\u2191 scroll up for ${this._historyLoadedUpTo} earlier messages`;
         this._loadMoreHint.appendChild(span);
@@ -5049,7 +5091,7 @@ class GryphonChatView extends ItemView {
         });
         manualLink.addEventListener("click", (e) => {
             e.preventDefault();
-            this.app.workspace.openLinkText("Gryphon/MANUAL", "");
+            void this.app.workspace.openLinkText("Gryphon/MANUAL", "");
         });
         manualHint.createSpan({
             text: " in your vault for slash commands, permission modes, skills, and troubleshooting.",
@@ -5075,7 +5117,7 @@ class GryphonChatView extends ItemView {
         const card = parent.createDiv("gryphon-welcome-card");
         card.createEl("h3", { text: "Claude Code (advanced)" });
         if (detected.cliPath) {
-            const { displayPath } = require("@gryphon/provider-runtime");
+            const { displayPath } = providerRuntime;
             card.createEl("p", {
                 text: `A \`claude\` binary was detected at ${displayPath(detected.cliPath)}. Switching ` +
                     `to Claude Code mode spawns it as a subprocess. Before enabling, ` +
@@ -5086,7 +5128,7 @@ class GryphonChatView extends ItemView {
                 text: "Use Claude Code",
                 cls: "mod-cta",
             });
-            btn.addEventListener("click", () => this._activateProvider("claude-code"));
+            btn.addEventListener("click", () => { void this._activateProvider("claude-code"); });
         }
         else {
             card.createEl("p", {
@@ -5117,7 +5159,7 @@ class GryphonChatView extends ItemView {
                 text: "Use Anthropic API",
                 cls: "mod-cta",
             });
-            btn.addEventListener("click", () => this._activateProvider("anthropic-api"));
+            btn.addEventListener("click", () => { void this._activateProvider("anthropic-api"); });
         }
         else {
             card.createEl("p", {
@@ -5227,13 +5269,13 @@ class GryphonChatView extends ItemView {
     // ── Message rendering ──
     addSystemMessage(text) {
         const msgEl = this.messagesEl.createDiv("gryphon-message gryphon-system");
-        msgEl.createEl("span", { text, cls: "gryphon-system-text" });
+        msgEl.createSpan({ text, cls: "gryphon-system-text" });
         this.messages.push({
             role: "system", text, ts: new Date().toISOString(),
             source: "system",
             sessionId: this.plugin.settings.lastSessionId || null,
         });
-        this._saveChatHistory();
+        void this._saveChatHistory();
         this.scrollToBottom();
     }
     /**
@@ -5272,13 +5314,13 @@ class GryphonChatView extends ItemView {
         // than the 3s dedup window for long model turns that exceed the
         // window between refusal emit and assistant finalize.
         this._refusalInCurrentTurn = true;
-        const msgEl = activeDocument.createElement("div");
+        const msgEl = activeWindow.createDiv();
         msgEl.className = "gryphon-message gryphon-refusal";
-        const bubble = msgEl.createEl("div", { cls: "gryphon-bubble gryphon-bubble-refusal" });
+        const bubble = msgEl.createDiv({ cls: "gryphon-bubble gryphon-bubble-refusal" });
         // Markdown render so the bullet list becomes actual bullets; the
         // text contains "- ..." items from our pre-bulleted prescriptive
         // format.
-        MarkdownRenderer.render(this.app, text, bubble, "", this.plugin);
+        void obsidian_1.MarkdownRenderer.render(this.app, text, bubble, "", this.plugin);
         // DOM ordering: if a streaming assistant bubble already exists (the
         // tool-use started BEFORE the refusal emit, which is the normal
         // order), the refusal block would otherwise append below it and
@@ -5299,7 +5341,7 @@ class GryphonChatView extends ItemView {
             source: "system",
             sessionId: this.plugin.settings.lastSessionId || null,
         });
-        this._saveChatHistory();
+        void this._saveChatHistory();
         this.scrollToBottom();
     }
     addUserMessage(text, source = "mechanical", opts = {}) {
@@ -5332,10 +5374,10 @@ class GryphonChatView extends ItemView {
             : "gryphon-bubble gryphon-bubble-user";
         const msgEl = this.messagesEl.createDiv(msgRowCls);
         const bubble = msgEl.createDiv(bubbleCls);
-        bubble.createEl("span", { text: "> ", cls: "gryphon-prompt-prefix" });
-        bubble.createEl("span", { text: cleanText, cls: "gryphon-text" });
+        bubble.createSpan({ text: "> ", cls: "gryphon-prompt-prefix" });
+        bubble.createSpan({ text: cleanText, cls: "gryphon-text" });
         if (opts.sideNote) {
-            bubble.createEl("span", { text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
+            bubble.createSpan({ text: " \u00B7 btw", cls: "gryphon-sidenote-tag" });
         }
         this.messages.push({
             role: "user", text: cleanText, ts: new Date().toISOString(),
@@ -5348,7 +5390,7 @@ class GryphonChatView extends ItemView {
             // session carry a different tag and survive the filter.
             sessionId: this.plugin.settings.lastSessionId || null,
         });
-        this._saveChatHistory();
+        void this._saveChatHistory();
         this.scrollToBottom();
     }
     startStreamingMessage() {
@@ -5365,7 +5407,7 @@ class GryphonChatView extends ItemView {
         this.streamingText = fullText;
         if (this.streamingEl) {
             this.streamingEl.empty();
-            MarkdownRenderer.render(this.app, fullText, this.streamingEl, "", this.plugin);
+            void obsidian_1.MarkdownRenderer.render(this.app, fullText, this.streamingEl, "", this.plugin);
             this.scrollToBottom();
         }
     }
@@ -5407,10 +5449,10 @@ class GryphonChatView extends ItemView {
                 text: "Show assistant response",
                 cls: "gryphon-assistant-summary",
             });
-            const body = details.createEl("div", {
+            const body = details.createDiv({
                 cls: "gryphon-text gryphon-assistant-body",
             });
-            MarkdownRenderer.render(this.app, text, body, "", this.plugin);
+            void obsidian_1.MarkdownRenderer.render(this.app, text, body, "", this.plugin);
         }
         else if (this.streamingEl) {
             this.streamingEl.removeClass("gryphon-streaming");
@@ -5421,7 +5463,7 @@ class GryphonChatView extends ItemView {
             if (Array.isArray(thinking) && thinking.length > 0 && this.streamingBubble) {
                 this._renderThinkingBlock(this.streamingBubble, thinking, this.streamingEl);
             }
-            MarkdownRenderer.render(this.app, text, this.streamingEl, "", this.plugin);
+            void obsidian_1.MarkdownRenderer.render(this.app, text, this.streamingEl, "", this.plugin);
         }
         const persisted = {
             role: "assistant", text, ts: new Date().toISOString(),
@@ -5432,7 +5474,7 @@ class GryphonChatView extends ItemView {
             persisted.thinking = thinking;
         }
         this.messages.push(persisted);
-        this._saveChatHistory();
+        void this._saveChatHistory();
         this.streamingEl = null;
         this.streamingBubble = null;
         this.scrollToBottom();
@@ -5476,13 +5518,13 @@ class GryphonChatView extends ItemView {
             if (found)
                 return;
             const view = leaf.view;
-            if (view instanceof MarkdownView && view.editor) {
+            if (view instanceof obsidian_1.MarkdownView && view.editor) {
                 try {
                     const sel = view.editor.getSelection();
                     if (sel)
                         found = { text: sel, file: view.file || null };
                 }
-                catch { }
+                catch { /* best-effort */ }
             }
         });
         if (found)
@@ -5497,7 +5539,7 @@ class GryphonChatView extends ItemView {
                 }
             }
         }
-        catch { }
+        catch { /* best-effort */ }
         // 3. Fall back to the cached selection from selectionchange listener.
         if (this._cachedSelection && this._cachedSelection.text) {
             return { text: this._cachedSelection.text, file: this._cachedSelection.file };
@@ -5598,7 +5640,7 @@ class GryphonChatView extends ItemView {
             this._flashStatus(`Exported \u2192 ${filePath}`);
         }
         catch (err) {
-            this._flashStatus(`Export failed: ${err.message || err}`);
+            this._flashStatus(`Export failed: ${_errText(err)}`);
         }
     }
     /** Ensure a folder path exists, creating intermediate folders as needed. */
@@ -5631,7 +5673,7 @@ class GryphonChatView extends ItemView {
         return (raw || "")
             .toString()
             .replace(/\.\./g, "") // no parent-dir traversal
-            .replace(/[\/\\]/g, "") // no path separators
+            .replace(/[/\\]/g, "") // no path separators
             .replace(/[^\w\s-]/g, "") // alphanumerics, underscore, whitespace, hyphen
             .replace(/\s+/g, "-")
             .replace(/-+/g, "-")
@@ -5708,19 +5750,18 @@ class GryphonChatView extends ItemView {
         // raw snake_case tool name leaks into the UI.
         let key = toolNameOrText;
         try {
-            const { normalizeToolName } = require("@gryphon/protect");
             if (typeof toolNameOrText === "string" && toolNameOrText) {
-                key = normalizeToolName(toolNameOrText);
+                key = (0, gryphon_protect_1.normalizeToolName)(toolNameOrText);
             }
         }
-        catch (_) { /* fall through with the raw name */ }
+        catch { /* fall through with the raw name */ }
         let status = this.toolStatusMap[key];
         if (!status) {
             // Unknown identifier-shaped input (any tool-name-looking token,
             // PascalCase OR snake_case OR kebab-case) becomes "Thinking..."
             // — never the raw tool name. Only free-text status (e.g.
             // "Connecting to Codex...") passes through unchanged.
-            if (toolNameOrText && /^[A-Za-z][A-Za-z0-9_\-]{1,40}$/.test(toolNameOrText)) {
+            if (toolNameOrText && /^[A-Za-z][A-Za-z0-9_-]{1,40}$/.test(toolNameOrText)) {
                 status = "Thinking...";
             }
             else {
@@ -5751,7 +5792,7 @@ class GryphonChatView extends ItemView {
             const parts = [`$${cost.toFixed(4)}`];
             if (duration)
                 parts.push(`${(duration / 1000).toFixed(1)}s`);
-            costEl.createEl("span", { text: parts.join(" \u00B7 "), cls: "gryphon-cost-text" });
+            costEl.createSpan({ text: parts.join(" \u00B7 "), cls: "gryphon-cost-text" });
         }
     }
     scrollToBottom() {
@@ -5821,7 +5862,7 @@ class GryphonChatView extends ItemView {
         const item = parent.createDiv("gryphon-ac-item");
         item.dataset.cmd = cmd;
         item.dataset.desc = desc || "";
-        item.createEl("span", { text: cmd, cls: "gryphon-ac-cmd" });
+        item.createSpan({ text: cmd, cls: "gryphon-ac-cmd" });
         item.addEventListener("click", () => this._selectAcItem(cmd));
         item.addEventListener("mouseenter", () => this._previewAcItem(item));
         item.addEventListener("mouseleave", () => this._restorePreAcStatus());
@@ -5873,7 +5914,7 @@ class GryphonChatView extends ItemView {
     _selectAcItem(cmd) {
         // Append a trailing space when the command takes arguments so the user
         // can type the argument without a manual space keystroke.
-        const entry = SLASH_COMMANDS.find((s) => s.cmd === cmd);
+        const entry = constants_1.SLASH_COMMANDS.find((s) => s.cmd === cmd);
         const insertText = entry && entry.takesArgs ? cmd + " " : cmd;
         this.inputEl.value = insertText;
         this.inputEl.focus();
@@ -5905,7 +5946,7 @@ class GryphonChatView extends ItemView {
      * discards partial good output.
      */
     async _runFailover(activeKind, attempt) {
-        const { classifyProviderFailure, resolveFallback } = require("@gryphon/provider-runtime");
+        const { classifyProviderFailure, resolveFallback } = runtimeExtras;
         // Attempt 1: the active provider, at the user's configured model.
         const a = await attempt(activeKind, undefined);
         if (a && a.ok) {
@@ -5945,7 +5986,8 @@ class GryphonChatView extends ItemView {
             });
         }
         // Fallback also failed → one combined, actionable error. No further hops.
-        const fbErr = b && b.error ? (b.error.message || String(b.error)) : "could not be constructed";
+        const bErr = b && b.error ? b.error : null;
+        const fbErr = bErr ? (bErr.message || String(bErr)) : "could not be constructed";
         throw new Error(`${activeKind} unavailable (${reason}); fallback ${fb.kind} also failed: ${fbErr}`);
     }
     /**
@@ -5956,7 +5998,7 @@ class GryphonChatView extends ItemView {
      *   "Selected: {label} (unavailable: {reason}) · Answered by: {label}"
      */
     _formatFallbackNotice(decision) {
-        const { friendlyProviderLabel, humanizeFailureReason } = require("@gryphon/provider-runtime");
+        const { friendlyProviderLabel, humanizeFailureReason } = runtimeExtras;
         return (`Selected: ${friendlyProviderLabel(decision.requestedProvider)} ` +
             `(unavailable: ${humanizeFailureReason(decision.reason)}) · ` +
             `Answered by: ${friendlyProviderLabel(decision.servedBy)}`);
@@ -6103,7 +6145,7 @@ class GryphonChatView extends ItemView {
             }
             catch (e) {
                 console.warn("[gryphon] onBeforeSend threw:", e);
-                this._flashStatus(`Command handler error: ${e.message || e}`);
+                this._flashStatus(`Command handler error: ${_errText(e)}`);
                 return;
             }
         }
@@ -6123,7 +6165,7 @@ class GryphonChatView extends ItemView {
             try {
                 this.claudeProcess.abort();
             }
-            catch (_) { /* best-effort */ }
+            catch { /* best-effort */ }
             this.claudeProcess = null;
             this._providerSpawnSignature = null;
         }
@@ -6191,13 +6233,12 @@ class GryphonChatView extends ItemView {
                 : false;
             if (!ipcReady && this.plugin.settings.providerPreference === "claude-code") {
                 try {
-                    const { Notice } = require("obsidian");
-                    new Notice(`Gryphon: guardrail IPC is offline — this CLI send will run ` +
+                    new obsidian_1.Notice(`Gryphon: guardrail IPC is offline — this CLI send will run ` +
                         `with basic pattern enforcement only (no Unicode normalization). ` +
                         `Reload Obsidian (Cmd/Ctrl+P → "Reload app without saving") ` +
                         `to restore full protection.`, 10000);
                 }
-                catch (_) { /* obsidian not available in tests */ }
+                catch { /* obsidian not available in tests */ }
             }
             // Construction options for a fresh provider. The actual createProvider
             // call (plus the construct-null / bug-#23 handling) now lives in the
@@ -6222,7 +6263,7 @@ class GryphonChatView extends ItemView {
             // Brand-aware label so codex-cli / gemini-cli sessions don't
             // say "Connecting to Claude". Same naming convention as the
             // approve/deny modal and the toolbar Model button.
-            const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+            const { getActiveProviderKind } = runtimeExtras;
             const kind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                 this.plugin.settings.providerPreference;
             const assistant = (kind === "openai-api" || kind === "codex-cli") ? "Codex" :
@@ -6234,7 +6275,7 @@ class GryphonChatView extends ItemView {
         let stderrLog = "";
         // Connection-timeout budget (issue #38), per active model. Computed once;
         // each attempt re-arms the timers via wireAndArm.
-        const connBudgetMs = resolveConnectionTimeoutMs({
+        const connBudgetMs = (0, constants_1.resolveConnectionTimeoutMs)({
             override: this.plugin.settings.connectionTimeoutMs,
             model: this.plugin.settings.model,
         });
@@ -6469,7 +6510,7 @@ class GryphonChatView extends ItemView {
             };
             // Resolve the active kind exactly as the spawn path does so the
             // same-kind failover guard reasons about the concrete provider.
-            const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+            const { getActiveProviderKind } = runtimeExtras;
             const activeKind = getActiveProviderKind(this.plugin, this._cliPathScope()) ||
                 this.plugin.settings.providerPreference;
             const decision = await this._runFailover(activeKind, attempt);
@@ -6536,7 +6577,7 @@ class GryphonChatView extends ItemView {
                 this.cumulativeCost += result.cost || 0;
                 if (result.sessionId) {
                     this.plugin.settings.lastSessionId = result.sessionId;
-                    this.plugin.saveSettings();
+                    void this.plugin.saveSettings();
                     // Retag any null-sessionId LLM messages in this.messages
                     // with the newly-established session ID. The situation:
                     // on a fresh CLI session, addUserMessage fires before
@@ -6613,7 +6654,7 @@ class GryphonChatView extends ItemView {
                     // path will route to _onCompactSummaryReady as expected.
                     window.setTimeout(() => {
                         this.inputEl.value = text;
-                        this.sendMessage();
+                        void this.sendMessage();
                     }, 0);
                     return;
                 }
@@ -6654,7 +6695,7 @@ class GryphonChatView extends ItemView {
             // input size vs. history size, and recommends the concrete fix
             // (switch to a 1M-context model, or trim the system-prompt side).
             const meterModel = this.plugin.settings.model || "claude-sonnet-5-5";
-            const meterWindow = MODEL_CONTEXT[meterModel] || 200000;
+            const meterWindow = constants_1.MODEL_CONTEXT[meterModel] || 200000;
             const msgDepth = (this.messages || []).length;
             const inputChars = (originalRawText || "").length;
             let errBody = `Error: ${err.message}`;
@@ -6666,7 +6707,7 @@ class GryphonChatView extends ItemView {
                     this.claudeProcess.contextTokens = meterWindow;
                     this.updateContextMeter(meterWindow);
                 }
-                const modelEntry = MODELS.find((m) => m.value === meterModel);
+                const modelEntry = constants_1.MODELS.find((m) => m.value === meterModel);
                 const modelLabel = (modelEntry && modelEntry.label) || meterModel;
                 const windowK = Math.round(meterWindow / 1000);
                 const onSmallWindow = meterWindow < 1_000_000;
@@ -6736,7 +6777,7 @@ class GryphonChatView extends ItemView {
                             return;
                         if (this.inputEl.value !== originalRawText)
                             return;
-                        this.sendMessage().finally(() => {
+                        void this.sendMessage().finally(() => {
                             this._autoRetryFired = false;
                         });
                     }, ms);
@@ -6787,31 +6828,14 @@ class GryphonChatView extends ItemView {
         }
     }
 }
+exports.GryphonChatView = GryphonChatView;
 /** The provider kind a view is talking to, for a notice; null on failure. */
 function getActiveProviderKindSafe(view) {
     try {
-        const { getActiveProviderKind } = require("@gryphon/provider-runtime");
+        const { getActiveProviderKind } = runtimeExtras;
         return getActiveProviderKind(view.plugin, view._cliPathScope()) || (view.plugin && view.plugin.settings && view.plugin.settings.providerPreference) || null;
     }
-    catch (_) {
+    catch {
         return null;
     }
 }
-module.exports = {
-    GryphonChatView,
-    // Exported for unit testing only.
-    filterMessagesForSave,
-    computeContextPct,
-    shouldStartAutoCompact,
-    nextContextWarningState,
-    modelButtonText,
-    modelButtonTitle,
-    _modelOptionsForKind,
-    _providerLabelFor,
-    _separateCanonicalBlocks,
-    _dedupeConsecutiveParagraphs,
-    _collapseSummaryDrafts,
-    _isRateLimitError,
-    _parseRetryAfterSeconds,
-    _replaceNoResponsePlaceholder,
-};

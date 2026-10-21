@@ -1,6 +1,41 @@
 "use strict";
 // TypeScript module marker.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MAX_CONCURRENT_SOCKETS = exports.MAX_LINE_BYTES = exports.PermissionIPCServer = void 0;
+exports.defaultSocketPath = defaultSocketPath;
 /**
  * Permission IPC server (v0.6.0) — the Unix-domain socket the Gryphon
  * plugin runs so Claude Code hook scripts can call back into the
@@ -46,11 +81,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // the headless paths.
 const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
-const net = require("net");
-const fs = require("fs");
-const path = require("path");
-const os = require("os");
-const crypto = require("crypto");
+const net = __importStar(require("net"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const os = __importStar(require("os"));
+const crypto = __importStar(require("crypto"));
 const IS_WINDOWS = process.platform === "win32";
 // Round-12 F11: cap per-connection read buffer. The protocol is one line
 // of JSON per request; a single classify request payload is tens of
@@ -58,10 +93,12 @@ const IS_WINDOWS = process.platform === "win32";
 // a same-uid attacker can't OOM the renderer by streaming unbounded data
 // with no newline.
 const MAX_LINE_BYTES = 1 * 1024 * 1024;
+exports.MAX_LINE_BYTES = MAX_LINE_BYTES;
 // Round-12 F13: cap concurrent connections to bound FD usage. Each
 // hook opens one connection per tool call; 32 is generous even for
 // bursty sessions.
 const MAX_CONCURRENT_SOCKETS = 32;
+exports.MAX_CONCURRENT_SOCKETS = MAX_CONCURRENT_SOCKETS;
 // Round-14 Q2: hard time-to-complete-request cap. A same-uid attacker
 // can hold all 32 slots with slow-loris connections (1 byte every 200ms
 // stays under MAX_LINE_BYTES and never sends \n) and starve all legit
@@ -180,7 +217,7 @@ class PermissionIPCServer {
                         try {
                             console.warn("[gryphon/ipc] chmod failed:", e && e.message);
                         }
-                        catch (_) { }
+                        catch { /* ignore */ }
                     }
                     if (!chmodOk) {
                         try {
@@ -195,14 +232,14 @@ class PermissionIPCServer {
                                 try {
                                     fs.unlinkSync(socketPath);
                                 }
-                                catch (_) { }
+                                catch { /* ignore */ }
                                 this._socketPath = null;
                                 reject(new Error(`IPC socket perms too permissive (mode ${st.mode.toString(8)}) ` +
                                     `and chmod failed — refusing to serve`));
                                 return;
                             }
                         }
-                        catch (_) { /* stat failed too — proceed, umask dance should've set 0600 */ }
+                        catch { /* stat failed too — proceed, umask dance should've set 0600 */ }
                     }
                 }
                 server.removeListener("error", onError);
@@ -219,7 +256,7 @@ class PermissionIPCServer {
                     try {
                         console.warn("[gryphon/ipc] server error:", e.message);
                     }
-                    catch (_) { }
+                    catch { /* ignore */ }
                     if (this._server === server) {
                         this._server = null;
                         this._socketPath = null;
@@ -260,7 +297,7 @@ class PermissionIPCServer {
             try {
                 sock.destroy();
             }
-            catch (_) { /* ignore */ }
+            catch { /* ignore */ }
         }
         this._activeSockets.clear();
         await new Promise((resolve) => {
@@ -271,7 +308,7 @@ class PermissionIPCServer {
                 if (fs.existsSync(this._socketPath))
                     fs.unlinkSync(this._socketPath);
             }
-            catch (_) { /* best-effort */ }
+            catch { /* best-effort */ }
         }
         this._socketPath = null;
     }
@@ -294,7 +331,7 @@ class PermissionIPCServer {
             try {
                 socket.end();
             }
-            catch (_) { /* ignore */ }
+            catch { /* ignore */ }
             return;
         }
         this._activeSockets.add(socket);
@@ -310,11 +347,11 @@ class PermissionIPCServer {
             try {
                 this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" });
             }
-            catch (_) { }
+            catch { /* ignore */ }
             try {
                 socket.destroy();
             }
-            catch (_) { }
+            catch { /* ignore */ }
             this._activeSockets.delete(socket);
         }, REQUEST_LIFETIME_MS);
         // unref so a pending timer doesn't keep the process alive at unload
@@ -337,7 +374,7 @@ class PermissionIPCServer {
                     socket.pause();
                     socket.end();
                 }
-                catch (_) { /* ignore */ }
+                catch { /* ignore */ }
                 buffer = "";
                 clearDeadline();
                 this._activeSockets.delete(socket);
@@ -356,11 +393,11 @@ class PermissionIPCServer {
                         try {
                             this._safeWrite(socket, { resp: "error", error: "request-lifetime-exceeded" });
                         }
-                        catch (_) { }
+                        catch { /* ignore */ }
                         try {
                             socket.destroy();
                         }
-                        catch (_) { }
+                        catch { /* ignore */ }
                         this._activeSockets.delete(socket);
                     }, MODAL_REQUEST_LIFETIME_MS);
                     if (deadlineTimer.unref)
@@ -402,6 +439,7 @@ class PermissionIPCServer {
         }
         let result;
         try {
+            // reqType is a string here, so `req` is an object.
             result = await handler(req);
         }
         catch (e) {
@@ -423,9 +461,10 @@ class PermissionIPCServer {
         try {
             socket.write(JSON.stringify(obj) + "\n");
         }
-        catch (_) { /* client may have disconnected */ }
+        catch { /* client may have disconnected */ }
     }
 }
+exports.PermissionIPCServer = PermissionIPCServer;
 /**
  * Generate a socket path in the OS temp directory, unique per process.
  * Kept short (tmpdir is always under the 104-char Unix socket limit)
@@ -440,9 +479,3 @@ function defaultSocketPath() {
     }
     return path.join(os.tmpdir(), `gryphon-${pid}-${randHex}.sock`);
 }
-module.exports = {
-    PermissionIPCServer,
-    defaultSocketPath,
-    MAX_LINE_BYTES,
-    MAX_CONCURRENT_SOCKETS,
-};

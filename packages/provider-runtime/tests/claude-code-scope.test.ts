@@ -36,9 +36,9 @@ function fakeSpawn(cmd: string, args: string[], opts: any) {
 const { ClaudeCodeProvider } = require("../src/providers/claude-code/claude-code");
 const { createProviderForKind } = require("../src/factory");
 const { HOOK_FILES } = require("../src/providers/claude-code/hook-settings-builder");
-const { GRYPHON_SYSTEM_PROMPT_HINT } = require("@gryphon/protect");
+const { GRYPHON_SYSTEM_PROMPT_HINT } = require("@polleoai/gryphon-protect");
 const { resolveClaudeCodeScope } = require("../src/providers/claude-code/scope");
-const mcpApprovals = require("@gryphon/protect").mcpApprovals;
+const mcpApprovals = require("@polleoai/gryphon-protect").mcpApprovals;
 
 const KBHOST_SERVER = { command: "python3", args: ["-m", "kbhost.server"] };
 
@@ -164,7 +164,7 @@ test("#25/#27 inheritUserConfig + mcpServers:'inherit' (every vault server appro
     "--append-system-prompt", GRYPHON_SYSTEM_PROMPT_HINT,
   ]);
   assert.deepEqual(readJson(mcpFile), { mcpServers: { kbhost: KBHOST_SERVER } });
-  const { buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
+  const { buildApprovalsStoreDenyGlobs } = require("@polleoai/gryphon-protect");
   assert.deepEqual(readJson(settingsFile), { permissions: { deny: buildApprovalsStoreDenyGlobs() } });
 });
 
@@ -222,7 +222,7 @@ test("#25 Protected off: a scope-only settings file is still written (plus the a
   const { args } = launch(makeVault());
   const files = valuesOf(args, "--settings");
   assert.equal(files.length, 1);
-  const { buildApprovalsStoreDenyGlobs } = require("@gryphon/protect");
+  const { buildApprovalsStoreDenyGlobs } = require("@polleoai/gryphon-protect");
   assert.deepEqual(readJson(files[0]), { permissions: { deny: buildApprovalsStoreDenyGlobs() }, autoMemoryEnabled: false });
   if (process.platform !== "win32") assert.equal(fs.statSync(files[0]).mode & 0o777, 0o600);
 });

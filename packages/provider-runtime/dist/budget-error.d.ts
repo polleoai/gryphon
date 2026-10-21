@@ -8,7 +8,9 @@
  * Per L5 in docs/consumer-requirements.md.
  */
 declare class BudgetExceededError extends Error {
-    [key: string]: any;
+    budget: number;
+    spent: number;
+    lastTurnCost: number;
     constructor({ budget, spent, lastTurnCost }: {
         budget: number;
         spent: number;

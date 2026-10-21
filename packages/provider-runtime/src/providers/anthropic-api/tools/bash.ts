@@ -29,8 +29,26 @@ const setTimeoutFn = setTimeout;
 const clearTimeoutFn = clearTimeout;
 
 
-const { spawn } = require("child_process") as typeof import("child_process");
-const { attackDetector } = require("@gryphon/protect");
+import { spawn } from "child_process";
+import { attackDetector } from "@polleoai/gryphon-protect";
+
+interface BashInput {
+  command?: unknown;
+  description?: string;
+  timeout?: number | string;
+}
+
+// Tool-loop context. A type alias (not an interface) so it satisfies the
+// gate's Record<string, unknown> ctx parameter.
+type BashToolContext = {
+  vaultRoot: string;
+  [key: string]: unknown;
+};
+
+interface ToolResult {
+  content: Array<{ type: string; text: string }>;
+  isError: boolean;
+}
 
 const SCHEMA = {
   name: "Bash",
@@ -65,12 +83,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_BYTES = 100_000;
 
-async function execute(input: any, ctx: any) {
+async function execute(input: BashInput, ctx: BashToolContext) {
   const command = input.command;
   const description = input.description || "(no description provided)";
   const timeoutMs = Math.min(
     MAX_TIMEOUT_MS,
-    Math.max(1000, parseInt(input.timeout || DEFAULT_TIMEOUT_MS, 10))
+    Math.max(1000, parseInt(String(input.timeout || DEFAULT_TIMEOUT_MS), 10))
   );
 
   if (typeof command !== "string" || !command.trim()) {
@@ -83,7 +101,7 @@ async function execute(input: any, ctx: any) {
   // like a benign `ls`). The modal body wraps long lines so full-length
   // commands stay readable.
   const classification = attackDetector.classify("Bash", { command }, ctx);
-  const perm = await attackDetector.gate(classification, {
+  const perm = (await attackDetector.gate(classification, {
     ctx,
     action: "run shell command",
     target: command,
@@ -94,14 +112,14 @@ async function execute(input: any, ctx: any) {
       `\n--- command ---\n${command}`,
     cacheable: false,  // never cache shell commands
     kind: "exec",
-  });
+  }));
 
   if (!perm.allow) return _error(perm.reason);
 
   return await _runCommand(command, ctx.vaultRoot, timeoutMs);
 }
 
-function _runCommand(command: any, cwd: any, timeoutMs: any) {
+function _runCommand(command: string, cwd: string, timeoutMs: number): Promise<ToolResult> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -120,11 +138,11 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
 
     const timer = setTimeoutFn(() => {
       killed = true;
-      try { proc.kill("SIGTERM"); } catch {}
-      setTimeoutFn(() => { try { proc.kill("SIGKILL"); } catch {} }, 5000);
+      try { proc.kill("SIGTERM"); } catch { /* already exited */ }
+      setTimeoutFn(() => { try { proc.kill("SIGKILL"); } catch { /* already exited */ } }, 5000);
     }, timeoutMs);
 
-    proc.stdout.on("data", (chunk: any) => {
+    proc.stdout.on("data", (chunk: Buffer) => {
       const s = chunk.toString();
       if (Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(s, "utf8") > MAX_OUTPUT_BYTES) {
         if (!stdoutTrunc) {
@@ -136,7 +154,7 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
       }
     });
 
-    proc.stderr.on("data", (chunk: any) => {
+    proc.stderr.on("data", (chunk: Buffer) => {
       const s = chunk.toString();
       if (Buffer.byteLength(stderr, "utf8") + Buffer.byteLength(s, "utf8") > MAX_OUTPUT_BYTES) {
         if (!stderrTrunc) {
@@ -148,14 +166,14 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
       }
     });
 
-    proc.on("error", (err: any) => {
+    proc.on("error", (err: Error) => {
       clearTimeoutFn(timer);
       resolve(_error(`Failed to spawn command: ${err.message}`));
     });
 
-    proc.on("close", (code: any, signal: any) => {
+    proc.on("close", (code: number | null, signal: NodeJS.Signals | null) => {
       clearTimeoutFn(timer);
-      const parts = [];
+      const parts: string[] = [];
       if (killed) {
         parts.push(`[killed by timeout after ${timeoutMs / 1000}s]`);
       }
@@ -175,11 +193,11 @@ function _runCommand(command: any, cwd: any, timeoutMs: any) {
   });
 }
 
-function _ok(text: any) {
+function _ok(text: string): ToolResult {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string): ToolResult {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

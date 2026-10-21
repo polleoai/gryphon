@@ -30,7 +30,7 @@
  *      then re-raise the signal so the host's own exit path still runs.
  *
  * The module is platform-aware but otherwise host-agnostic — it has no
- * Obsidian dependency, so a non-Obsidian consumer of @gryphon/provider-runtime
+ * Obsidian dependency, so a non-Obsidian consumer of @polleoai/gryphon-provider-runtime
  * gets the same leak-free guarantee.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -39,7 +39,7 @@ exports.managedSpawn = managedSpawn;
 exports.killProcessTree = killProcessTree;
 exports.killAll = killAll;
 exports.liveCount = liveCount;
-const { spawn, spawnSync } = require("child_process");
+const child_process_1 = require("child_process");
 const IS_WINDOWS = process.platform === "win32";
 // pid → entry. A pid is registered at spawn and deleted on the child's
 // `exit`/`error` event (whichever fires first).
@@ -85,13 +85,13 @@ function killProcessTree(child, signal = "SIGTERM") {
     if (IS_WINDOWS) {
         try {
             // /T = tree, /F = force. Fire-and-forget; we don't await it.
-            spawn("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+            (0, child_process_1.spawn)("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
         }
-        catch (_) { /* taskkill missing/locked — fall through to direct kill */ }
+        catch { /* taskkill missing/locked — fall through to direct kill */ }
         try {
             child.kill();
         }
-        catch (_) { /* already dead */ }
+        catch { /* already dead */ }
         return;
     }
     // POSIX: try the whole group first (negative pid). On success we're done.
@@ -103,11 +103,11 @@ function killProcessTree(child, signal = "SIGTERM") {
         process.kill(-pid, signal);
         return;
     }
-    catch (_) { /* fall through to the direct-child fallback below */ }
+    catch { /* fall through to the direct-child fallback below */ }
     try {
         child.kill(signal);
     }
-    catch (__) { /* already dead */ }
+    catch { /* already dead */ }
 }
 /**
  * Kill every tracked child tree. Used by the host's onunload and by the
@@ -121,7 +121,7 @@ function killAll(signal = "SIGTERM") {
             killProcessTree(entry.child, signal);
             n++;
         }
-        catch (_) { /* best-effort */ }
+        catch { /* best-effort */ }
     }
     return n;
 }
@@ -141,19 +141,19 @@ function _killAllSync() {
             continue;
         if (IS_WINDOWS) {
             try {
-                spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
+                (0, child_process_1.spawnSync)("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
             }
-            catch (_) { /* best-effort at exit */ }
+            catch { /* best-effort at exit */ }
         }
         else {
             try {
                 process.kill(-pid, "SIGKILL");
             }
-            catch (_) {
+            catch {
                 try {
                     process.kill(pid, "SIGKILL");
                 }
-                catch (__) { /* already dead */ }
+                catch { /* already dead */ }
             }
         }
     }
@@ -168,12 +168,12 @@ function _installShutdownHandlers() {
     process.on("exit", () => { try {
         _killAllSync();
     }
-    catch (_) { /* exit must not throw */ } });
+    catch { /* exit must not throw */ } });
     // beforeExit allows async-ish work; SIGTERM the groups politely.
     process.on("beforeExit", () => { try {
         killAll("SIGTERM");
     }
-    catch (_) { /* best-effort */ } });
+    catch { /* best-effort */ } });
     // One-shot signal handlers: reap, then re-raise the SAME signal with our
     // listener removed so the host's own exit disposition runs (we don't
     // permanently swallow Ctrl-C from a headless consumer). In the Electron
@@ -191,14 +191,14 @@ function _installShutdownHandlers() {
                 try {
                     _killAllSync();
                 }
-                catch (_) { /* best-effort */ }
+                catch { /* best-effort */ }
                 try {
                     process.kill(process.pid, sig);
                 }
-                catch (_) { /* host already exiting */ }
+                catch { /* host already exiting */ }
             });
         }
-        catch (_) { /* signal not supported on this platform */ }
+        catch { /* signal not supported on this platform */ }
     }
 }
 /**
@@ -233,7 +233,7 @@ function managedSpawn(command, args, options = {}, meta = {}) {
     else {
         detached = options.detached === true;
     }
-    const child = spawn(command, args, spawnOptions);
+    const child = (0, child_process_1.spawn)(command, args, spawnOptions);
     if (child && child.pid != null) {
         const pid = child.pid;
         _registry.set(pid, {

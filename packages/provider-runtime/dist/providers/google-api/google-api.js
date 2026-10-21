@@ -19,16 +19,54 @@
  * Cost calculation: SDK reports promptTokenCount / candidatesTokenCount /
  * cachedContentTokenCount; pricing.js computeCost() converts to USD.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.DEFAULT_MODEL = exports.resolveModel = exports.testApiKey = exports.GoogleProvider = void 0;
-const { GoogleGenAI } = require("@google/genai");
-const { runGeminiToolLoop } = require("./tool-loop");
-const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = require("@gryphon/provider-config").pricing.google;
+const tool_loop_1 = require("./tool-loop");
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+const host_adapter_1 = require("../../host-adapter");
+const test_key_1 = require("./test-key");
+Object.defineProperty(exports, "testApiKey", { enumerable: true, get: function () { return test_key_1.testApiKey; } });
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+let _sdk = null;
+async function loadSdk() {
+    return (_sdk ??= await Promise.resolve().then(() => __importStar(require("@google/genai"))));
+}
+const { resolveModel, coerceToVendorModel, computeCost, DEFAULT_MODEL } = gryphon_provider_config_1.pricing.google;
 exports.resolveModel = resolveModel;
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
-const { testApiKey } = require("./test-key");
-exports.testApiKey = testApiKey;
-const { GRYPHON_SDK_COMPOUND_REQUEST_RULE } = require("@gryphon/protect");
 const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Obsidian plugin. The user's " +
     "own protected-pattern list inside Gryphon decides which file " +
     "paths and shell commands require approval or are refused. " +
@@ -59,7 +97,7 @@ const GRYPHON_GEMINI_SYSTEM_PROMPT_BASE = "You are running inside the Gryphon Ob
 // Append the shared compound-request rule (same rationale as
 // anthropic-api / openai-api — keeps multi-step prompts from
 // silently dropping their unsafe sub-request).
-const GRYPHON_GEMINI_SYSTEM_PROMPT = GRYPHON_GEMINI_SYSTEM_PROMPT_BASE + GRYPHON_SDK_COMPOUND_REQUEST_RULE;
+const GRYPHON_GEMINI_SYSTEM_PROMPT = GRYPHON_GEMINI_SYSTEM_PROMPT_BASE + gryphon_protect_1.GRYPHON_SDK_COMPOUND_REQUEST_RULE;
 class GoogleProvider {
     constructor(apiKey, cwd, options = {}) {
         if (!apiKey) {
@@ -69,11 +107,12 @@ class GoogleProvider {
         this.cwd = cwd;
         this.options = options;
         this.hostAdapter = options.hostAdapter ||
-            new (require("../../host-adapter").HeadlessHostAdapter)();
-        // Test seam: callers may inject a mock client. Otherwise construct
-        // the real Gemini SDK client. The API surface used here is
+            new host_adapter_1.HeadlessHostAdapter();
+        // Test seam: callers may inject a mock client. Otherwise the real
+        // Gemini SDK client is built on first use by `_ensureClient()` (the SDK
+        // loads lazily). The API surface used here is
         // `client.models.generateContentStream({...})`.
-        this.client = options.client || new GoogleGenAI({ apiKey });
+        this.client = options.client || null;
         // Gemini's chat history shape: alternating Content { role, parts }.
         // role is "user" | "model" (NOT "assistant").
         this.history = Array.isArray(options.initialHistory)
@@ -95,6 +134,20 @@ class GoogleProvider {
         this.onDone = null;
     }
     isAlive() { return !this.destroyed; }
+    /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    async _ensureClient() {
+        if (this.client)
+            return this.client;
+        const { GoogleGenAI } = await loadSdk();
+        // A concurrent first call may have built one while we awaited.
+        if (this.client)
+            return this.client;
+        this.client = new GoogleGenAI({ apiKey: this.apiKey });
+        return this.client;
+    }
     // Gemini mode: cost is computed locally from token usage × MODEL_PRICES.
     // The price table may drift from Google's published pricing between
     // Gryphon releases. Cached-token discounts are tracked but not applied
@@ -112,7 +165,7 @@ class GoogleProvider {
                     this.activeStream.return();
                 }
             }
-            catch { }
+            catch { /* iterator already finished */ }
             this.activeStream = null;
         }
         this.pending = false;
@@ -183,8 +236,9 @@ class GoogleProvider {
             return cost;
         };
         try {
-            const { turnText, finalMessage, totalUsage, peakUsage } = await runGeminiToolLoop({
-                client: this.client,
+            const client = await this._ensureClient();
+            const { turnText, finalMessage, totalUsage, peakUsage } = await (0, tool_loop_1.runGeminiToolLoop)({
+                client,
                 model: this.resolvedModel,
                 systemPrompt: GRYPHON_GEMINI_SYSTEM_PROMPT,
                 history: this.history,
@@ -290,8 +344,9 @@ class GoogleProvider {
         // Gemini SDK errors don't have a stable class hierarchy — sniff via
         // status code + message keywords. The most common case (bad key) is
         // a 400 with API_KEY_INVALID in the message.
-        const status = err && (err.status || err.statusCode);
-        const msg = String((err && err.message) || err);
+        const e = err;
+        const status = e && (e.status || e.statusCode);
+        const msg = String((e && e.message) || err);
         if (/API[_ ]KEY[_ ]INVALID|Invalid API key/i.test(msg) || status === 401 || status === 403) {
             return "Invalid API key. Check Settings → Gryphon → Google API key.";
         }
@@ -326,6 +381,7 @@ function cloneGeminiContent(content) {
     const role = rawRole === "model" ? "model"
         : rawRole === "assistant" ? "model"
             : "user";
+    // The casts below only restate what each guard just checked.
     let parts;
     if (Array.isArray(content && content.parts) && content.parts.length > 0) {
         parts = JSON.parse(JSON.stringify(content.parts));

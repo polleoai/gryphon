@@ -143,7 +143,7 @@ test("#35 sibling (review): after the store guard comes back, losing it again is
   sandbox(() => {
     delete require.cache[require.resolve("../src/hook-dispatcher")];
     const hd = require("../src/hook-dispatcher");
-    const adapter = require("../src/hook-adapters/codex-cli");
+    const adapter = require("../src/hook-adapters").getAdapter("codex-cli");
     const notices: string[] = [];
     const opts = { security: { protectedMode: false }, hostAdapter: { notify: (m: string) => notices.push(m) } };
     const plugin = { ipcServer: { isListening: () => false } };

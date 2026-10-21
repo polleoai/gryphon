@@ -19,9 +19,49 @@
  * server set. The approval is for the hash that was SHOWN: if the file
  * changes between review and click, the new spec simply isn't approved.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
-const path = require("path");
-const { mcpApprovals } = require("@gryphon/protect");
+exports.describeServer = describeServer;
+exports.takeUnannounced = takeUnannounced;
+exports.handlePendingApprovals = handlePendingApprovals;
+exports.openReviewModal = openReviewModal;
+exports.renderApprovedServersSetting = renderApprovedServersSetting;
+const path = __importStar(require("path"));
+const gryphon_protect_1 = require("@polleoai/gryphon-protect");
+const obsidian_1 = require("obsidian");
+const obsidian_compat_1 = require("./obsidian-compat");
 /**
  * Env keys that change WHAT runs rather than configure it (preloaded code,
  * search paths, startup files, package registries, proxies). Flagged with a
@@ -53,10 +93,25 @@ const CWD_LOADING_RE = /^(?:python|py|pypy|ruby|perl|php|lua|luajit|node|nodejs|
 const STRONG_CWD_WARNING = "This server runs (or may run) code stored in the vault. Approving covers the command line, not that code: if the vault's files change, the new code runs without asking again.";
 const SOFT_CWD_WARNING = "This server starts with the vault as its working directory. Some programs read config or code from there (e.g. `git` runs the vault's (or an enclosing) `.git/config` hooks and `core.fsmonitor`). Approve only if you know this program doesn't.";
 /** Vault-supplied text → safe to display (Cc / bidi chars escaped). */
-const _clean = mcpApprovals.displaySafe;
+const _clean = gryphon_protect_1.mcpApprovals.displaySafe;
+/** Display text for a value read from a vault file: strings as-is, other
+ *  values as JSON (an object shows its content, not "[object Object]"). */
+function _displayText(v) {
+    if (typeof v === "string")
+        return v;
+    if (typeof v === "number" || typeof v === "bigint")
+        return v.toString();
+    if (typeof v === "boolean")
+        return v ? "true" : "false";
+    if (v === null)
+        return "null";
+    if (v === undefined)
+        return "undefined";
+    return JSON.stringify(v) ?? typeof v;
+}
 function _maskedPairs(obj, flagged) {
     return Object.keys(obj).map((k) => {
-        const v = String(obj[k]);
+        const v = _displayText(obj[k]);
         if (flagged && EXEC_ENV_RE.test(k)) {
             flagged.push(k);
             return `⚠ ${k}=${v}`;
@@ -93,14 +148,14 @@ function _pointsIntoVault(token, vaultDir) {
  * the spec, not the files it points at. Every value is `_clean`ed.
  */
 function describeServer(spec, vaultDir = null) {
-    const s = spec && typeof spec === "object" ? spec : {};
+    const s = (spec && typeof spec === "object" ? spec : {});
     const rows = [];
     const warnings = [];
     const type = typeof s.type === "string" ? s.type : (typeof s.url === "string" ? "http" : "stdio");
     rows.push(["Type", type]);
     if (typeof s.command === "string") {
         const args = Array.isArray(s.args) ? s.args : [];
-        rows.push(["Command", [s.command, ...args].map((a) => JSON.stringify(String(a))).join(" ")]);
+        rows.push(["Command", [s.command, ...args].map((a) => JSON.stringify(_displayText(a))).join(" ")]);
         // The cwd is the vault unless the spec sets one outside it, and any
         // program may read config or code from its cwd — so a vault cwd is
         // always warned. The strong text goes to interpreters, package runners,
@@ -123,14 +178,14 @@ function describeServer(spec, vaultDir = null) {
         rows.push(["URL", s.url]);
     if (typeof s.cwd === "string")
         rows.push(["Working directory", s.cwd]);
-    const env = s.env && typeof s.env === "object" && !Array.isArray(s.env) ? s.env : null;
+    const env = (s.env && typeof s.env === "object" && !Array.isArray(s.env) ? s.env : null);
     if (env && Object.keys(env).length > 0) {
         const flagged = [];
         rows.push(["Environment", _maskedPairs(env, flagged)]);
         if (flagged.length > 0)
             warnings.push(`${flagged.join(", ")} changes what runs (shown in full above). Check ${flagged.length > 1 ? "them" : "it"} carefully.`);
     }
-    const headers = s.headers && typeof s.headers === "object" && !Array.isArray(s.headers) ? s.headers : null;
+    const headers = (s.headers && typeof s.headers === "object" && !Array.isArray(s.headers) ? s.headers : null);
     if (headers && Object.keys(headers).length > 0) {
         rows.push(["Headers", _maskedPairs(headers, null)]);
     }
@@ -175,12 +230,10 @@ function handlePendingApprovals(plugin, report) {
     const fresh = takeUnannounced(plugin._mcpApprovalNoticesSeen, report.vaultKey, report.pending);
     if (fresh.length === 0)
         return;
-    const { Notice } = require("obsidian");
     const many = report.pending.length > 1;
     const names = report.pending.map((p) => (p.reason === "changed" ? `${_clean(p.name)} (changed)` : _clean(p.name))).join(", ");
-    const notice = new Notice(`This vault defines MCP server${many ? "s" : ""} ${names} that ${many ? "haven't" : "hasn't"} been approved. ` +
+    const { notice, el } = (0, obsidian_compat_1.noticeWithElement)(`This vault defines MCP server${many ? "s" : ""} ${names} that ${many ? "haven't" : "hasn't"} been approved. ` +
         `${many ? "They" : "It"} won't run.`, 20000);
-    const el = notice && notice.noticeEl;
     if (el && typeof el.createEl === "function") {
         const btn = el.createEl("button", { text: "Review" });
         btn.addEventListener("click", (ev) => {
@@ -191,8 +244,7 @@ function handlePendingApprovals(plugin, report) {
     }
 }
 function openReviewModal(plugin, report) {
-    const { Modal, Setting, Notice } = require("obsidian");
-    const modal = new Modal(plugin.app);
+    const modal = new obsidian_1.Modal(plugin.app);
     modal.titleEl.setText("Review vault MCP servers");
     const c = modal.contentEl;
     c.createEl("p", {
@@ -214,61 +266,55 @@ function openReviewModal(plugin, report) {
             const code = row.createEl("code", { text: value });
             code.setCssStyles({ wordBreak: "break-all" });
         }
-        if (!mcpApprovals.isApprovableName(p.name)) {
+        if (!gryphon_protect_1.mcpApprovals.isApprovableName(p.name)) {
             box.createEl("p", { text: `A server named "${name}" can't be approved. Rename it in the vault's .mcp.json to run it.` });
             continue;
         }
-        new Setting(box).addButton((btn) => btn.setButtonText("Approve").setCta().onClick(() => {
+        new obsidian_1.Setting(box).addButton((btn) => btn.setButtonText("Approve").setCta().onClick(() => {
             try {
-                mcpApprovals.approve(report.vaultKey, p.name, p.specHash);
+                gryphon_protect_1.mcpApprovals.approve(report.vaultKey, p.name, p.specHash);
                 _bumpGeneration(plugin);
                 btn.setButtonText("Approved").setDisabled(true);
-                new Notice(`Approved ${name}. It starts with your next message.`);
+                new obsidian_1.Notice(`Approved ${name}. It starts with your next message.`);
             }
             catch (e) {
-                new Notice(`Couldn't save the approval: ${(e && e.message) || e}`);
+                new obsidian_1.Notice(`Couldn't save the approval: ${(e && e.message) || e}`);
             }
         }));
     }
-    new Setting(c).addButton((btn) => btn.setButtonText("Not now").onClick(() => modal.close()));
+    new obsidian_1.Setting(c).addButton((btn) => btn.setButtonText("Not now").onClick(() => modal.close()));
     modal.open();
 }
 /** Settings → Advanced: this vault's approvals, each with Revoke. */
 function renderApprovedServersSetting(plugin, panelEl, descToTooltip) {
-    const { Setting, Notice } = require("obsidian");
-    const basePath = plugin.app && plugin.app.vault && plugin.app.vault.adapter && plugin.app.vault.adapter.basePath;
-    descToTooltip(new Setting(panelEl).setName("Approved vault MCP servers").setHeading(), "Claude Code mode only. MCP servers defined in this vault's .mcp.json run only after you " +
+    // `basePath` is the desktop FileSystemAdapter's field; Obsidian's typings omit it.
+    const adapter = (plugin.app && plugin.app.vault && plugin.app.vault.adapter);
+    const basePath = adapter && adapter.basePath;
+    descToTooltip(new obsidian_1.Setting(panelEl).setName("Approved vault MCP servers").setHeading(), "Claude Code mode only. MCP servers defined in this vault's .mcp.json run only after you " +
         "approve them. Approvals are stored outside the vault, so a shared or cloned vault can't " +
         "approve its own servers. Revoking takes effect on your next message.");
     if (!basePath)
         return;
-    const vk = mcpApprovals.vaultKey(basePath);
-    mcpApprovals.serveVault(vk);
-    const entries = mcpApprovals.listForVault(mcpApprovals.load(), vk);
+    const vk = gryphon_protect_1.mcpApprovals.vaultKey(basePath);
+    gryphon_protect_1.mcpApprovals.serveVault(vk);
+    const entries = gryphon_protect_1.mcpApprovals.listForVault(gryphon_protect_1.mcpApprovals.load(), vk);
     if (entries.length === 0) {
-        new Setting(panelEl).setDesc("No servers approved for this vault.");
+        new obsidian_1.Setting(panelEl).setDesc("No servers approved for this vault.");
         return;
     }
     for (const e of entries) {
         const when = e.approvedAt ? e.approvedAt.slice(0, 10) : "unknown date";
-        const row = new Setting(panelEl).setName(_clean(e.name)).setDesc(`Approved ${when}`);
-        row.addButton((btn) => btn.setButtonText("Revoke").setWarning().onClick(() => {
+        const row = new obsidian_1.Setting(panelEl).setName(_clean(e.name)).setDesc(`Approved ${when}`);
+        row.addButton((btn) => (0, obsidian_compat_1.warningButton)(btn.setButtonText("Revoke")).onClick(() => {
             try {
-                mcpApprovals.revoke(vk, e.name);
+                gryphon_protect_1.mcpApprovals.revoke(vk, e.name);
                 _bumpGeneration(plugin);
                 row.settingEl.remove();
-                new Notice(`Revoked ${_clean(e.name)}. It won't start from your next message.`);
+                new obsidian_1.Notice(`Revoked ${_clean(e.name)}. It won't start from your next message.`);
             }
             catch (err) {
-                new Notice(`Couldn't revoke: ${(err && err.message) || err}`);
+                new obsidian_1.Notice(`Couldn't revoke: ${(err && err.message) || err}`);
             }
         }));
     }
 }
-module.exports = {
-    describeServer,
-    takeUnannounced,
-    handlePendingApprovals,
-    openReviewModal,
-    renderApprovedServersSetting,
-};

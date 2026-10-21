@@ -11,9 +11,24 @@
  *   "count"              — match count per file
  */
 
-const fs = require("fs") as typeof import("fs");
-const path = require("path") as typeof import("path");
-const { resolveVaultPath, PathOutsideVaultError } = require("@gryphon/protect");
+import * as fs from "fs";
+import * as path from "path";
+import { resolveVaultPath, PathOutsideVaultError } from "@polleoai/gryphon-protect";
+import * as globModule from "./glob";
+
+interface GrepInput {
+  pattern?: string;
+  path?: string;
+  glob?: string;
+  output_mode?: string;
+  "-i"?: boolean;
+  "-n"?: boolean;
+  head_limit?: number | string;
+}
+
+interface GrepToolContext {
+  vaultRoot: string;
+}
 
 const SCHEMA = {
   name: "Grep",
@@ -56,7 +71,7 @@ const DEFAULT_LIMIT = 250;
 const MAX_FILES_SCANNED = 5000;
 const MAX_FILE_SIZE = 1024 * 1024;  // skip files > 1MB
 
-async function execute(input: any, ctx: any) {
+async function execute(input: GrepInput, ctx: GrepToolContext) {
   const pattern = input.pattern;
   if (!pattern) return _error("Missing required parameter: pattern");
 
@@ -82,13 +97,13 @@ async function execute(input: any, ctx: any) {
 
   const outputMode = input.output_mode || "files_with_matches";
   const showLineNumbers = input["-n"] !== false;
-  const limit = Math.min(10000, parseInt(input.head_limit || DEFAULT_LIMIT, 10));
+  const limit = Math.min(10000, parseInt(String(input.head_limit || DEFAULT_LIMIT), 10));
 
   let globRegex: RegExp | null = null;
   if (input.glob) {
     try {
-      globRegex = (require("./glob") as typeof import("./glob"))._globToRegex
-        ? (require("./glob") as typeof import("./glob"))._globToRegex(input.glob)
+      globRegex = globModule._globToRegex
+        ? globModule._globToRegex(input.glob)
         : _simpleGlobToRegex(input.glob);
     } catch {
       globRegex = _simpleGlobToRegex(input.glob);
@@ -96,10 +111,10 @@ async function execute(input: any, ctx: any) {
   }
 
   const results: Array<{ path: string; line: string; lineNo: number }> = [];  // { path, line, lineNo, count }
-  const fileMatchCounts = new Map();  // path → count
+  const fileMatchCounts = new Map<string, number>();  // path → count
   let filesScanned = 0;
 
-  function scanFile(filePath: any) {
+  function scanFile(filePath: string) {
     if (filesScanned >= MAX_FILES_SCANNED) return;
     filesScanned++;
 
@@ -123,7 +138,7 @@ async function execute(input: any, ctx: any) {
     if (count > 0) fileMatchCounts.set(filePath, count);
   }
 
-  function walk(dir: any) {
+  function walk(dir: string) {
     if (filesScanned >= MAX_FILES_SCANNED) return;
     let entries;
     try {
@@ -189,12 +204,12 @@ const IGNORED_DIRS = new Set([
   ".kb-trash",
 ]);
 
-function _isIgnoredDir(name: any) {
+function _isIgnoredDir(name: string) {
   return IGNORED_DIRS.has(name) || name.startsWith(".cache");
 }
 
 // Minimal fallback glob → regex (used if glob.js' helper isn't exported).
-function _simpleGlobToRegex(glob: any): RegExp {
+function _simpleGlobToRegex(glob: string): RegExp {
   const escaped = glob
     .replace(/[.+()|^$\\]/g, "\\$&")
     .replace(/\*\*/g, "__DOUBLESTAR__")
@@ -204,11 +219,11 @@ function _simpleGlobToRegex(glob: any): RegExp {
   return new RegExp("^" + escaped + "$");
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 

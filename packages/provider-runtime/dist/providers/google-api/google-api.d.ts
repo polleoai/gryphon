@@ -18,12 +18,71 @@
  * Cost calculation: SDK reports promptTokenCount / candidatesTokenCount /
  * cachedContentTokenCount; pricing.js computeCost() converts to USD.
  */
-declare const resolveModel: any, DEFAULT_MODEL: any;
-declare const testApiKey: typeof import("./test-key").testApiKey;
+import type { Content, GoogleGenAI as GoogleGenAIClient } from "@google/genai";
+import { testApiKey } from "./test-key";
+declare const resolveModel: typeof import("@polleoai/gryphon-provider-config/dist/pricing/google").resolveModel, DEFAULT_MODEL: string;
+interface GeminiAbortableStream {
+    return?: (value?: unknown) => unknown;
+}
+interface GoogleProviderOptions {
+    hostAdapter?: unknown;
+    client?: GoogleGenAIClient;
+    initialHistory?: IncomingHistoryEntry[];
+    model?: string | null;
+    permissionMode?: string;
+    plugin?: unknown;
+    security?: unknown;
+    [key: string]: unknown;
+}
+interface GoogleSendOptions {
+    maxUsdBudget?: number | null;
+    structuredOutput?: {
+        name: string;
+        schema: Record<string, unknown>;
+    } | null;
+    [key: string]: unknown;
+}
+interface GoogleTurnResult {
+    text: string;
+    cost: number;
+    cumulativeCost: number;
+    sessionId: string;
+    duration: number;
+    contextTokens: number;
+    json?: unknown;
+}
+type IncomingHistoryEntry = {
+    role?: unknown;
+    parts?: unknown;
+    content?: unknown;
+    text?: unknown;
+} | null | undefined;
 declare class GoogleProvider {
-    [key: string]: any;
-    constructor(apiKey: any, cwd: any, options?: Record<string, any>);
+    apiKey: string;
+    cwd: string;
+    options: GoogleProviderOptions;
+    hostAdapter: unknown;
+    client: GoogleGenAIClient | null;
+    history: Content[];
+    sessionId: string;
+    resolvedModel: string;
+    contextTokens: number;
+    cumulativeCost: number;
+    startTime: number;
+    activeStream: GeminiAbortableStream | null;
+    pending: boolean;
+    destroyed: boolean;
+    onMessage: ((text: string, type: string) => void) | null;
+    onError: ((text: string) => void) | null;
+    onDone: ((result: GoogleTurnResult) => void) | null;
+    _needsHistoryReset: boolean | undefined;
+    constructor(apiKey: string, cwd: string, options?: GoogleProviderOptions);
     isAlive(): boolean;
+    /**
+     * The SDK client, built on first use. Loads the SDK (once per process)
+     * unless a client was injected or already built.
+     */
+    _ensureClient(): Promise<GoogleGenAIClient>;
     get costIsEstimate(): boolean;
     abort(): void;
     /**
@@ -35,7 +94,7 @@ declare class GoogleProvider {
      * `historyCheckpoint` — the second send's user message could be truncated
      * by the first send's error rollback. Inherited from openai-api / anthropic-api.
      */
-    send(prompt: any, options?: Record<string, any>): Promise<Record<string, any>>;
-    _formatError(err: any): string;
+    send(prompt: string, options?: GoogleSendOptions): Promise<GoogleTurnResult>;
+    _formatError(err: unknown): string;
 }
 export { GoogleProvider, testApiKey, resolveModel, DEFAULT_MODEL };

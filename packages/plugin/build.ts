@@ -302,37 +302,34 @@ const installToVaultPlugin = {
   },
 };
 
-// Step 3 (dist-vendoring task): esbuild bundles @gryphon/* from their TypeScript
+// Step 3 (dist-vendoring task): esbuild bundles @polleoai/gryphon-* from their TypeScript
 // src/ trees directly, bypassing the package.json `main`/`exports` which now
 // point at dist/ for external plain-node consumers.  This preserves the pre-dist
 // bundle size (~1352 KB) because esbuild tree-shakes the TS source the same way
 // as before; the compiled dist/ trees carry extra tsc overhead (module.exports
 // wrappers) that would inflate the bundle by ~120 KB otherwise.
 //
-// The alias map has no effect on the five deep `../../provider-runtime/src/...`
-// file-relative requires in plugin.ts — those bypass the exports map entirely.
-const GRYPHON_SRC_ALIASES = {
-  "@gryphon/protect":        path.resolve(PROTECT_SRC, "index.ts"),
-  "@gryphon/provider-config": path.resolve(REPO_ROOT, "packages", "provider-config", "src", "index.ts"),
-  "@gryphon/provider-runtime": path.resolve(REPO_ROOT, "packages", "provider-runtime", "src", "index.ts"),
-};
-
-// protect's cross-package reach-ins name `../../provider-runtime/dist/...` so
-// its compiled dist/ resolves for plain-node consumers (gryphon-dev#23). The
-// bundle must stay on src/ like the aliases above — one module instance, and
-// no dependency on a prebuilt dist/ (release CI runs `npm run build` only).
-const PROVIDER_RUNTIME_DIST_TO_SRC = {
-  name: "provider-runtime-dist-to-src",
-  setup(build) {
-    build.onResolve({ filter: /provider-runtime\/dist\// }, (args) => {
-      const target = path.resolve(args.resolveDir, args.path.replace("/provider-runtime/dist/", "/provider-runtime/src/"));
-      for (const candidate of [`${target}.ts`, path.join(target, "index.ts")]) {
-        if (fs.existsSync(candidate)) return { path: candidate };
-      }
-      return { errors: [{ text: `provider-runtime src counterpart not found for ${args.path}` }] };
-    });
-  },
-};
+// Cross-package reach-ins use package subpaths
+// (`@polleoai/gryphon-provider-runtime/shell-quote`) so the compiled dist/
+// resolves once installed from npm (gryphon-dev#23, #26). The bundle must stay
+// on src/ — one module instance, and no dependency on a prebuilt dist/ (release
+// CI runs `npm run build` only) — so each subpath maps through the package's
+// exports map (`./dist/x.js` → `src/x.ts`), one exact alias per subpath
+// (esbuild matches the longest alias key). Aliases, not an onResolve plugin:
+// a plugin-resolved path skips tsconfig, which silently drops alwaysStrict's
+// "use strict" from those modules (#26).
+const GRYPHON_SRC_ALIASES = {};
+for (const dir of ["protect", "provider-config", "provider-runtime"]) {
+  const pkgDir = path.resolve(REPO_ROOT, "packages", dir);
+  const exports = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8")).exports;
+  for (const [sub, entry] of Object.entries(exports)) {
+    const target = entry && typeof entry === "object" ? entry.require : entry;
+    if (typeof target !== "string" || !/^\.\/dist\/.+\.js$/.test(target)) continue; // ./package.json
+    const src = path.join(pkgDir, "src", target.slice("./dist/".length).replace(/\.js$/, ".ts"));
+    if (!fs.existsSync(src)) throw new Error(`build: @polleoai/gryphon-${dir} export "${sub}" has no src counterpart ${src}`);
+    GRYPHON_SRC_ALIASES[`@polleoai/gryphon-${dir}${sub.slice(1)}`] = src;
+  }
+}
 
 const config = {
   entryPoints: [path.resolve(PLUGIN_SRC, "plugin.ts")],
@@ -342,9 +339,6 @@ const config = {
   platform: "node",
   format: "cjs",
   target: "es2020",
-  // Redirect @gryphon/* to src/index.ts so esbuild bundles from TypeScript
-  // sources, not the compiled dist/ trees. dist/ is for external consumers.
-  alias: GRYPHON_SRC_ALIASES,
   // Obsidian + Electron provide these at runtime; don't bundle them.
   // `undici` is NOT a Node public built-in — earlier releases marked it
   // external on the (wrong) assumption that require("undici") would
@@ -360,7 +354,8 @@ const config = {
   // mostly by collapsing the @anthropic-ai/sdk's internal layers.
   minify: !watch,
   logLevel: "info",
-  plugins: [PROVIDER_RUNTIME_DIST_TO_SRC, installToVaultPlugin],
+  alias: GRYPHON_SRC_ALIASES,
+  plugins: [installToVaultPlugin],
 };
 
 async function run() {

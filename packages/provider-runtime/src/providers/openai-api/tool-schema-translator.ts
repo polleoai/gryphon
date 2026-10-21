@@ -15,10 +15,27 @@
  * returned object without affecting the source registry.
  */
 
-function translateSchemaToOpenAI(schema: any) {
-  if (!schema || typeof schema !== "object") {
+// Anthropic-shape tool SCHEMA as registered by Gryphon's tools.
+interface AnthropicToolSchema {
+  name?: string;
+  description?: string;
+  input_schema?: Record<string, unknown>;
+}
+
+interface OpenAIFunctionTool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+function translateSchemaToOpenAI(input: unknown): OpenAIFunctionTool {
+  if (!input || typeof input !== "object") {
     throw new Error("translateSchemaToOpenAI: SCHEMA must be an object");
   }
+  const schema = input as AnthropicToolSchema;
   if (!schema.name) {
     throw new Error("translateSchemaToOpenAI: SCHEMA.name is required");
   }
@@ -35,18 +52,18 @@ function translateSchemaToOpenAI(schema: any) {
   };
 }
 
-function translateSchemasToOpenAI(schemas: any) {
+function translateSchemasToOpenAI(schemas: unknown): OpenAIFunctionTool[] {
   if (!Array.isArray(schemas)) {
     throw new Error("translateSchemasToOpenAI: expected an array of SCHEMA objects");
   }
   return schemas.map(translateSchemaToOpenAI);
 }
 
-function deepClone(value: any) {
+function deepClone<T>(value: T): T {
   // Schemas are JSON-serializable by construction (JSON Schema), so the
   // structuredClone fallback to JSON round-trip is safe and dependency-free.
   if (typeof structuredClone === "function") return structuredClone(value);
-  return JSON.parse(JSON.stringify(value));
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 export { translateSchemaToOpenAI, translateSchemasToOpenAI };

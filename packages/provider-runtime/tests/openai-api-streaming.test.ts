@@ -232,6 +232,31 @@ test("abort during pending send: aborts the active stream", async () => {
   assert.equal(p.isAlive(), false);
 });
 
+// gryphon-dev#38: without an injected client the SDK client is built on
+// first use, not in the constructor. Uses the real SDK (constructing a
+// client makes no request).
+test("client is built lazily, once, with the same SDK options", async () => {
+  const p = new OpenAIProvider("sk-test", "/cwd", {});
+  assert.equal(p.client, null, "constructor must not build a client");
+  const c = await p._ensureClient();
+  assert.equal(p.client, c);
+  assert.equal(c.apiKey, "sk-test");
+  assert.equal(c.maxRetries, 3);
+  assert.equal(c._options.dangerouslyAllowBrowser, true);
+  assert.equal(await p._ensureClient(), c, "second call reuses the client");
+  const OpenAI = (await import("openai")).default;
+  assert.ok(c instanceof OpenAI, "built from the one SDK copy the process imports");
+  assert.equal(typeof OpenAI.AuthenticationError, "function", "default export carries the error classes");
+});
+
+test("_formatError recognises the SDK's own AuthenticationError once the SDK is loaded", async () => {
+  const p = new OpenAIProvider("sk-test", "/cwd", {});
+  await p._ensureClient();
+  const OpenAI = (await import("openai")).default;
+  const err = new OpenAI.AuthenticationError(401, { message: "bad key" }, "bad key", new Headers());
+  assert.equal(p._formatError(err), "Invalid API key. Check Settings → Gryphon → OpenAI API key.");
+});
+
 // ---------- restore module resolver ----------
 
 process.on("exit", () => {

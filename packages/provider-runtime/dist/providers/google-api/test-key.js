@@ -19,20 +19,22 @@
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.testApiKey = testApiKey;
+const host_adapter_1 = require("../../host-adapter");
+const host_response_1 = require("../../host-response");
 const GEMINI_LIST_MODELS_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 async function testApiKey(apiKey, hostAdapter) {
     // Default to HeadlessHostAdapter so callers that pre-date Task 0.6 still
     // work (they pass undefined). Task 0.6 will supply ObsidianHostAdapter.
     if (!hostAdapter) {
-        hostAdapter = new (require("../../host-adapter").HeadlessHostAdapter)();
+        hostAdapter = new host_adapter_1.HeadlessHostAdapter();
     }
     if (!apiKey)
         return { ok: false, message: "No API key provided" };
     try {
         // hostAdapter.fetch with throw:false — ObsidianHostAdapter passes it
         // through to requestUrl; HeadlessHostAdapter ignores unknown opts and
-        // uses globalThis.fetch (which may throw on non-2xx depending on
-        // configuration — the try/catch below catches that).
+        // uses undici's fetch (network errors throw — the try/catch below
+        // catches that).
         const res = await hostAdapter.fetch(`${GEMINI_LIST_MODELS_URL}?key=${encodeURIComponent(apiKey)}`, { method: "GET", throw: false });
         if (res.status === 200) {
             return { ok: true, message: "Key works" };
@@ -46,7 +48,8 @@ async function testApiKey(apiKey, hostAdapter) {
             return { ok: false, message: "Rate limited (key may be valid; try again later)" };
         }
         // Try to surface Google's structured error message when present.
-        const errMsg = res.json && res.json.error && res.json.error.message;
+        const body = (await (0, host_response_1.readJson)(res));
+        const errMsg = body && body.error && body.error.message;
         return {
             ok: false,
             message: errMsg

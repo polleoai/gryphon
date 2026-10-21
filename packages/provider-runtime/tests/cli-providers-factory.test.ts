@@ -18,10 +18,10 @@ Module._resolveFilename = function (request, ...args) {
 
 // Stub the binary detectors so tests don't depend on the host system.
 const utils = require("../src/utils");
-const origCodex = utils.findCodexBinary;
-const origGemini = utils.findGeminiBinary;
-const origClaude = utils.findClaudeBinary;
-const origAntigravity = utils.findAntigravityBinary;
+const origCodex = utils.binaryFinders.findCodexBinary;
+const origGemini = utils.binaryFinders.findGeminiBinary;
+const origClaude = utils.binaryFinders.findClaudeBinary;
+const origAntigravity = utils.binaryFinders.findAntigravityBinary;
 
 
 // #30: every resolved binary is validated (absolute, an executable file,
@@ -40,16 +40,16 @@ function fake(p) {
   return full;
 }
 function stubBinaries({ codex = null, gemini = null, claude = null, antigravity = null }) {
-  utils.findCodexBinary = () => fake(codex);
-  utils.findGeminiBinary = () => fake(gemini);
-  utils.findClaudeBinary = () => fake(claude);
-  utils.findAntigravityBinary = () => fake(antigravity);
+  utils.binaryFinders.findCodexBinary = () => fake(codex);
+  utils.binaryFinders.findGeminiBinary = () => fake(gemini);
+  utils.binaryFinders.findClaudeBinary = () => fake(claude);
+  utils.binaryFinders.findAntigravityBinary = () => fake(antigravity);
 }
 function restoreBinaries() {
-  utils.findCodexBinary = origCodex;
-  utils.findGeminiBinary = origGemini;
-  utils.findClaudeBinary = origClaude;
-  utils.findAntigravityBinary = origAntigravity;
+  utils.binaryFinders.findCodexBinary = origCodex;
+  utils.binaryFinders.findGeminiBinary = origGemini;
+  utils.binaryFinders.findClaudeBinary = origClaude;
+  utils.binaryFinders.findAntigravityBinary = origAntigravity;
 }
 
 // Reset env so process.env.OPENAI_API_KEY etc. don't leak into the

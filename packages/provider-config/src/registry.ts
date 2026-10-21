@@ -443,7 +443,7 @@ function codexCliSupportedModels() {
   );
 }
 
-module.exports = {
+export {
   // Data tables (exported for tests / advanced consumers)
   MODELS,
   VENDOR_FALLBACK_PRICING,

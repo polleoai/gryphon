@@ -8,4 +8,20 @@
  * re-renders just that panel, `ctx.rerenderAll` re-renders all panels while
  * keeping the active tab.
  */
-export {};
+interface TabRenderContext {
+    rerenderSelf: () => void;
+    rerenderAll: () => void;
+}
+interface SettingsTab {
+    id: string;
+    label: string;
+    render: (panel: HTMLElement, ctx: TabRenderContext) => void;
+}
+interface TabbedSettingsOptions {
+    initialTabId?: string;
+    onTabChange?: (id: string) => void;
+}
+declare function renderTabbedSettings(containerEl: HTMLElement, tabs: SettingsTab[], opts?: TabbedSettingsOptions | null): {
+    activate: (id: string) => void;
+};
+export { renderTabbedSettings };

@@ -13,6 +13,7 @@
  *
  * Permission: read-only network. Refused only in plan mode.
  */
+import { readJson } from "../../../host-response";
 
 // These run in both the Obsidian renderer and headless Node paths (CLI probes,
 // passive backend, hook/IPC subprocess) where `window` is unavailable, so bind
@@ -49,12 +50,47 @@ const SCHEMA = {
 // in headless). The module-level lazy require is gone; the adapter is
 // injected at execute() time via ctx.
 
+interface WebSearchInput {
+  query?: unknown;
+  max_results?: number | string;
+}
+
+// requestUrl-style response (Obsidian) or its headless equivalent.
+interface HostResponse {
+  status: number;
+  json?: unknown;
+  text?: unknown;
+}
+
+interface WebSearchHostAdapter {
+  fetch(
+    url: string,
+    opts: { method: string; headers: Record<string, string>; throw: boolean },
+  ): Promise<HostResponse>;
+}
+
+interface WebSearchToolContext {
+  permissionMode?: string;
+  plugin?: { settings?: { braveSearchApiKey?: string } } | null;
+  hostAdapter: WebSearchHostAdapter;
+}
+
+interface BraveResult {
+  title?: string;
+  url?: string;
+  description?: string;
+}
+
+interface BraveResponse {
+  web?: { results?: BraveResult[] };
+}
+
 const BRAVE_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 const REQUEST_TIMEOUT_MS = 15_000;
 
-async function execute(input: any, ctx: any) {
+async function execute(input: WebSearchInput, ctx: WebSearchToolContext) {
   const query = input.query;
-  const maxResults = Math.min(20, Math.max(1, parseInt(input.max_results || 10, 10)));
+  const maxResults = Math.min(20, Math.max(1, parseInt(String(input.max_results || 10), 10)));
 
   if (typeof query !== "string" || !query.trim()) {
     return _error("Missing or empty parameter: query");
@@ -84,7 +120,7 @@ async function execute(input: any, ctx: any) {
 
   // requestUrl doesn't support AbortSignal; enforce timeout via race.
   const timeoutError = new Error(`Brave Search timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
-  const timeoutPromise = new Promise((_, reject) => {
+  const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeoutFn(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
   });
 
@@ -117,23 +153,19 @@ async function execute(input: any, ctx: any) {
     return _error(`Brave Search returned HTTP ${response.status}`);
   }
 
-  // requestUrl provides `.json` (parsed) and `.text` (raw) directly — no
-  // separate .json() / .text() calls needed (those are standard fetch).
-  let body = response.json;
-  if (!body && typeof response.text === "string") {
-    try { body = JSON.parse(response.text); }
-    catch (e) { return _error(`Brave Search returned non-JSON response: ${(e as Error).message}`); }
-  }
+  // requestUrl's `.json` / `.text` properties, or fetch-style methods.
+  const body = await readJson(response);
   if (!body || typeof body !== "object") {
     return _error("Brave Search returned empty or non-JSON response");
   }
 
-  const results = (body.web && body.web.results) || [];
+  const brave = body as BraveResponse;
+  const results = (brave.web && brave.web.results) || [];
   if (results.length === 0) {
     return _ok(`No results for "${query}".`);
   }
 
-  const formatted = results.slice(0, maxResults).map((r: any, i: any) => {
+  const formatted = results.slice(0, maxResults).map((r: BraveResult, i: number) => {
     const title = r.title || "(no title)";
     const url = r.url || "";
     const snippet = (r.description || "").replace(/\s+/g, " ").trim();
@@ -146,11 +178,11 @@ async function execute(input: any, ctx: any) {
   );
 }
 
-function _ok(text: any) {
+function _ok(text: string) {
   return { content: [{ type: "text", text }], isError: false };
 }
 
-function _error(text: any) {
+function _error(text: string) {
   return { content: [{ type: "text", text: `Error: ${text}` }], isError: true };
 }
 
