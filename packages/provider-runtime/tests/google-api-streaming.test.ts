@@ -250,7 +250,7 @@ test("abort: flips destroyed=true so isAlive() is false", () => {
   assert.equal(p.isAlive(), false);
 });
 
-// gryphon-dev#38: without an injected client the SDK client is built on
+// #38: without an injected client the SDK client is built on
 // first use, not in the constructor. Uses the real SDK (constructing a
 // client makes no request).
 test("client is built lazily, once, from the SDK", async () => {

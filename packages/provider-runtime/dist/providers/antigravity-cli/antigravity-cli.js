@@ -352,7 +352,7 @@ class AntigravityCliProvider {
      * Only provably-foreign ids are rewritten; `agy`'s own vocabulary passes
      * through so a new Antigravity model works without a Gryphon update.
      *
-     * Surfaced by the Argus spec `07-antigravity-reachable`, which selected the
+     * Surfaced by the end-to-end test `07-antigravity-reachable`, which selected the
      * provider without going through the dropdown and left a Claude id behind.
      * NOTE: `gemini-cli.ts:317` has the identical raw-spawn shape — logged as a
      * follow-up, not changed here (its hook-spawn spec is skipped in the VM

@@ -15,6 +15,9 @@ name: Release
 #                   the same commit — GitHub's first-run chicken-and-egg).
 #                   Provide the tag as the "tag" input.
 #
+# A second job, npm-stage, then stages the four @polleoai/gryphon-* npm
+# packages for the maintainer to approve (see that job's comment).
+#
 # Why this exists: Obsidian's Community Plugins scorecard flags release
 # assets that are missing GitHub artifact attestations. Locally-uploaded
 # assets can't be meaningfully attested (the trust model wants "this binary
@@ -48,6 +51,10 @@ name: Release
 # any regex-metachar splice into the awk pattern that extracts CHANGELOG
 # release notes. Values from controlled files (CHANGELOG, manifest) are
 # also used. No user-controlled event payload is spliced into a shell.
+
+# Actions are pinned to full commit SHAs (version in the trailing comment):
+# this workflow signs release assets and stages npm packages, so a moved tag
+# upstream must not change what runs here. Bump deliberately.
 
 on:
   push:
@@ -96,15 +103,15 @@ jobs:
           echo "TAG_NAME validated: $TAG_NAME"
 
       - name: Checkout the tagged commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.TAG_NAME }}
           fetch-depth: 0   # so CHANGELOG-extraction can see history
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies (clean, deterministic)
@@ -135,7 +142,7 @@ jobs:
           echo "Tag and manifest agree on version: $TAG_NAME"
 
       - name: Attest build provenance for release assets
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
         with:
           subject-path: |
             main.js
@@ -163,7 +170,7 @@ jobs:
           echo "notes-file=/tmp/release-notes.md" >> "$GITHUB_OUTPUT"
 
       - name: Create or update the GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           tag_name: ${{ env.TAG_NAME }}
           name: "Gryphon ${{ env.TAG_NAME }}"
@@ -173,3 +180,123 @@ jobs:
             main.js
             manifest.json
             styles.css
+
+  # npm: the four @polleoai/gryphon-* packages are staged for the maintainer
+  # to approve (npm "staged publishing": nothing is installable until a
+  # maintainer approves it with 2FA — `npm stage approve <id>` or npmjs.com).
+  #
+  # Two jobs, so the publishing credential never meets third-party code:
+  #   npm-build  — no id-token. Installs (dependency install scripts run
+  #                here), builds, rebuilds the packages and checks them file
+  #                for file against .github/npm-manifest.json — the record the
+  #                release tooling wrote from the packages it built and
+  #                scanned — so what's staged is what was scanned (it catches
+  #                toolchain or dependency drift; it is not an authorization
+  #                check). Hands over only the verified tarballs.
+  #   npm-stage  — id-token for npm trusted publishing (OIDC: no stored
+  #                token; npm accepts this workflow in this repo only). No
+  #                checkout, no install of project dependencies, no build:
+  #                it downloads the verified tarballs and stages them.
+  #
+  # Both run only for a pushed release tag — never for a pre-release tag (an
+  # rc must not become npm's "latest") and not for a workflow_dispatch re-run
+  # (those re-attest the GitHub release only; re-run a tag's original run to
+  # retry npm). Who may
+  # stage at all is decided by the maintainer's 2FA approval on npm. A
+  # version already published is skipped, so re-running an approved release
+  # stays green; a version still staged but unapproved isn't visible to
+  # `npm view` — approve or reject it before re-running, or the re-stage fails.
+  npm-build:
+    needs: build-and-release
+    # Gate and action use the same field: only a tag PUSH, and every step
+    # below uses github.ref_name (the pushed tag) — never the dispatch input.
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && !contains(github.ref_name, '-') }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the tagged commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.ref }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies (clean, deterministic)
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Rebuild the packages and check them against the release record
+        run: |
+          test -f .github/npm-manifest.json || { echo ".github/npm-manifest.json missing — this release wasn't cut with npm staging"; exit 1; }
+          node .github/scripts/npm-pack.mjs --out "$RUNNER_TEMP/npm" --verify .github/npm-manifest.json --version "$RELEASE_TAG"
+
+      - name: Record each tarball's integrity (matches npm's dist.integrity once approved)
+        run: |
+          for t in "$RUNNER_TEMP"/npm/*.tgz; do
+            echo "$(basename "$t") sha512-$(openssl dgst -sha512 -binary "$t" | base64 -w0)"
+          done
+
+      - name: Hand over the verified tarballs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  npm-stage:
+    needs: npm-build
+    # GitHub enforces this environment's rule (deployments only from tags
+    # shaped X.Y.Z) and npm's trusted publisher requires it, so an edited copy
+    # of this workflow run from a branch can't stage anything.
+    environment: npm
+    if: ${{ github.event_name == 'push' }}
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC token for npm trusted publishing — this job only
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: npm with trusted publishing and staging (11.5.1+)
+        run: |
+          npm install -g npm@11.21.0
+          npm --version
+
+      - name: Fetch the verified tarballs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: npm-tarballs
+          path: ${{ runner.temp }}/npm
+
+      - name: Stage on npm
+        run: |
+          set -euo pipefail
+          staged=0
+          for tgz in "$RUNNER_TEMP"/npm/*.tgz; do
+            name=$(tar -xzOf "$tgz" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).name')
+            # 404 = not published yet; any other failure stops the job rather
+            # than being read as "not there".
+            if out=$(npm view "$name@$RELEASE_TAG" version 2>&1); then
+              echo "$name@$RELEASE_TAG is already on npm — skipped"
+              continue
+            elif ! grep -q "E404" <<<"$out"; then
+              echo "Couldn't check $name@$RELEASE_TAG on npm:"; echo "$out"; exit 1
+            fi
+            npm stage publish "$tgz"
+            staged=$((staged + 1))
+          done
+          echo "Staged $staged package(s) for $RELEASE_TAG. Approve with: npm stage list, then npm stage approve <id>"

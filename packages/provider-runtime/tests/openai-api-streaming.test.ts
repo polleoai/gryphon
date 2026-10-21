@@ -232,7 +232,7 @@ test("abort during pending send: aborts the active stream", async () => {
   assert.equal(p.isAlive(), false);
 });
 
-// gryphon-dev#38: without an injected client the SDK client is built on
+// #38: without an injected client the SDK client is built on
 // first use, not in the constructor. Uses the real SDK (constructing a
 // client makes no request).
 test("client is built lazily, once, with the same SDK options", async () => {

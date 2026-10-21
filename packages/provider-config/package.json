@@ -1,6 +1,6 @@
 {
   "name": "@polleoai/gryphon-provider-config",
-  "version": "2.12.2",
+  "version": "2.12.3",
   "description": "Provider configuration for Gryphon: model catalogs, pricing, dropdown options and per-provider argument filtering. Plain data — no network access, no UI.",
   "private": true,
   "license": "MIT",

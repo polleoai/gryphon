@@ -1,4 +1,4 @@
-// gryphon-dev#23 — protect's compiled dist/ must not deep-require
+// #23 — protect's compiled dist/ must not deep-require
 // provider-runtime's TypeScript src/ tree. Pure-dist headless consumers
 // (docs/consumer-requirements.md: "import only from packages/*/dist/")
 // load these files with plain node, which cannot require a .ts file.

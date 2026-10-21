@@ -174,7 +174,7 @@ test("countTokensForNext caches the null result too (don't re-hit a failing endp
   assert.equal(callCount, 1, "failures should also be cached against the same key");
 });
 
-// gryphon-dev#38: the SDK client is built on first use, not in the
+// #38: the SDK client is built on first use, not in the
 // constructor. Uses the real SDK (constructing a client makes no request).
 test("client is built lazily, once, with the same SDK options", async () => {
   const p = new AnthropicAPIProvider("test-api-key", "/fake/cwd", {});

@@ -51,7 +51,7 @@ import { resolveCliPath as protectResolveCliPath } from "@polleoai/gryphon-prote
 // The "Test key" validators are imported when the user clicks Test, not at
 // plugin start: the Anthropic and OpenAI provider modules load their SDKs on
 // first use, and nothing here should pull a provider module into startup
-// (gryphon-dev#38). Subpath exports: this tsconfig's moduleResolution (node10)
+// (#38). Subpath exports: this tsconfig's moduleResolution (node10)
 // can't resolve `exports` subpaths, so the signatures are spelled out.
 type TestKeyResult = { ok: boolean; message: string };
 type TestKeyModule = { testApiKey: (apiKey: string) => Promise<TestKeyResult> };

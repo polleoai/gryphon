@@ -37,7 +37,7 @@
  * detector, but no extra hook layer.
  */
 
-// Issue #26 / gryphon-dev#38: each API SDK pulls in significant transitive
+// Issues #26 / #38: each API SDK pulls in significant transitive
 // bytes:
 //   - @anthropic-ai/sdk ~150 KB
 //   - openai            ~163 KB

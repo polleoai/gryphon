@@ -134,7 +134,7 @@ test("a path containing a single quote is still escaped safely", () => {
 // does NOT switch Node's `path` module, which stays POSIX under a macOS test
 // run. So these cover the ENV-QUOTING and REFUSAL logic only — the parts that
 // are hand-rolled and can be wrong. Separator construction still comes from
-// path.join and is only truly exercised by the windows-vm Argus target.
+// path.join and is only truly exercised by the Windows VM end-to-end tests.
 
 function withPlatform(value: any, fn: any) {
   const original = Object.getOwnPropertyDescriptor(process, "platform");

@@ -4,6 +4,16 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.3] — 2026-10-20
+
+No change in how Gryphon works inside Obsidian.
+
+### Changes
+
+- **Gryphon's npm packages now come from the same release build as the plugin.** Each release builds the `@polleoai/gryphon-*` packages on GitHub, checks every file against the copy reviewed before the release, and queues them on npm for the maintainer to approve. Nothing reaches npm without that approval.
+- **A tighter release build.** The build tools it uses are fixed to exact versions, so an outside change can't alter what the release build runs.
+- Housekeeping in code comments.
+
 ## [2.12.2] — 2026-10-20
 
 No change in how Gryphon works.

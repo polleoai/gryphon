@@ -34,7 +34,7 @@ import { pricing } from "@polleoai/gryphon-provider-config";
 import { HeadlessHostAdapter } from "../../host-adapter";
 import { GRYPHON_SDK_COMPOUND_REQUEST_RULE } from "@polleoai/gryphon-protect";
 
-// The SDK is loaded on first use, not at module load (gryphon-dev#38):
+// The SDK is loaded on first use, not at module load (#38):
 // importing this module (the factory does, and Settings' "Test key" does on
 // click) must not pay the SDK's parse + init cost at plugin start. Every
 // reference goes through `loadSdk()`, so the process holds one SDK copy.

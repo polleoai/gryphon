@@ -311,7 +311,7 @@ const installToVaultPlugin = {
 //
 // Cross-package reach-ins use package subpaths
 // (`@polleoai/gryphon-provider-runtime/shell-quote`) so the compiled dist/
-// resolves once installed from npm (gryphon-dev#23, #26). The bundle must stay
+// resolves once installed from npm (#23, #26). The bundle must stay
 // on src/ — one module instance, and no dependency on a prebuilt dist/ (release
 // CI runs `npm run build` only) — so each subpath maps through the package's
 // exports map (`./dist/x.js` → `src/x.ts`), one exact alias per subpath
