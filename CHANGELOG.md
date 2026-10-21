@@ -4,6 +4,19 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.1] — 2026-10-20
+
+A security fix for web fetches with the Anthropic API provider.
+
+### Security
+
+- **Web fetches can no longer be redirected into your own network.** With the Anthropic API provider, a web page Gryphon fetched could redirect to an address on your computer or local network — a local service, your router, a cloud server's metadata endpoint — and Gryphon would follow it and hand what it found to the model. Gryphon now checks every redirect and the address it actually connects to, and refuses private and local ones. Other providers use their own web tools and weren't affected.
+- **Web fetches only return text, as documented.** Binary files (PDFs, images, archives) are now refused with a pointer to download them instead; inside Obsidian this check wasn't taking effect.
+
+### Things to know
+
+- **Behind a proxy?** Web fetches no longer use Obsidian's own network settings. If your network only allows web access through a proxy, set `HTTPS_PROXY` (and `HTTP_PROXY`, `NO_PROXY` as needed) in the environment Obsidian starts in — `proxy.example.com:3128` and `http://user:pass@proxy.example.com:3128` both work; only `http://` proxies are supported. Gryphon still looks up each site's address itself to check it, so your computer's DNS needs to resolve the sites you fetch. If a fetch can't connect and no proxy is set, the error says so. Chat and web search are unaffected.
+
 ## [2.12.0] — 2026-10-15
 
 Ready for Obsidian's community plugin review: Gryphon now passes every check of the review's code scan. Along the way it starts faster, gains settings search, and fixes a dialog.

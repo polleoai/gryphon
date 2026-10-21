@@ -15,13 +15,12 @@
  *   - The URL's hostname is refused if it is a private / loopback /
  *     link-local literal, or if DNS resolves it to one (checked before the
  *     request).
- *   - Headless hosts (HeadlessHostAdapter → nodeFetch) also get
- *     `blockAddress`: every redirect hop's hostname and every address DNS
+ *   - The request carries `blockAddress`, and both host adapters send it
+ *     through nodeFetch (Obsidian's too: requestUrl would follow redirects
+ *     unchecked, #40). Every redirect hop's hostname and every address DNS
  *     resolves it to are checked at connect time, so a redirect to an
- *     internal address and DNS rebinding are both refused.
- *   - Known gap (Obsidian): requestUrl follows redirects itself and ignores
- *     `blockAddress`, so there a redirect hop to a private address isn't
- *     re-checked and the connection isn't pinned to the checked address.
+ *     internal address and DNS rebinding are both refused; through a proxy,
+ *     the proxy is sent the checked address.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SCHEMA = void 0;
@@ -38,10 +37,9 @@ const dns_1 = require("dns");
 const host_response_1 = require("../../../host-response");
 // Network requests are routed through ctx.hostAdapter.fetch(url, opts)
 // (supplied at execute() time from the provider that owns the tool loop).
-// In Obsidian, ObsidianHostAdapter.fetch wraps requestUrl — requestUrl
-// runs in Obsidian's main process and bypasses the renderer's
-// CORS-restricted browser fetch. In headless / test contexts,
-// HeadlessHostAdapter.fetch uses nodeFetch (node http/https).
+// Because this request sets blockAddress, both ObsidianHostAdapter and
+// HeadlessHostAdapter send it through nodeFetch (node http/https), with the
+// proxy from HTTPS_PROXY / HTTP_PROXY / NO_PROXY.
 //
 // Response shape: requestUrl-style properties (text / json / arrayBuffer) or
 // fetch-style methods (text() / json()); readText() handles both.
@@ -117,22 +115,18 @@ async function execute(input, ctx) {
     if (_isPrivateHost(parsed.hostname)) {
         return _error(`Refusing to fetch private/loopback host: ${parsed.hostname}`);
     }
-    // DNS pre-resolution SSRF defense: reject if the hostname resolves to
-    // any private / loopback / link-local address before we hand the URL
-    // to requestUrl. Gap: requestUrl follows redirects internally and we
-    // can't re-validate each hop's resolved IP — a post-fetch redirect
-    // to http://127.0.0.1 won't be blocked. This is a known limitation;
-    // users who fetch attacker-controlled URLs should enable plan mode.
+    // Early, friendly refusal when the name resolves to a private address.
+    // The binding check is blockAddress below: it re-checks at connect time
+    // and on every redirect hop.
     try {
         await _resolveAndCheck(parsed.hostname);
     }
     catch (e) {
         return _error(e.message);
     }
-    // requestUrl doesn't accept an AbortSignal, so enforce timeout via a
-    // Promise.race. The fetch itself runs in Obsidian's main process and
-    // will outlive our race if we lose — not a leak in practice because
-    // Obsidian tears it down on plugin unload, but worth noting.
+    // The adapters take no AbortSignal, so the overall deadline is a
+    // Promise.race; timeoutMs also stops the connection itself going idle
+    // past it, so a lost race doesn't leave the socket open.
     const timeoutError = new Error(`Request timed out after ${REQUEST_TIMEOUT_MS / 1000}s`);
     const timeoutPromise = new Promise((_, reject) => {
         setTimeoutFn(() => reject(timeoutError), REQUEST_TIMEOUT_MS);
@@ -147,8 +141,9 @@ async function execute(input, ctx) {
                 // throw:false → return even non-2xx responses so we can surface
                 // HTTP errors to the model as text instead of exceptions.
                 throw: false,
-                // Headless (nodeFetch): re-check every redirect hop and every
-                // resolved address at connect time. requestUrl ignores it.
+                timeoutMs: REQUEST_TIMEOUT_MS,
+                // Re-check every redirect hop and every resolved address at
+                // connect time (both adapters route this through nodeFetch).
                 blockAddress: _isPrivateHost,
             }),
             timeoutPromise,
@@ -229,6 +224,16 @@ function _isPrivateHost(hostname) {
     if (h.startsWith("[") && h.endsWith("]")) {
         h = h.slice(1, -1);
     }
+    // Canonical IPv6 text (lower-case, zeros compressed, leading zeros gone),
+    // so 0:0:0:0:0:0:0:1 or 0000::0001 meet the patterns below as ::1. Zone
+    // IDs (fe80::1%eth0) can't go in a URL; they keep their text and still
+    // match by prefix.
+    if (h.includes(":") && !h.includes("%")) {
+        try {
+            h = new URL(`http://[${h}]/`).hostname.slice(1, -1);
+        }
+        catch { /* not IPv6: leave as is */ }
+    }
     if (h === "localhost")
         return true;
     if (h.endsWith(".local"))
@@ -301,7 +306,14 @@ function _isPrivateHost(hostname) {
         const mapped = h.slice(7);
         if (/^\d+\.\d+\.\d+\.\d+$/.test(mapped))
             return _isPrivateHost(mapped);
-        return true; // non-v4 form after ::ffff: is suspicious — fail closed
+        // Canonical text writes the v4 as two hex groups (::ffff:7f00:1).
+        const hexMapped = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+        if (hexMapped) {
+            const hi = parseInt(hexMapped[1], 16);
+            const lo = parseInt(hexMapped[2], 16);
+            return _isPrivateHost(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
+        }
+        return true; // any other form after ::ffff: is suspicious — fail closed
     }
     // Compact IPv4-compatible (::V4 in any form that ends with the v4):
     //   ::127.0.0.1      explicit
@@ -323,29 +335,50 @@ function _isPrivateHost(hostname) {
     }
     // NAT64 — 64:ff9b::/96 (well-known) and 64:ff9b:1::/48 (local-use) embed an
     // IPv4 address that a NAT64 gateway forwards to: treat as private when the
-    // embedded v4 is, and the local-use prefix as private outright.
-    if (/^64:ff9b:1:/.test(h))
-        return true;
-    const nat64 = h.match(/^64:ff9b::(?:([0-9a-f]{1,4}):([0-9a-f]{1,4})|(\d+\.\d+\.\d+\.\d+))$/);
-    if (nat64) {
-        if (nat64[3])
-            return _isPrivateHost(nat64[3]);
-        const hi = parseInt(nat64[1], 16);
-        const lo = parseInt(nat64[2], 16);
-        return _isPrivateHost(`${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`);
-    }
-    // 6to4 — 2002:AABB:CCDD::/48 wraps AA.BB.CC.DD in bytes 2-5. Decode those
-    // and recurse. If the embedded v4 is private, traffic to this v6 address
-    // ultimately lands on the private v4.
-    const sixto4 = h.match(/^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4}):/);
-    if (sixto4) {
-        const hi = parseInt(sixto4[1], 16);
-        const lo = parseInt(sixto4[2], 16);
-        const v4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-        if (_isPrivateHost(v4))
+    // embedded v4 is, and the local-use prefix as private outright. 6to4 —
+    // 2002:AABB:CCDD::/48 wraps AA.BB.CC.DD; traffic to it lands on that v4.
+    // Read from all eight groups: compressed text can drop a zero group
+    // (2002:7f00:: embeds 127.0.0.0), so a pattern on the text would miss it.
+    const g = _ipv6Groups(h);
+    if (g) {
+        const v4 = (hi, lo) => `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+        if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1)
+            return true;
+        if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 0 && g[3] === 0 && g[4] === 0 && g[5] === 0) {
+            return _isPrivateHost(v4(g[6], g[7]));
+        }
+        if (g[0] === 0x2002 && _isPrivateHost(v4(g[1], g[2])))
             return true;
     }
+    // Teredo — 2001:0::/32 tunnels to an (obfuscated) IPv4 through a relay;
+    // not something a web page lives at, so refused outright.
+    if (/^2001:(0:|:)/.test(h))
+        return true;
     return false;
+}
+/** The eight 16-bit groups of an IPv6 address (a trailing dotted v4 counts as two), or null. */
+function _ipv6Groups(h) {
+    let text = h;
+    const dotted = text.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+    if (dotted) {
+        const b = dotted.slice(2).map(Number);
+        if (b.some((x) => x > 255))
+            return null;
+        text = `${dotted[1]}${((b[0] << 8) | b[1]).toString(16)}:${((b[2] << 8) | b[3]).toString(16)}`;
+    }
+    const halves = text.split("::");
+    if (halves.length > 2)
+        return null;
+    const part = (x) => (x ? x.split(":") : []);
+    const head = part(halves[0]);
+    const tail = halves.length === 2 ? part(halves[1]) : [];
+    const fill = halves.length === 2 ? 8 - head.length - tail.length : 0;
+    if (fill < 0 || (halves.length === 1 && head.length !== 8))
+        return null;
+    const groups = [...head, ...Array(fill).fill("0"), ...tail];
+    if (groups.length !== 8 || groups.some((x) => !/^[0-9a-f]{1,4}$/.test(x)))
+        return null;
+    return groups.map((x) => parseInt(x, 16));
 }
 function _htmlToText(html) {
     return html

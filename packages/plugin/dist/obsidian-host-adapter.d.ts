@@ -16,6 +16,10 @@ interface FetchOpts {
     method?: string;
     headers?: Record<string, string>;
     body?: string | ArrayBuffer;
+    /** Socket idle limit for a guarded request. */
+    timeoutMs?: number;
+    /** SSRF guard; when set, the request goes through nodeFetch (see fetch()). */
+    blockAddress?: (hostOrIp: string) => boolean;
 }
 declare class ObsidianHostAdapter {
     mcpApprovalsPending?: (report: unknown) => void;
@@ -27,7 +31,7 @@ declare class ObsidianHostAdapter {
      */
     constructor(hooks?: HostAdapterHooks);
     notify(message: string, opts?: NotifyOpts): void;
-    fetch(url: string, opts?: FetchOpts): Promise<{
+    fetch(url: string, opts?: FetchOpts): Promise<import("@polleoai/gryphon-provider-runtime/node-fetch").NodeFetchResponse | {
         status: number;
         text: () => Promise<string>;
         json: () => Promise<unknown>;

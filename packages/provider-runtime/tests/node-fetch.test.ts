@@ -198,3 +198,115 @@ test("SSRF guard: an unguarded caller's keep-alive socket can't carry a guarded 
     assert.equal(s.seen.length, 1, "only the unguarded request reached the server");
   } finally { s.close(); }
 });
+
+// ── proxy (#40: WebFetch in Obsidian now goes through nodeFetch) ──────
+const { proxyFromEnv } = require("../src/node-fetch");
+const LOCAL_LITERAL = /^(127\.0\.0\.1|\[::1\])$/;
+
+test("proxyFromEnv: scheme-specific vars, all_proxy fallback, NO_PROXY forms", () => {
+  const p = proxyFromEnv({ HTTPS_PROXY: "http://p:3128", http_proxy: "http://h:8080", NO_PROXY: "internal.corp, .example.com,*.test,10.1.2.3,[::1],api.local:8443" });
+  assert.equal(p(new URL("https://a.org/")), "http://p:3128");
+  assert.equal(p(new URL("http://a.org/")), "http://h:8080");
+  for (const u of ["https://internal.corp/", "https://x.example.com/", "https://example.com/", "https://y.test/", "http://10.1.2.3/", "http://[::1]/", "https://api.local:8443/"]) {
+    assert.equal(p(new URL(u)), null, u);
+  }
+  assert.equal(p(new URL("https://api.local/")), "http://p:3128", "port-qualified entry only matches that port");
+  assert.equal(p(new URL("https://notexample.com/")), "http://p:3128", "suffix match is on a dot boundary");
+  assert.equal(proxyFromEnv({ ALL_PROXY: "http://all:1" })(new URL("https://a.org/")), "http://all:1");
+  assert.equal(proxyFromEnv({ HTTPS_PROXY: "http://p:1", NO_PROXY: "*" })(new URL("https://a.org/")), null);
+  assert.equal(proxyFromEnv({ HTTPS_PROXY: "  " })(new URL("https://a.org/")), null, "blank means unset");
+  assert.equal(proxyFromEnv({})(new URL("https://a.org/")), null);
+});
+
+test("proxy, guarded http: the proxy is sent the CHECKED address, with the real Host header", async () => {
+  const proxy = await serve((_req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end("via proxy"); });
+  try {
+    const r = await nodeFetch("http://localhost:8099/x?y=1", { blockAddress: () => false, proxyFor: () => proxy.base, timeoutMs: 2000 });
+    assert.equal(await r.text(), "via proxy");
+    assert.equal(proxy.seen.length, 1);
+    const sent = new URL(proxy.seen[0].url);
+    assert.match(sent.hostname, LOCAL_LITERAL, "an IP literal, not the name the proxy could re-resolve");
+    assert.equal(sent.port, "8099");
+    assert.equal(sent.pathname + sent.search, "/x?y=1");
+    assert.equal(proxy.seen[0].headers.host, "localhost:8099");
+  } finally { proxy.close(); }
+});
+
+test("proxy, guarded: a name resolving to a blocked address never reaches the proxy", async () => {
+  const proxy = await serve((_req, res) => { res.writeHead(200); res.end("INTERNAL"); });
+  try {
+    await assert.rejects(
+      nodeFetch("http://localhost:8099/", { blockAddress: _isPrivateHost, proxyFor: () => proxy.base, timeoutMs: 2000 }),
+      /refusing to connect/,
+    );
+    await assert.rejects(
+      nodeFetch("http://localhost./", { blockAddress: (h: string) => h === "127.0.0.1" || h === "::1", proxyFor: () => proxy.base, timeoutMs: 2000 }),
+      (e: Error) => /resolves to a private or loopback address/.test(e.message) && !/127\.0\.0\.1|::1/.test(e.message),
+    );
+    assert.equal(proxy.seen.length, 0);
+  } finally { proxy.close(); }
+});
+
+test("proxy, guarded: every private address refused as a REDIRECT target; the proxy sees only the first hop", async () => {
+  let target = "";
+  const proxy = await serve((_req, res) => { res.writeHead(302, { Location: target }); res.end(); });
+  try {
+    for (const u of PRIVATE_URLS) {
+      target = u;
+      const before = proxy.seen.length;
+      // The first hop is a public-looking literal the test lets through.
+      const block = (h: string) => h !== "93.184.216.34" && _isPrivateHost(h);
+      await assert.rejects(nodeFetch("http://93.184.216.34/start", { blockAddress: block, proxyFor: () => proxy.base, timeoutMs: 2000 }), /refusing to connect/, `redirect → ${u}`);
+      assert.equal(proxy.seen.length, before + 1, `only the first hop reached the proxy (${u})`);
+    }
+  } finally { proxy.close(); }
+});
+
+test("proxy, guarded https: CONNECT names the checked address and port; a refusal rejects", async () => {
+  const connects: string[] = [];
+  const server = http.createServer();
+  server.on("connect", (req: any, sock: any) => { connects.push(req.url); sock.end("HTTP/1.1 403 Forbidden\r\n\r\n"); });
+  const base: string = await new Promise((r) => server.listen(0, "127.0.0.1", () => r(`http://127.0.0.1:${server.address().port}`)));
+  try {
+    await assert.rejects(
+      nodeFetch("https://localhost/secure", { blockAddress: () => false, proxyFor: () => base, timeoutMs: 2000 }),
+      /proxy refused the connection \(HTTP 403\)/,
+    );
+    assert.equal(connects.length, 1);
+    const m = /^(.*):(\d+)$/.exec(connects[0]);
+    assert.ok(m, connects[0]);
+    assert.match(m[1], LOCAL_LITERAL);
+    assert.equal(m[2], "443");
+  } finally { server.close(); }
+});
+
+test("proxy: credentials in the proxy URL go to the proxy as Proxy-Authorization", async () => {
+  const proxy = await serve((_req, res) => { res.writeHead(200); res.end("ok"); });
+  try {
+    const authed = proxy.base.replace("http://", "http://us%40er:p%3Ass@");
+    await nodeFetch("http://localhost:8099/", { blockAddress: () => false, proxyFor: () => authed, timeoutMs: 2000 });
+    assert.equal(proxy.seen[0].headers["proxy-authorization"], `Basic ${Buffer.from("us@er:p:ss").toString("base64")}`);
+  } finally { proxy.close(); }
+});
+
+test("proxy: only http:// proxies; a malformed proxy setting rejects clearly", async () => {
+  await assert.rejects(nodeFetch("http://a.org/", { proxyFor: () => "socks5://p:1080" }), /unsupported proxy protocol socks5:/);
+  await assert.rejects(nodeFetch("http://a.org/", { proxyFor: () => "not a url" }), /proxy setting is not a valid URL/);
+});
+
+test("proxy: an unreachable proxy fails without naming its address", async () => {
+  await assert.rejects(
+    nodeFetch("https://a.org/", { blockAddress: () => false, proxyFor: () => "http://127.0.0.1:1", timeoutMs: 2000 }),
+    (e: Error) => /could not reach the configured proxy \(ECONNREFUSED\)/.test(e.message) && !/127\.0\.0\.1/.test(e.message),
+  );
+  await assert.rejects(
+    nodeFetch("http://a.org/", { blockAddress: () => false, proxyFor: () => "http://127.0.0.1:1", timeoutMs: 2000 }),
+    (e: Error) => /could not reach the configured proxy/.test(e.message) && !/127\.0\.0\.1/.test(e.message),
+  );
+});
+
+test("proxyFromEnv: a value without a scheme means http:// (as curl reads it)", () => {
+  assert.equal(proxyFromEnv({ HTTPS_PROXY: "proxy.corp:3128" })(new URL("https://a.org/")), "http://proxy.corp:3128");
+  assert.equal(proxyFromEnv({ http_proxy: "10.0.0.1:3128" })(new URL("http://a.org/")), "http://10.0.0.1:3128");
+  assert.equal(proxyFromEnv({ HTTPS_PROXY: "https://p:443" })(new URL("https://a.org/")), "https://p:443", "kept as given; nodeFetch rejects it clearly");
+});

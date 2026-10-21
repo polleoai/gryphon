@@ -14,13 +14,12 @@
  *   - The URL's hostname is refused if it is a private / loopback /
  *     link-local literal, or if DNS resolves it to one (checked before the
  *     request).
- *   - Headless hosts (HeadlessHostAdapter → nodeFetch) also get
- *     `blockAddress`: every redirect hop's hostname and every address DNS
+ *   - The request carries `blockAddress`, and both host adapters send it
+ *     through nodeFetch (Obsidian's too: requestUrl would follow redirects
+ *     unchecked, #40). Every redirect hop's hostname and every address DNS
  *     resolves it to are checked at connect time, so a redirect to an
- *     internal address and DNS rebinding are both refused.
- *   - Known gap (Obsidian): requestUrl follows redirects itself and ignores
- *     `blockAddress`, so there a redirect hop to a private address isn't
- *     re-checked and the connection isn't pinned to the checked address.
+ *     internal address and DNS rebinding are both refused; through a proxy,
+ *     the proxy is sent the checked address.
  */
 declare const SCHEMA: {
     name: string;
@@ -55,6 +54,7 @@ interface WebFetchHostAdapter {
         method: string;
         headers: Record<string, string>;
         throw: boolean;
+        timeoutMs?: number;
         blockAddress?: (hostOrIp: string) => boolean;
     }): Promise<HostResponse>;
 }

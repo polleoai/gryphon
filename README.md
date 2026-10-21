@@ -129,7 +129,7 @@ What leaves your machine:
 | Chat message (Google API mode) | `generativelanguage.googleapis.com` (Gemini API) or `aiplatform.googleapis.com` (Vertex AI) | Per turn |
 | Chat message (CLI mode) | Local `claude` / `codex` / `gemini` subprocess on your machine | Per turn |
 | Vault file read by Claude | Same as above, embedded in the turn | Only when Claude invokes a Read tool |
-| WebFetch URL | The URL's origin (direct HTTP fetch) | Only when Claude invokes WebFetch |
+| WebFetch URL | The URL's origin (direct HTTP fetch, or the proxy in `HTTPS_PROXY` / `HTTP_PROXY`); in Anthropic API mode, never a private or local address, including after redirects | Only when Claude invokes WebFetch |
 | WebSearch query | `api.search.brave.com` (SDK with key) or the provider's built-in search (CLI) | Only when Claude invokes WebSearch |
 | Everything else | Nowhere | Ever |
 
@@ -145,7 +145,7 @@ The complete list of domains that *could* be contacted, by mode:
 - **OpenAI API mode**: `api.openai.com`, `auth.openai.com` (only during OAuth flows if used)
 - **Google API mode**: `generativelanguage.googleapis.com`, `aiplatform.googleapis.com`, and (only inside Google Cloud) the metadata + auth endpoints listed above
 - **WebSearch (any API mode)**: `api.search.brave.com`
-- **WebFetch (any mode)**: whatever URL Claude is told to fetch — by definition arbitrary
+- **WebFetch (any mode)**: whatever URL Claude is told to fetch — by definition arbitrary. In Anthropic API mode, addresses on your computer or local network are refused at every redirect (CLI modes use the CLI's own web tool). WebFetch doesn't use Obsidian's network settings: on a network that only allows web access through a proxy, set `HTTPS_PROXY` (and `HTTP_PROXY` / `NO_PROXY` as needed) in the environment Obsidian starts in. Only `http://` proxy URLs are supported. Gryphon still looks up each destination's address itself, so it can check it before connecting, even through a proxy — so this machine's DNS must be able to resolve the sites fetched.
 - **CLI modes**: nothing direct (the CLI subprocess makes its own outbound requests on your machine)
 
 ### System identity reads

@@ -126,3 +126,81 @@ test("fetch defaults method to GET when not specified", async () => {
   assert.equal(requestUrlCalls.length, 1);
   assert.equal(requestUrlCalls[0].method, "GET");
 });
+
+// ── #40: a guarded request (blockAddress) never goes through requestUrl ──
+const http = require("http");
+
+function serveLocal(handler) {
+  const seen = [];
+  const server = http.createServer((req, res) => { seen.push({ url: req.url, headers: req.headers }); handler(req, res); });
+  return new Promise((r) => server.listen(0, "127.0.0.1", () => r({ port: server.address().port, close: () => server.close(), seen })));
+}
+
+test("#40: fetch with blockAddress uses the guarded fetch, not requestUrl, and returns headers", async () => {
+  requestUrlCalls.length = 0;
+  const s = await serveLocal((_req, res) => { res.writeHead(200, { "content-type": "text/plain" }); res.end("direct"); });
+  try {
+    const r = await new ObsidianHostAdapter().fetch(`http://127.0.0.1:${s.port}/p`, { blockAddress: () => false });
+    assert.equal(requestUrlCalls.length, 0, "requestUrl not used for a guarded request");
+    assert.equal(r.status, 200);
+    assert.equal(r.headers["content-type"], "text/plain", "headers reach WebFetch's content-type check");
+    assert.equal(await r.text(), "direct");
+  } finally { s.close(); }
+});
+
+test("#40: a redirect to the cloud-metadata address is refused (requestUrl would have followed it)", async () => {
+  requestUrlCalls.length = 0;
+  const s = await serveLocal((_req, res) => { res.writeHead(302, { Location: "http://169.254.169.254/latest/meta-data/" }); res.end(); });
+  try {
+    const block = (h) => h === "169.254.169.254";
+    await assert.rejects(new ObsidianHostAdapter().fetch(`http://127.0.0.1:${s.port}/start`, { blockAddress: block }), /refusing to connect to 169\.254\.169\.254/);
+    assert.equal(requestUrlCalls.length, 0);
+    assert.equal(s.seen.length, 1, "only the first hop was requested");
+  } finally { s.close(); }
+});
+
+test("#40: a guarded request honours HTTP_PROXY / NO_PROXY from the environment", async () => {
+  const proxy = await serveLocal((_req, res) => { res.writeHead(200); res.end("via proxy"); });
+  const direct = await serveLocal((_req, res) => { res.writeHead(200); res.end("direct"); });
+  const saved = { HTTP_PROXY: process.env.HTTP_PROXY, http_proxy: process.env.http_proxy, NO_PROXY: process.env.NO_PROXY, no_proxy: process.env.no_proxy };
+  try {
+    delete process.env.http_proxy; delete process.env.no_proxy;
+    process.env.HTTP_PROXY = `http://127.0.0.1:${proxy.port}`;
+    process.env.NO_PROXY = "";
+    const viaProxy = await new ObsidianHostAdapter().fetch("http://localhost:8099/x", { blockAddress: () => false });
+    assert.equal(await viaProxy.text(), "via proxy");
+    assert.equal(proxy.seen[0].headers.host, "localhost:8099");
+    process.env.NO_PROXY = "127.0.0.1";
+    const bypass = await new ObsidianHostAdapter().fetch(`http://127.0.0.1:${direct.port}/y`, { blockAddress: () => false });
+    assert.equal(await bypass.text(), "direct", "NO_PROXY host is reached directly");
+    assert.equal(proxy.seen.length, 1);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    proxy.close(); direct.close();
+  }
+});
+
+test("#40: requests without blockAddress still use requestUrl (provider API calls unchanged)", async () => {
+  requestUrlCalls.length = 0;
+  await new ObsidianHostAdapter().fetch("https://api.example.com/v1", { method: "POST", body: "{}" });
+  assert.equal(requestUrlCalls.length, 1);
+});
+
+test("#40: a direct-connection failure with no proxy configured says how to set one", async () => {
+  const saved = { ...process.env };
+  try {
+    for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]) delete process.env[k];
+    await assert.rejects(
+      new ObsidianHostAdapter().fetch("http://127.0.0.1:1/", { blockAddress: () => false, timeoutMs: 2000 }),
+      /ECONNREFUSED.*set HTTPS_PROXY/,
+    );
+    process.env.HTTP_PROXY = "http://127.0.0.1:1";
+    await assert.rejects(
+      new ObsidianHostAdapter().fetch("http://localhost:8099/", { blockAddress: () => false, timeoutMs: 2000 }),
+      (e) => /could not reach the configured proxy/.test(e.message) && !/set HTTPS_PROXY/.test(e.message),
+    );
+  } finally {
+    for (const k of Object.keys(process.env)) if (!(k in saved)) delete process.env[k];
+    Object.assign(process.env, saved);
+  }
+});

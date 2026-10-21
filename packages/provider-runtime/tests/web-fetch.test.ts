@@ -271,3 +271,36 @@ test("WebFetch's DNS pre-check refusal doesn't hand the resolved private address
   assert.doesNotMatch(out, /127\.0\.0\.1|::1/);
   assert.equal(fetched, false);
 });
+
+test("_isPrivateHost: any IPv6 spelling is canonicalised first (uncompressed, leading zeros, upper case)", () => {
+  for (const h of ["0:0:0:0:0:0:0:1", "0000::0001", "[0:0:0:0:0:0:0:1]", "0:0:0:0:0:0:0:0", "FE80:0000::1", "FC00:0:0::1"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+});
+
+test("_isPrivateHost: IPv4 embedded in hex form (canonical text) is decoded, not over-blocked", () => {
+  for (const h of ["::ffff:7f00:1", "::ffff:a9fe:a9fe", "[::ffff:127.0.0.1]", "64:ff9b::a9fe:a9fe", "::7f00:1"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+  for (const h of ["::ffff:8.8.8.8", "::ffff:808:808", "[::ffff:8.8.8.8]", "64:ff9b::8.8.8.8"]) {
+    assert.equal(_isPrivateHost(h), false, h);
+  }
+});
+
+test("_isPrivateHost: Teredo (2001:0::/32) refused; other 2001: addresses aren't", () => {
+  for (const h of ["2001:0:4136:e378:8000:63bf:3fff:fdd2", "2001::1", "2001:0000:1::1"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+  for (const h of ["2001:db8::1", "2001:4860:4860::8888", "2001:1::1"]) {
+    assert.equal(_isPrivateHost(h), false, h);
+  }
+});
+
+test("_isPrivateHost: 6to4 / NAT64 embedded v4 read from all eight groups (zero groups compressed away)", () => {
+  for (const h of ["2002:7f00::", "2002:a00::1", "2002:c0a8::1", "2002:a9fe::", "2002:7f00:1::1", "64:ff9b::", "64:ff9b::1", "64:ff9b::a9fe:a9fe", "64:ff9b::169.254.169.254", "64:ff9b:1::", "64:ff9b:1:abcd::1"]) {
+    assert.equal(_isPrivateHost(h), true, h);
+  }
+  for (const h of ["2002:808:808::1", "2002:808:800::", "64:ff9b::808:808", "64:ff9b::8.8.8.8", "2001:db8::1"]) {
+    assert.equal(_isPrivateHost(h), false, h);
+  }
+});

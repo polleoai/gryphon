@@ -25,6 +25,13 @@ export interface NodeFetchInit {
      * rebinding between the check and the connect).
      */
     blockAddress?: (hostOrIp: string) => boolean;
+    /**
+     * The http:// proxy URL for one hop's target (credentials allowed), or null
+     * to connect directly. Asked again for every redirect hop. With
+     * `blockAddress`, the proxy is sent the checked address rather than the
+     * name, so it can't resolve the name to somewhere else. See proxyFromEnv().
+     */
+    proxyFor?: (target: URL) => string | null;
 }
 export interface NodeFetchResponse {
     status: number;
@@ -33,5 +40,14 @@ export interface NodeFetchResponse {
     text(): Promise<string>;
     json(): Promise<unknown>;
 }
+/**
+ * A `proxyFor` from the usual environment variables, as curl reads them:
+ * https targets use https_proxy / HTTPS_PROXY, http targets http_proxy /
+ * HTTP_PROXY, either falling back to all_proxy / ALL_PROXY; a value without a
+ * scheme means http://. no_proxy / NO_PROXY lists hosts (with optional :port,
+ * `.suffix` or `*`) reached directly. Only http:// proxies are supported; an
+ * https:// or socks proxy URL makes the request fail with a clear error.
+ */
+declare function proxyFromEnv(env: Record<string, string | undefined>): (target: URL) => string | null;
 declare function nodeFetch(url: string, init?: NodeFetchInit, redirects?: number): Promise<NodeFetchResponse>;
-export { nodeFetch };
+export { nodeFetch, proxyFromEnv };

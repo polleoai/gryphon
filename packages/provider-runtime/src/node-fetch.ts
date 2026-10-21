@@ -15,6 +15,7 @@ import * as https from "https";
 import * as zlib from "zlib";
 import * as dns from "dns";
 import * as net from "net";
+import * as tls from "tls";
 import type { Transform } from "stream";
 
 export interface NodeFetchInit {
@@ -33,6 +34,13 @@ export interface NodeFetchInit {
    * rebinding between the check and the connect).
    */
   blockAddress?: (hostOrIp: string) => boolean;
+  /**
+   * The http:// proxy URL for one hop's target (credentials allowed), or null
+   * to connect directly. Asked again for every redirect hop. With
+   * `blockAddress`, the proxy is sent the checked address rather than the
+   * name, so it can't resolve the name to somewhere else. See proxyFromEnv().
+   */
+  proxyFor?: (target: URL) => string | null;
 }
 
 export interface NodeFetchResponse {
@@ -76,6 +84,150 @@ function _responseHeaders(raw: http.IncomingHttpHeaders): Record<string, string>
   return out;
 }
 
+const BLOCKED_RESOLUTION = (hostname: string) =>
+  // The address itself isn't echoed: the error reaches the model.
+  new Error(`fetch failed: refusing to connect to ${hostname} — it resolves to a private or loopback address`);
+
+/** One address for `host` that passes `block` (all of them must), for pinning. */
+function _checkedAddress(host: string, block: (hostOrIp: string) => boolean): Promise<string> {
+  if (net.isIP(host)) return Promise.resolve(host); // literals were checked by the caller
+  return new Promise((resolve, reject) => {
+    dns.lookup(host, { all: true }, (err, addrs) => {
+      if (err) { reject(err); return; }
+      if (addrs.length === 0) { reject(new Error(`fetch failed: no address for ${host}`)); return; }
+      if (addrs.some((a) => block(a.address))) { reject(BLOCKED_RESOLUTION(host)); return; }
+      resolve(addrs[0].address);
+    });
+  });
+}
+
+/**
+ * A failure reaching the proxy itself (the only TCP connection a proxied
+ * request makes), reworded so the proxy's address — usually internal — isn't
+ * passed on to the model. Errors after the tunnel (TLS, timeouts) pass through.
+ */
+function _proxyLegError(e: Error): Error {
+  const err = e as NodeJS.ErrnoException;
+  if (err.syscall === "connect" || err.syscall === "getaddrinfo") {
+    return new Error(`fetch failed: could not reach the configured proxy (${err.code || "connection error"})`);
+  }
+  return e;
+}
+
+/**
+ * Opens `target` through an http:// proxy: an absolute-form request for
+ * http, a CONNECT tunnel + TLS (certificate checked against the real
+ * hostname) for https. Guarded requests name the checked address, never the
+ * hostname, so the proxy's own DNS can't send them anywhere else.
+ */
+async function _requestViaProxy(
+  target: URL,
+  proxyUrl: string,
+  options: http.RequestOptions,
+  block: ((hostOrIp: string) => boolean) | undefined,
+  timeoutMs: number,
+  onResponse: (res: http.IncomingMessage) => void,
+): Promise<http.ClientRequest> {
+  let proxy: URL;
+  try {
+    proxy = new URL(proxyUrl);
+  } catch {
+    throw new TypeError("fetch failed: the proxy setting is not a valid URL");
+  }
+  if (proxy.protocol !== "http:") throw new TypeError(`fetch failed: unsupported proxy protocol ${proxy.protocol}`);
+  const proxyHost = proxy.hostname.replace(/^\[|\]$/g, "");
+  const proxyPort = Number(proxy.port || 80);
+  const proxyAuth: Record<string, string> = {};
+  if (proxy.username || proxy.password) {
+    const creds = `${decodeURIComponent(proxy.username)}:${decodeURIComponent(proxy.password)}`;
+    proxyAuth["proxy-authorization"] = `Basic ${Buffer.from(creds).toString("base64")}`;
+  }
+  const bareHost = target.hostname.replace(/^\[|\]$/g, "");
+  const address = block ? await _checkedAddress(bareHost, block) : null;
+  const hostForProxy = address ? (net.isIPv6(address) ? `[${address}]` : address) : target.hostname;
+  const port = target.port || (target.protocol === "https:" ? "443" : "80");
+
+  if (target.protocol === "http:") {
+    return http.request({
+      host: proxyHost,
+      port: proxyPort,
+      method: options.method,
+      path: `http://${hostForProxy}:${port}${target.pathname}${target.search}`,
+      headers: { ...(options.headers as Record<string, string>), host: target.host, ...proxyAuth },
+      agent: false,
+    }, onResponse);
+  }
+
+  const socket = await new Promise<net.Socket>((resolve, reject) => {
+    const connect = http.request({
+      host: proxyHost,
+      port: proxyPort,
+      method: "CONNECT",
+      path: `${hostForProxy}:${port}`,
+      headers: { host: `${hostForProxy}:${port}`, ...proxyAuth },
+      agent: false,
+    });
+    connect.setTimeout(timeoutMs, () => connect.destroy(new Error("fetch failed: the proxy stopped responding (timed out)")));
+    connect.on("connect", (res: http.IncomingMessage, sock: net.Socket) => {
+      if (res.statusCode === 200) { resolve(sock); return; }
+      sock.destroy();
+      reject(new Error(`fetch failed: the proxy refused the connection (HTTP ${res.statusCode ?? 0})`));
+    });
+    connect.on("error", (e: Error) => reject(_proxyLegError(e)));
+    connect.end();
+  });
+  return https.request(target, {
+    ...options,
+    agent: false,
+    // host names what the certificate is checked against (servername, when
+    // set, wins); without it an IP-literal target would fall back to the
+    // tunnel socket's host — the proxy.
+    createConnection: () => tls.connect({ socket, host: bareHost, servername: net.isIP(bareHost) ? undefined : bareHost }),
+  }, onResponse);
+}
+
+/** Whether `host[:port]` is excluded from proxying by a NO_PROXY value. */
+function _noProxyMatches(noProxy: string, host: string, port: string): boolean {
+  for (const raw of noProxy.split(/[\s,]+/)) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry === "*") return true;
+    const m = /^(\[[^\]]+\]|[^:]+)(?::(\d+))?$/.exec(entry);
+    if (!m) continue;
+    if (m[2] && m[2] !== port) continue;
+    const name = m[1].replace(/^\[|\]$/g, "").replace(/^\*?\./, "");
+    if (host === name || host.endsWith(`.${name}`)) return true;
+  }
+  return false;
+}
+
+/**
+ * A `proxyFor` from the usual environment variables, as curl reads them:
+ * https targets use https_proxy / HTTPS_PROXY, http targets http_proxy /
+ * HTTP_PROXY, either falling back to all_proxy / ALL_PROXY; a value without a
+ * scheme means http://. no_proxy / NO_PROXY lists hosts (with optional :port,
+ * `.suffix` or `*`) reached directly. Only http:// proxies are supported; an
+ * https:// or socks proxy URL makes the request fail with a clear error.
+ */
+function proxyFromEnv(env: Record<string, string | undefined>): (target: URL) => string | null {
+  const pick = (...names: string[]) => {
+    for (const n of names) { const v = env[n]; if (v && v.trim()) return v.trim(); }
+    return null;
+  };
+  // curl reads a value with no scheme (proxy.corp:3128) as http://.
+  const withScheme = (v: string | null) => (v && !/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? `http://${v}` : v);
+  const httpsProxy = withScheme(pick("https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"));
+  const httpProxy = withScheme(pick("http_proxy", "HTTP_PROXY", "all_proxy", "ALL_PROXY"));
+  const noProxy = pick("no_proxy", "NO_PROXY") || "";
+  return (target: URL) => {
+    const proxy = target.protocol === "https:" ? httpsProxy : httpProxy;
+    if (!proxy) return null;
+    const host = target.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    const port = target.port || (target.protocol === "https:" ? "443" : "80");
+    return _noProxyMatches(noProxy, host, port) ? null : proxy;
+  };
+}
+
 function nodeFetch(url: string, init: NodeFetchInit = {}, redirects = 0): Promise<NodeFetchResponse> {
   return new Promise((resolve, reject) => {
     let target: URL;
@@ -109,17 +261,14 @@ function nodeFetch(url: string, init: NodeFetchInit = {}, redirects = 0): Promis
         dns.lookup(hostname, { ...opts, all: true }, (err, addrs) => {
           if (err) { cb(err, []); return; }
           if (addrs.length === 0) { cb(new Error(`fetch failed: no address for ${hostname}`), []); return; }
-          if (addrs.some((a) => block(a.address))) {
-            // The address itself isn't echoed: the error reaches the model.
-            cb(new Error(`fetch failed: refusing to connect to ${hostname} — it resolves to a private or loopback address`), []);
-            return;
-          }
+          if (addrs.some((a) => block(a.address))) { cb(BLOCKED_RESOLUTION(hostname), []); return; }
           if (opts.all) cb(null, addrs);
           else cb(null, addrs[0].address, addrs[0].family);
         });
       };
     }
-    const req = lib.request(target, options, (res) => {
+    let req: http.ClientRequest;
+    const onResponse = (res: http.IncomingMessage) => {
       const status = res.statusCode || 0;
       const location = res.headers.location;
       if (status >= 300 && status < 400 && status !== 304 && location) {
@@ -150,6 +299,7 @@ function nodeFetch(url: string, init: NodeFetchInit = {}, redirects = 0): Promis
           maxBytes: init.maxBytes,
           timeoutMs: init.timeoutMs,
           blockAddress: init.blockAddress,
+          proxyFor: init.proxyFor,
         }, redirects + 1).then(resolve, reject);
         return;
       }
@@ -203,14 +353,24 @@ function nodeFetch(url: string, init: NodeFetchInit = {}, redirects = 0): Promis
         settled = true;
         respond(Buffer.concat(chunks).toString("utf8"));
       });
-    });
-    req.setTimeout(init.timeoutMs ?? DEFAULT_TIMEOUT_MS, () => {
-      req.destroy(new Error("fetch failed: the server stopped responding (timed out)"));
-    });
-    req.on("error", reject);
-    if (init.body !== undefined) req.write(init.body);
-    req.end();
+    };
+    const timeoutMs = init.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const proxy = init.proxyFor ? init.proxyFor(target) : null;
+    const send = (r: http.ClientRequest) => {
+      req = r;
+      req.setTimeout(timeoutMs, () => {
+        req.destroy(new Error("fetch failed: the server stopped responding (timed out)"));
+      });
+      req.on("error", (e: Error) => reject(proxy ? _proxyLegError(e) : e));
+      if (init.body !== undefined) req.write(init.body);
+      req.end();
+    };
+    if (proxy) {
+      _requestViaProxy(target, proxy, options, block, timeoutMs, onResponse).then(send, reject);
+      return;
+    }
+    send(lib.request(target, options, onResponse));
   });
 }
 
-export { nodeFetch };
+export { nodeFetch, proxyFromEnv };
