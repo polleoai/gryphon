@@ -1,6 +1,6 @@
 # @polleoai/gryphon-provider-config
 
-Provider configuration for Gryphon — the cc-switch-shaped layer.
+Provider configuration for Gryphon: model catalogs, pricing and per-provider settings, as plain data.
 
 ## What it does
 

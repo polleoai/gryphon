@@ -249,8 +249,8 @@ function createProtectionContext({ plugin, settings, config, hostAdapter, onDeci
             }
         },
         /**
-         * Callable gate API — the primary entry for headless consumers (Peitho,
-         * CLI hosts, tests). Classify the proposed tool call and return a
+         * Callable gate API — the primary entry for headless consumers (Node
+         * hosts with their own tool loop, CLI hosts, tests). Classify the proposed tool call and return a
          * structured allow/deny decision without any UI interaction.
          *
          * @param {object} opts

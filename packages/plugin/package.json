@@ -1,7 +1,7 @@
 {
   "name": "@polleoai/gryphon-plugin",
-  "version": "2.12.1",
-  "description": "Bring AI to your vault — with guardrails at runtime.",
+  "version": "2.12.2",
+  "description": "Bring AI to your vault — with guardrails at runtime. The Gryphon Obsidian plugin's chat view and settings, for apps that embed Gryphon.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",
@@ -43,7 +43,8 @@
   "files": [
     "dist/",
     "styles.css",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
   "scripts": {
     "build": "node --import tsx build.ts",

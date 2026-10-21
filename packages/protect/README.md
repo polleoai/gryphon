@@ -1,13 +1,13 @@
 # @polleoai/gryphon-protect
 
-`@polleoai/gryphon-protect` is the security and permission-gate layer extracted from the
-Gryphon Obsidian plugin per [ADR 0006][adr-0006]. Its scope is limited to two
-concerns: permission gating and command/attack classification. It does not
-contain an MCP client, an agentic orchestration loop, or any consumer domain
-logic (see [ADR 0007][adr-0007]). Two callers consume it today: the Gryphon
-plugin shell running inside Obsidian, and Peitho, a headless Node host that
-implements its own tool-use loop and asks `@polleoai/gryphon-protect` for a
-`decide()` verdict on each action before executing it.
+`@polleoai/gryphon-protect` is the security and permission-gate layer of the
+Gryphon Obsidian plugin, published as its own package. Its scope is limited to
+two concerns: permission gating and command/attack classification. It does
+not contain an MCP client, an agentic orchestration loop, or any
+application-specific logic. It serves two kinds of caller: the Gryphon plugin
+running inside Obsidian, and headless Node hosts that run their own tool-use
+loop and ask `@polleoai/gryphon-protect` for a `decide()` verdict on each
+action before executing it.
 
 ---
 
@@ -30,7 +30,7 @@ const ctx = createProtectionContext({
 
 ---
 
-## Quick start — headless (Peitho path)
+## Quick start — headless (your own Node host)
 
 Non-Obsidian callers omit `plugin` and pass a `config` object instead.
 
@@ -132,8 +132,7 @@ require a signature break.
 
 **`"prompt"` is not a current return value.** In headless contexts there is
 no modal renderer, so operations that would normally prompt the user collapse
-to `"deny"`. Requirement S1 from `docs/consumer-requirements.md` identifies
-a future enhancement that may add `{ decision: "prompt" }` once
+to `"deny"`. A future version may add `{ decision: "prompt" }` once
 `checkPermission` can signal intent before falling back. Until then, the
 two-state contract (`"allow"` / `"deny"`) is stable.
 
@@ -264,21 +263,15 @@ propagates to the caller or affects the gate's decision. If you need
 reliability guarantees, buffer internally inside the sink.
 
 Exact record shapes and edge cases are covered by the S3 tests in
-`packages/protect/tests/headless-decide.test.js`.
+`packages/protect/tests/headless-decide.test.ts` in the Gryphon repository.
 
 ---
 
 ## Reference
 
-- **[ADR 0007 — scope: LLM and security only][adr-0007]** — what
-  `@polleoai/gryphon-protect` does and deliberately does not do.
-- **[`docs/consumer-requirements.md`][consumer-req]** — full requirement
-  IDs for the Peitho integration: S1 (callable `decide()` gate), S2 (policy
-  primitives), S3 (audit sink — active), S4 (classifier), B4
-  (IPC-server-not-required smoke test).
-- **[ADR 0006 — three-axis workspace split][adr-0006]** — why `protect` is
-  a separate package.
-
-[adr-0006]: ../../docs/adr/0006-three-axis-workspace-split.md
-[adr-0007]: ../../docs/adr/0007-scope-llm-and-security-only.md
-[consumer-req]: ../../docs/consumer-requirements.md
+- **Scope:** LLM-agent safety only — permission gating and command/attack
+  classification. No MCP client, no orchestration loop.
+- **Callable gate:** `decide()` returns a structured allow/deny verdict for a
+  proposed tool call; policy primitives, an audit sink and the classifier are
+  exported alongside it. Headless use needs no IPC server or Obsidian.
+- **Source and issues:** https://github.com/polleoai/gryphon

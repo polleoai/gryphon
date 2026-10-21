@@ -13,8 +13,8 @@
  *
  * The validator implements a deliberately minimal JSON Schema subset
  * covering: object/string/integer/number/boolean/array, properties,
- * required, additionalProperties:false, enum. This is what Peitho's
- * loop needs. Future consumers needing oneOf/$ref/etc. can swap in
+ * required, additionalProperties:false, enum. This is what a structured-
+ * output tool loop needs. Future consumers needing oneOf/$ref/etc. can swap in
  * ajv behind the same parseAndValidate signature without changing
  * call sites.
  */

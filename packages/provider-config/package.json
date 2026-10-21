@@ -1,7 +1,7 @@
 {
   "name": "@polleoai/gryphon-provider-config",
-  "version": "2.12.1",
-  "description": "Provider configuration for Gryphon: model catalogs, pricing tables, dropdown options, per-vendor extra-args filter. Pure data + selection layer (cc-switch lesson). No spawning, no streaming, no UI.",
+  "version": "2.12.2",
+  "description": "Provider configuration for Gryphon: model catalogs, pricing, dropdown options and per-provider argument filtering. Plain data — no network access, no UI.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",

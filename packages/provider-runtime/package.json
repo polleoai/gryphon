@@ -1,7 +1,7 @@
 {
   "name": "@polleoai/gryphon-provider-runtime",
-  "version": "2.12.1",
-  "description": "LLM provider runtime for Gryphon: provider abstraction, factory, six provider implementations (Claude/Codex/Gemini CLIs + Anthropic/OpenAI/Google APIs), tool loops, streaming + abort + retry.",
+  "version": "2.12.2",
+  "description": "AI provider runtime for Gryphon: one interface over the Claude Code, Codex and Antigravity command-line assistants and the Anthropic, OpenAI and Google APIs, with tool loops, streaming, cancellation and retries.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",

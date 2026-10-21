@@ -143,7 +143,10 @@ test("#35 QA F3: every Windows launcher refusal records its reason", () => {
       _hooksFile: path.join(dir, "hooks.json"),
     });
     assert.match(String(adapter.lastRefusal()), /percent or quote/);
-    process.env.LOCALAPPDATA = "C:\\Users\\Jane Smith\\AppData\\Local";
+    // A spaced profile. Kept under the test's temp dir: off Windows a
+    // "C:\..." value is a relative path, and the launcher's mkdir created it
+    // inside the working directory (packages/protect).
+    process.env.LOCALAPPDATA = path.join(dir, "Jane Smith", "AppData", "Local");
     adapter.buildSpawnExtras({
       pluginDir: "C:\\Users\\me\\Vault\\.obsidian\\plugins\\gryphon",
       nodePath: "C:\\node\\node.exe",

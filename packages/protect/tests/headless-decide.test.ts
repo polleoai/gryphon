@@ -11,7 +11,7 @@ test("decide() works in a process with no 'obsidian' module and no IPC server", 
   const ctx = createProtectionContext({
     config: {
       permissionMode: "default",
-      allowedRoots: ["/tmp/peitho-sandbox"],
+      allowedRoots: ["/tmp/headless-sandbox"],
       protectedPathsEnabled: true,
     },
     // hostAdapter omitted — default HeadlessHostAdapter used
@@ -23,9 +23,9 @@ test("decide() works in a process with no 'obsidian' module and no IPC server", 
   // read_file normalises to Read (read-only, not gated) → classify returns null
   const allow = await ctx.decide({
     tool: "read_file",
-    args: { path: "/tmp/peitho-sandbox/doc.md" },
+    args: { path: "/tmp/headless-sandbox/doc.md" },
     mode: "default",
-    scope: { allowedRoots: ["/tmp/peitho-sandbox"] },
+    scope: { allowedRoots: ["/tmp/headless-sandbox"] },
   });
   assert.equal(allow.decision, "allow");
 
@@ -36,7 +36,7 @@ test("decide() works in a process with no 'obsidian' module and no IPC server", 
     tool: "bash",
     args: { command: "rm -rf /etc" },
     mode: "default",
-    scope: { allowedRoots: ["/tmp/peitho-sandbox"] },
+    scope: { allowedRoots: ["/tmp/headless-sandbox"] },
   });
   assert.equal(deny.decision, "deny");
   assert.ok(deny.reason, "deny should include a reason");
@@ -178,9 +178,9 @@ test("decide() emits onDecision even when decision is allow", async () => {
 
   await ctx.decide({
     tool: "read_file",
-    args: { path: "/tmp/peitho-sandbox/doc.md" },
+    args: { path: "/tmp/headless-sandbox/doc.md" },
     mode: "default",
-    scope: { allowedRoots: ["/tmp/peitho-sandbox"] },
+    scope: { allowedRoots: ["/tmp/headless-sandbox"] },
   });
 
   assert.equal(records.length, 1);

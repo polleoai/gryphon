@@ -1,7 +1,7 @@
 {
   "name": "@polleoai/gryphon-protect",
-  "version": "2.12.1",
-  "description": "Runtime protection layer for Gryphon: HookDispatcher, IPC server, permission gate, injection-pattern catalog. Spawned-process safety for AI CLIs.",
+  "version": "2.12.2",
+  "description": "Runtime protection for Gryphon: stops AI assistants from changing protected files, running risky commands, or weakening their own security settings. Works inside Obsidian or in your own Node host.",
   "private": true,
   "license": "MIT",
   "author": "POLLEO.AI",

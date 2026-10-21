@@ -104,11 +104,11 @@ function listTrackedFiles(repoRoot) {
 // ships every workspace package (provider-runtime, protect, …), and a token
 // in their sources or tests reached the public repo unseen. Paths below are
 // relative to the repository root. Dev-only areas that publish-release.sh
-// never ships are skipped: scripts/, and docs/ except docs/adr/ and
-// docs/screenshots/.
+// never ships are skipped: scripts/, and docs/ except docs/screenshots/
+// (publish-release.sh excludes docs/adr/ as internal-only).
 function _shipped(rel) {
   if (rel.startsWith("scripts/")) return false;
-  if (rel.startsWith("docs/") && !rel.startsWith("docs/adr/") && !rel.startsWith("docs/screenshots/")) return false;
+  if (rel.startsWith("docs/") && !rel.startsWith("docs/screenshots/")) return false;
   return true;
 }
 

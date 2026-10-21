@@ -4,6 +4,15 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.2] — 2026-10-20
+
+No change in how Gryphon works.
+
+### Changes
+
+- **Gryphon's building blocks are ready to install from npm.** The four packages Gryphon is made of — the chat view, its guardrails, its AI providers and their model settings — can now be published as `@polleoai/gryphon-*` packages, for apps that build on Gryphon. Their descriptions and READMEs were rewritten for that audience.
+- Housekeeping in the package documentation and code comments.
+
 ## [2.12.1] — 2026-10-20
 
 A security fix for web fetches with the Anthropic API provider.
