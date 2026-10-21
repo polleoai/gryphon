@@ -4,6 +4,15 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.4] — 2026-10-21
+
+No change in how Gryphon works inside Obsidian.
+
+### Changes
+
+- **Cleaner results in Obsidian's plugin review.** Obsidian's automated review of 2.12.0 reported over a thousand code warnings. None were problems in how Gryphon works: the review installs plugins without a set of developer files Gryphon relied on, so its checker couldn't verify ordinary file and folder operations. Gryphon's packages now include those files themselves, and every release is now checked the way Obsidian's review checks it before it ships.
+- Gryphon's npm packages now declare the Node.js type definitions their own type files use, so apps that build on them typecheck without adding them separately.
+
 ## [2.12.3] — 2026-10-20
 
 No change in how Gryphon works inside Obsidian.

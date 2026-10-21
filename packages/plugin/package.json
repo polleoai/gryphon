@@ -1,6 +1,6 @@
 {
   "name": "@polleoai/gryphon-plugin",
-  "version": "2.12.3",
+  "version": "2.12.4",
   "description": "Bring AI to your vault — with guardrails at runtime. The Gryphon Obsidian plugin's chat view and settings, for apps that embed Gryphon.",
   "private": true,
   "license": "MIT",
@@ -59,6 +59,7 @@
     "@polleoai/gryphon-protect": "file:../protect",
     "@polleoai/gryphon-provider-config": "file:../provider-config",
     "@polleoai/gryphon-provider-runtime": "file:../provider-runtime",
+    "@types/node": ">=20",
     "openai": "^6.35.0",
     "undici": "^8.1.0"
   },

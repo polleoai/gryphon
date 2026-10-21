@@ -1,7 +1,7 @@
 {
   "packages": {
     "@polleoai/gryphon-protect": {
-      "version": "2.12.3",
+      "version": "2.12.4",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "d3a8d53099ab0641fc5fefdc417d8f0533a462360d0282a012a630bb1e31a39f",
@@ -65,11 +65,11 @@
         "dist/untrusted-framing.js": "ef732d085b86f391ee25919865d59e99615499ee85639861871ac29887c11bcb",
         "dist/win-spawn.d.ts": "d76159da303d2bbf8bd6c3936a4fe91577ef3e546ec3ae6015841a92208da5a0",
         "dist/win-spawn.js": "8610543385d3db16e1797b42b4f6db3fd7602ac545517e9b1c5c0c99417483a5",
-        "package.json": "9d473aa80e3c12d779d5ecf1c7f1b30a0a7273fcb60e47b6221a7d1c3b353433"
+        "package.json": "156f7498bd987ca63a7f271d73fb40c527904458ffd023cb08e0926e68a03229"
       }
     },
     "@polleoai/gryphon-provider-config": {
-      "version": "2.12.3",
+      "version": "2.12.4",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "e768f863b5ea84b2c6f5f67193654d14f75e878c08f33181fe40942d981596ca",
@@ -85,11 +85,11 @@
         "dist/pricing/openai.js": "4684d071d6029a1eddb1335a151ba97d18e9cb58acece56638b14cc3871b69b7",
         "dist/registry.d.ts": "deff477f5d5b9a04e2c54c32bf2987c68d77b50a993723d688447f668cd12ffe",
         "dist/registry.js": "ca3e7e216161cb61092f102973cc4ea9aa01b98e8a8d64d0294fc19a88eb30f4",
-        "package.json": "1921a6f6a4465109a3ba60d66e2eeabea0776363c9c2de5b4aa29a75493d6738"
+        "package.json": "f7373fdfdd1bb688cfdda4d59aaa4b9c15d31684d0948e19e87a19e40b737daf"
       }
     },
     "@polleoai/gryphon-provider-runtime": {
-      "version": "2.12.3",
+      "version": "2.12.4",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "4902ea9795cd5b24e2061b87f2060aa4c951847ffc2b5b16c353293c9a7745be",
@@ -197,11 +197,11 @@
         "dist/utils.d.ts": "a06e215c7ad9d6fbb70aee965decdafb7a3274744d24062c155238085cc07aaf",
         "dist/utils.js": "c99984fac3930a233a545ca06d3eb15dd6e84e95e4fb482e080117764896b012",
         "index.d.ts": "c214b71cdb58939337db9ec3d9cbdb82b70d36fdd993ea59b041479efb4f785f",
-        "package.json": "7be75ac7f848903706efe16b4ef319daba7abba95a2dd68494d6ac0902859f53"
+        "package.json": "3da0f48f0adfd71ea936b749106333f6eb35da58743edbb78f38feca90b6d6b3"
       }
     },
     "@polleoai/gryphon-plugin": {
-      "version": "2.12.3",
+      "version": "2.12.4",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "0b2792944c32077d6c5d9d37d80c519886c73462fd8d65eadc6dae67ceea9d1c",
@@ -235,7 +235,7 @@
         "dist/settings-view.js": "b1ac92267559f9c97136f00a81cc769dddaa8879126ee78e5b136a32b88a9c11",
         "dist/skills.d.ts": "966f09e1df3fcce30c12896c802010ffccfad91da0870b5503c9bf0a5d2ad9d5",
         "dist/skills.js": "44ee9757b10f9f2b6b47ddab44317b7a60ae34485e1937fb2bcee2eb55dba307",
-        "package.json": "f2b1ab146d650715582bb456b4b6dbdc828bad9f777b6f29d3e709922f4195b6",
+        "package.json": "b0c7415aa7099b221c4e0c436ee8b338c94b957827f4389c48a01bb062c7eccc",
         "styles.css": "937416025f549e7c342bbe2ffd553f5e264ce74e2fee9fa7d275f112bcfff107"
       }
     }
