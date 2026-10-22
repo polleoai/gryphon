@@ -2112,7 +2112,7 @@ class GryphonChatView extends ItemView {
       position: "absolute",
       visibility: "hidden",
       whiteSpace: "pre-wrap",
-      wordWrap: "break-word",
+      overflowWrap: "break-word",
       overflow: "hidden",
       height: "auto",
       left: "-9999px",

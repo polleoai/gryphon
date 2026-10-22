@@ -1,6 +1,6 @@
 {
   "name": "@polleoai/gryphon-provider-runtime",
-  "version": "2.12.4",
+  "version": "2.12.5",
   "description": "AI provider runtime for Gryphon: one interface over the Claude Code, Codex and Antigravity command-line assistants and the Anthropic, OpenAI and Google APIs, with tool loops, streaming, cancellation and retries.",
   "private": true,
   "license": "MIT",

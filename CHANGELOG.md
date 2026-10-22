@@ -4,6 +4,15 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.5] — 2026-10-21
+
+No change in how Gryphon works inside Obsidian.
+
+### Changes
+
+- **Obsidian's plugin review, take two.** 2.12.4 didn't clear the review's warnings after all: the review checks code with a newer TypeScript, which ignores type definitions a project doesn't name explicitly. Gryphon now names them, and the check every release runs before it ships uses the same TypeScript version as the review.
+- Two small updates to current names: a text-wrapping style in the chat view (same behaviour), and the setting the OpenAI key test uses to keep its reply short.
+
 ## [2.12.4] — 2026-10-21
 
 No change in how Gryphon works inside Obsidian.

@@ -454,7 +454,7 @@ async function testApiKey(apiKey: string | null | undefined) {
     const client = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
     await client.chat.completions.create({
       model: "gpt-4o-mini",
-      max_tokens: 4,
+      max_completion_tokens: 4,
       messages: [{ role: "user", content: "hi" }],
     });
     return { ok: true, message: "Key works" };
