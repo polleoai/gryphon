@@ -1,6 +1,6 @@
 {
   "name": "@polleoai/gryphon-plugin",
-  "version": "2.12.5",
+  "version": "2.12.6",
   "description": "Bring AI to your vault — with guardrails at runtime. The Gryphon Obsidian plugin's chat view and settings, for apps that embed Gryphon.",
   "private": true,
   "license": "MIT",

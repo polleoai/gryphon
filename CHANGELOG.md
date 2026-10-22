@@ -4,6 +4,15 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.12.6] — 2026-10-22
+
+No change in how Gryphon works inside Obsidian: the plugin is byte-for-byte the same as 2.12.5.
+
+### Changes
+
+- **Obsidian's plugin review: no more dependency warning.** The review flagged an advisory for an older version of a date library that Gryphon's development tools pulled in. It was never part of the plugin you install; the development tools now use the fixed version.
+- **Clearer disclosures in the README.** A new *Disclosures* section explains the three things Obsidian's review lists for Gryphon: it looks up your home folder to find the AI command-line tools you've installed, it uses a few files outside your vault (its own security settings, short-lived session files, the hooks it registers with the command-line tools, and Claude Code's own files), and it runs programs: the command-line tool you choose or, in API modes, the shell commands the AI asks to run. The previous wording said Gryphon reads your computer's name and account details; it doesn't.
+
 ## [2.12.5] — 2026-10-21
 
 No change in how Gryphon works inside Obsidian.

@@ -148,18 +148,24 @@ The complete list of domains that *could* be contacted, by mode:
 - **WebFetch (any mode)**: whatever URL Claude is told to fetch — by definition arbitrary. In Anthropic API mode, addresses on your computer or local network are refused at every redirect (CLI modes use the CLI's own web tool). WebFetch doesn't use Obsidian's network settings: on a network that only allows web access through a proxy, set `HTTPS_PROXY` (and `HTTP_PROXY` / `NO_PROXY` as needed) in the environment Obsidian starts in. Only `http://` proxy URLs are supported. Gryphon still looks up each destination's address itself, so it can check it before connecting, even through a proxy — so this machine's DNS must be able to resolve the sites fetched.
 - **CLI modes**: nothing direct (the CLI subprocess makes its own outbound requests on your machine)
 
-### System identity reads
+### Disclosures
 
-Gryphon's CLI-detection logic reads a small amount of system information:
+Obsidian's plugin review lists three behaviours for Gryphon. All three are needed for what Gryphon does, and none of them sends anything off your computer.
 
-- `os.hostname()` and `os.userInfo()` — used in cross-platform path normalization for hook scripts
-- Environment variables — `PATH`, `HOME`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `GRYPHON_VAULT`, `npm_config_*`, plus platform-standard locations Claude Code / Codex / Gemini CLIs are typically installed under
+**Reads your home folder location.** Gryphon looks up your home folder (and on Windows the standard app-data folders) to find the AI command-line tools you've installed, such as `~/.local/bin/claude`. It also reads `PATH`, the API-key variables of the providers it supports, and the folders those tools are usually installed in. It doesn't read your computer's name, your account details or your network setup.
 
-None of this is transmitted off the device.
+**Uses files outside your vault.** Your notes stay inside your vault. Outside the vault, Gryphon only touches:
+
+- Gryphon's own security settings and approvals, in your user config folder (`~/.config/gryphon/` on macOS and Linux, `%APPDATA%\gryphon\` on Windows), so another app or AI tool can't quietly loosen them from inside a vault.
+- Short-lived files in your system's temporary folder while a command-line tool is running: its settings for that session and the connection Gryphon uses to answer its permission checks. Gryphon removes them afterwards, and clears leftovers older than a day.
+- The protection hooks it registers with the Antigravity command-line tool (`~/.gemini/config/hooks.json`, plus a small launcher under `%LOCALAPPDATA%\gryphon\` on Windows), and a temporary copy of the Codex tool's settings for each session. Your own `~/.codex` is left as it is.
+- Claude Code's own files: its conversation files under `~/.claude/projects/`, read to show how much of the conversation's context is used, and the sizes of `~/.claude/CLAUDE.md` and `~/CLAUDE.md` for the same reason. When you run `/memory` and confirm, Gryphon moves the memory files you chose into an archive folder in that project's Claude Code memory folder and updates its `MEMORY.md`.
+
+**Runs programs.** In command-line mode Gryphon starts the AI tool you chose (`claude`, `codex` or `agy`) and Gryphon's own protection checks, which that tool runs before it changes a file or runs a command. In API modes the AI can run shell commands in your vault folder; each one goes through Gryphon's command checks and, unless you've chosen a more permissive mode, asks for your approval first.
 
 ### Vault access surface
 
-Gryphon uses Obsidian's standard vault API: `vault.read`, `vault.cachedRead`, `vault.modify`, `vault.create`, `vault.delete`, `vault.rename`. All operations are vault-scoped — paths like `../etc/passwd` are rejected before the tool runs, regardless of permission mode.
+Gryphon reads and writes notes through Obsidian's standard vault API: `vault.read`, `vault.cachedRead`, `vault.modify`, `vault.create`, `vault.delete`, `vault.rename`. In API modes, the AI's file tools (read, write, edit, search) are limited to your vault: paths like `../etc/passwd` are rejected before the tool runs, regardless of permission mode. Shell commands aren't limited this way; they're covered by the command checks and approvals above.
 
 For vulnerability reports and the full data-handling breakdown, see [SECURITY.md](./SECURITY.md).
 
