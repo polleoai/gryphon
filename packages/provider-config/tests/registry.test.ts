@@ -73,7 +73,7 @@ test("coldStartMsFor returns 90s for Sonnet 4.6", () => {
 
 test("legacyAliasMigrationFor('anthropic') returns the old-alias map", () => {
   const m = registry.legacyAliasMigrationFor("anthropic");
-  assert.equal(m["haiku"], "claude-haiku-4-5");
+  assert.equal(m["haiku"], "claude-haiku-5-5");
   assert.equal(m["sonnet"], "claude-sonnet-5-5");
   assert.equal(m["opus"], "claude-opus-5-5");
   assert.equal(m["opus[1m]"], "claude-opus-5-5");
@@ -81,9 +81,9 @@ test("legacyAliasMigrationFor('anthropic') returns the old-alias map", () => {
 
 test("codexCliSupported subset of OpenAI models", () => {
   const set = registry.codexCliSupportedModels();
-  assert.ok(set.has("gpt-5.5"));
-  assert.ok(set.has("gpt-5.4"));
-  assert.ok(set.has("gpt-5.4-mini"));
+  // Codex 0.145's catalog (`codex debug models`, 2026-11-16) lists only these.
+  assert.deepEqual([...set].sort(), ["gpt-5.6-luna", "gpt-5.6-terra"]);
+  assert.equal(set.has("gpt-5.5"), false, "gpt-5.5 left Codex's catalog");
   assert.equal(set.has("gpt-5"), false, "gpt-5 NOT in Codex CLI ChatGPT-auth whitelist");
   assert.equal(set.has("gpt-4o"), false);
 });
@@ -244,5 +244,47 @@ test("Codex ChatGPT-auth set keeps only ids verified on every probed client", ()
 
 test("antigravity-cli set is exactly the ids agy's catalog accepts", () => {
   const set = registry.antigravityCliSupportedModels();
-  assert.deepEqual([...set].sort(), ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash"]);
+  // agy 1.5.9 (2026-11-16): only Gemini 3.8 Flash. scripts/cli-catalog-check.ts
+  // checks the ids actually sent against the live `agy models`.
+  assert.deepEqual([...set].sort(), ["gemini-3.8-flash"]);
+});
+
+// ── 2026-11 lineup: Claude Fable 5.2 + Claude Haiku 5.5 ──────────────────
+test("Fable 5.2 and Haiku 5.5 are offered, priced and sized", () => {
+  const opts = new Map(registry.dropdownFor("anthropic").map((o) => [o.id, o]));
+  assert.equal(opts.get("claude-fable-5-2")?.label, "Fable 5.2");
+  assert.equal(opts.get("claude-haiku-5-5")?.label, "Haiku 5.5");
+  assert.deepEqual({ ...registry.priceFor("claude-fable-5-2", "anthropic") }, { input: 8.00, output: 40.00 });
+  assert.deepEqual({ ...registry.priceFor("claude-haiku-5-5", "anthropic") }, { input: 0.10, output: 0.50 });
+  assert.equal(registry.contextTokensFor("claude-fable-5-2"), 1_000_000);
+  assert.equal(registry.contextTokensFor("claude-haiku-5-5"), 1_000_000);
+});
+
+test("the haiku alias resolves to Haiku 5.5 on Anthropic", () => {
+  assert.equal(registry.aliasFor("haiku", "anthropic"), "claude-haiku-5-5");
+});
+
+test("Fable 5.1 and Haiku 4.5 leave the dropdown and migrate to their successors", () => {
+  const shown = _dropdownIds();
+  const successors = {
+    "claude-fable-5-1": "claude-fable-5-2",
+    "claude-haiku-4-5": "claude-haiku-5-5",
+    // Fable 5 went to 5.1 before; it now goes straight to 5.2, not via a hidden model.
+    "claude-fable-5": "claude-fable-5-2",
+  };
+  for (const [id, next] of Object.entries(successors)) {
+    assert.ok(!shown.has(id), `${id} should not be selectable`);
+    assert.equal(registry.retiredModelSuccessor(id), next);
+    // Still priced, so cost estimates for past turns on it stay correct.
+    assert.ok(registry.isKnownModel(id), `${id} should keep its pricing entry`);
+  }
+});
+
+test("the Anthropic default is unchanged by the 2026-11 lineup", () => {
+  assert.equal(registry.defaultModelFor("anthropic"), "claude-sonnet-5-5");
+  assert.equal(registry.aliasFor("opus", "anthropic"), "claude-opus-5-5");
+});
+
+test("Mythos 5.2 is not listed: the probe failed on this account (2026-11-15)", () => {
+  assert.equal(registry.isKnownModel("claude-mythos-5-2"), false);
 });

@@ -318,17 +318,20 @@ class AnthropicAPIProvider {
     ctx.priorCumulativeCost = this.cumulativeCost;
     ctx.computeIterationCost = (usage) => computeCost(usage as Record<string, unknown>, this.resolvedModel);
 
-    // L6 structured output: tool-use coercion. Declare a single forced tool
-    // whose input_schema is the caller's schema. The model must call it — which
-    // gives us grammar-constrained JSON output. The coercion tool is NOT
-    // dispatched to Gryphon's tool registry; it is purely an output channel.
+    // L6 structured output: tool-use coercion. Declare a single tool whose
+    // input_schema is the caller's schema and steer the model to call it; its
+    // input is the JSON result. tool_choice is "auto": forcing the tool
+    // ("tool"/"any") returns a 400 on Fable 5.1/5.2, Opus 5.5 and Sonnet 5.5.
+    // A reply that skips the tool is re-asked once (tool-loop); a second
+    // text reply raises STRUCTURED_OUTPUT_COERCION_FAILED below. The coercion tool is NOT dispatched to Gryphon's tool registry;
+    // it is purely an output channel.
     if (options && options.structuredOutput) {
       ctx.coercionTool = {
         name: options.structuredOutput.name,
-        description: "Return the structured response.",
+        description: "Return the structured response. Always call this tool with your answer; never reply in plain text.",
         input_schema: options.structuredOutput.schema as AnthropicClient.Tool.InputSchema,
       };
-      ctx.toolChoice = { type: "tool", name: options.structuredOutput.name };
+      ctx.toolChoice = { type: "auto" };
     }
 
     try {
@@ -429,12 +432,12 @@ class AnthropicAPIProvider {
           result.json = coercionBlock.input;
           result.text = JSON.stringify(coercionBlock.input);
         } else {
-          // The model was forced via tool_choice but returned stop_reason
-          // without invoking the coercion tool — surface a clear error so
-          // callers get an actionable code rather than result.json === undefined.
+          // The model returned without invoking the coercion tool — surface a
+          // clear error so callers get an actionable code rather than
+          // result.json === undefined.
           const err = new Error(
             `structuredOutput: Anthropic returned stop_reason "${finalMessage.stop_reason}" ` +
-            `without invoking the forced "${coercionName}" tool — coercion failed.`,
+            `without invoking the "${coercionName}" tool — coercion failed.`,
           ) as Error & { code?: string };
           err.code = "STRUCTURED_OUTPUT_COERCION_FAILED";
           throw err;
@@ -509,7 +512,7 @@ async function testApiKey(apiKey: string | null | undefined) {
     Anthropic = (await loadSdk()).default;
     const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
     await client.messages.create({
-      model: "claude-haiku-4-5",
+      model: "claude-haiku-5-5",
       max_tokens: 4,
       messages: [{ role: "user", content: "hi" }],
     });

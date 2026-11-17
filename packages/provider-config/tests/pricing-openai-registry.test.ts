@@ -27,9 +27,12 @@ test("DEFAULT_MODEL is gpt-6.1-sol", () => {
 });
 
 test("CODEX_CLI_SUPPORTED_MODELS subset matches prior surface", () => {
-  assert.ok(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.5"));
-  assert.ok(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.4"));
-  assert.ok(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.4-mini"));
+  assert.ok(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.6-terra"));
+  assert.ok(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.6-luna"));
+  // Out of Codex 0.145's catalog (2026-11-16).
+  assert.equal(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.5"), false);
+  assert.equal(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.4"), false);
+  assert.equal(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5.4-mini"), false);
   assert.equal(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-5"), false);
   assert.equal(openai.CODEX_CLI_SUPPORTED_MODELS.has("gpt-4o"), false);
 });
@@ -64,7 +67,9 @@ test("coerceToVendorModel passes through gpt-/o3-/o4- prefixed unknown ids (forw
 });
 
 test("coerceToCodexCliModel restricts to ChatGPT-auth subset", () => {
-  assert.equal(openai.coerceToCodexCliModel("gpt-5.5"), "gpt-5.5");
+  assert.equal(openai.coerceToCodexCliModel("gpt-5.6-luna"), "gpt-5.6-luna");
+  // Left Codex's catalog: coerced to the Codex default instead of failing.
+  assert.equal(openai.coerceToCodexCliModel("gpt-5.5"), openai.CODEX_CLI_DEFAULT_MODEL);
   assert.equal(openai.coerceToCodexCliModel("gpt-4o"), openai.CODEX_CLI_DEFAULT_MODEL);
 });
 

@@ -56,13 +56,15 @@ const MODELS = [
     // Current lineup. Verified 2026-10-05 with a real completion:
     //   `claude --model <id> -p` → result "OK", modelUsage keyed by <id>.
     {
-        // Still Active; retirement "not sooner than 2026-10-15" — no successor
-        // Haiku has been announced, so it stays until Anthropic names one.
-        id: "claude-haiku-4-5",
+        // Pricing is the up-to-100K-token prompt tier; longer prompts cost
+        // $0.50/$2.50, and this registry has one flat rate per model (same
+        // caveat as the OpenAI section below).
+        // Verified: probe-model.sh anthropic claude-haiku-5-5 → ok (2026-11-15)
+        id: "claude-haiku-5-5",
         vendor: "anthropic",
-        pricing: { input: 1.00, output: 5.00 },
-        dropdown: { label: "Haiku 4.5", desc: "Fast, cheapest (200K)" },
-        contextTokens: 200_000,
+        pricing: { input: 0.10, output: 0.50 },
+        dropdown: { label: "Haiku 5.5", desc: "Fast, cheapest (1M)" },
+        contextTokens: 1_000_000,
         coldStartMs: 30_000,
     },
     {
@@ -88,16 +90,22 @@ const MODELS = [
     {
         // Runtime special-casing (always-on thinking, refusal fallbacks) lives
         // in provider-runtime, not here — this file is catalog-only.
-        // Verified: probe-model.sh anthropic claude-fable-5-1 → ok
-        id: "claude-fable-5-1",
+        // Cheaper than Fable 5.1 ($8/$40 vs $10/$50). Not the default: it costs
+        // twice Opus 5.5. Claude Mythos 5.2 is not listed — its probe failed on
+        // this account ("may not have access", 2026-11-15; verified orgs only).
+        // Verified: probe-model.sh anthropic claude-fable-5-2 → ok (2026-11-15)
+        id: "claude-fable-5-2",
         vendor: "anthropic",
-        pricing: { input: 10.00, output: 50.00 },
-        dropdown: { label: "Fable 5.1", desc: "Most capable (1M)" },
+        pricing: { input: 8.00, output: 40.00 },
+        dropdown: { label: "Fable 5.2", desc: "Most capable (1M)" },
         contextTokens: 1_000_000,
         coldStartMs: 180_000,
     },
     // Superseded, still served (Anthropic "Legacy"). Prices per
     // platform.claude.com/docs/en/about-claude/pricing as of 2026-10-05.
+    // Haiku 4.5 and Fable 5.1 left the dropdown 2026-11 (Haiku 5.5 / Fable 5.2).
+    { id: "claude-haiku-4-5", vendor: "anthropic", pricing: { input: 1.00, output: 5.00 }, contextTokens: 200_000, coldStartMs: 30_000 },
+    { id: "claude-fable-5-1", vendor: "anthropic", pricing: { input: 10.00, output: 50.00 }, contextTokens: 1_000_000, coldStartMs: 180_000 },
     { id: "claude-sonnet-4-6", vendor: "anthropic", pricing: { input: 3.00, output: 15.00 }, contextTokens: 1_000_000, coldStartMs: 90_000 },
     // Sonnet 5's $2/$10 launch rate became its standard price (the scheduled
     // 2026-09-01 increase to $3/$15 was cancelled).
@@ -162,12 +170,14 @@ const MODELS = [
         codexCliSupported: true,
     },
     // Superseded, no shutdown announced — hidden, priced, migrated.
-    // `codexCliSupported` is kept on the ones Codex accepted so a Codex user
-    // mid-migration is never coerced away from a working model.
+    // `codexCliSupported` is kept only where Codex's own catalog
+    // (`codex debug models`) still lists the id: 0.145 lists gpt-5.6-terra and
+    // gpt-5.6-luna only (2026-11-16), so gpt-5.5 / 5.4 / 5.4-mini coerce to the
+    // Codex default instead of failing. scripts/cli-catalog-check.ts gates this.
     { id: "gpt-5.6-luna", vendor: "openai", pricing: { input: 0.20, output: 1.20, cached_input: 0.02 }, codexCliSupported: true },
-    { id: "gpt-5.5", vendor: "openai", pricing: { input: 5.00, output: 30.00, cached_input: 0.50 }, codexCliSupported: true },
-    { id: "gpt-5.4", vendor: "openai", pricing: { input: 2.50, output: 15.00, cached_input: 0.25 }, codexCliSupported: true },
-    { id: "gpt-5.4-mini", vendor: "openai", pricing: { input: 0.75, output: 4.50, cached_input: 0.075 }, codexCliSupported: true },
+    { id: "gpt-5.5", vendor: "openai", pricing: { input: 5.00, output: 30.00, cached_input: 0.50 } },
+    { id: "gpt-5.4", vendor: "openai", pricing: { input: 2.50, output: 15.00, cached_input: 0.25 } },
+    { id: "gpt-5.4-mini", vendor: "openai", pricing: { input: 0.75, output: 4.50, cached_input: 0.075 } },
     { id: "gpt-4o", vendor: "openai", pricing: { input: 2.50, output: 10.00, cached_input: 1.25 } },
     { id: "gpt-4o-mini", vendor: "openai", pricing: { input: 0.15, output: 0.60, cached_input: 0.075 } },
     { id: "gpt-4.1", vendor: "openai", pricing: { input: 2.00, output: 8.00, cached_input: 0.50 } },
@@ -190,7 +200,11 @@ const MODELS = [
     //   agy --model gemini-3.7-flash --effort medium → "OK"
     //
     // `antigravityCliSupported` marks ids agy's own catalog accepts (`agy
-    // models`, 2026-10-05). The antigravity-cli provider reuses this vendor's
+    // models`). agy 1.5.9 (self-updated 2026-11-16) lists only Gemini 3.8 Flash,
+    // as effort-suffixed ids (gemini-3.8-flash-low|medium|high), and rejects
+    // `--effort` for it; the antigravity-cli provider sends the suffixed id
+    // (pricing/google.ts antigravityCliSpawnModel). 3.7 and 3.6 left agy's
+    // catalog. scripts/cli-catalog-check.ts gates this against the live catalog. The antigravity-cli provider reuses this vendor's
     // dropdown, so without the filter it offered ids agy rejects outright:
     // gemini-3.5-flash-lite (absent from agy's catalog) and
     // gemini-3.1-pro-preview (agy calls it `gemini-3.1-pro`).
@@ -210,7 +224,6 @@ const MODELS = [
         pricing: { input: 1.50, output: 7.50, cached_input: 0.15 },
         dropdown: { label: "Gemini 3.7 Flash", desc: "Balanced (default)" },
         isDefault: true,
-        antigravityCliSupported: true,
     },
     {
         // Google's named successor to gemini-3.1-flash-lite (shutdown 2027-05-07).
@@ -236,7 +249,7 @@ const MODELS = [
     },
     // Superseded — hidden, priced, migrated. The 2.5 family is limited to
     // existing users, so it can no longer be anyone's default.
-    { id: "gemini-3.6-flash", vendor: "google", pricing: { input: 1.50, output: 7.50, cached_input: 0.15 }, antigravityCliSupported: true },
+    { id: "gemini-3.6-flash", vendor: "google", pricing: { input: 1.50, output: 7.50, cached_input: 0.15 } },
     { id: "gemini-3.5-flash", vendor: "google", pricing: { input: 1.50, output: 9.00, cached_input: 0.15 } },
     { id: "gemini-3-flash-preview", vendor: "google", pricing: { input: 0.50, output: 3.00, cached_input: 0.05 } },
     { id: "gemini-3.1-flash-lite", vendor: "google", pricing: { input: 0.25, output: 1.50, cached_input: 0.025 } },
@@ -260,7 +273,7 @@ exports.VENDOR_FALLBACK_PRICING = VENDOR_FALLBACK_PRICING;
 // NOT gpt-6-astra at $10/$50) — cost-ceiling decision; on Anthropic and
 // Google it points at the top general tier.
 const CROSS_VENDOR_ALIASES = {
-    haiku: { anthropic: "claude-haiku-4-5", openai: "gpt-6-luna", google: "gemini-3.5-flash-lite" },
+    haiku: { anthropic: "claude-haiku-5-5", openai: "gpt-6-luna", google: "gemini-3.5-flash-lite" },
     sonnet: { anthropic: "claude-sonnet-5-5", openai: "gpt-6.1-sol", google: "gemini-3.7-flash" },
     opus: { anthropic: "claude-opus-5-5", openai: "gpt-6.1-sol", google: "gemini-3.1-pro-preview" },
     "opus[1m]": { anthropic: "claude-opus-5-5", openai: "gpt-6.1-sol", google: "gemini-3.1-pro-preview" },
@@ -273,7 +286,7 @@ exports.CROSS_VENDOR_ALIASES = CROSS_VENDOR_ALIASES;
 // the omission is intentional, not a TODO).
 const LEGACY_ALIAS_MIGRATION = {
     anthropic: {
-        "haiku": "claude-haiku-4-5",
+        "haiku": "claude-haiku-5-5",
         "sonnet": "claude-sonnet-5-5",
         "opus": "claude-opus-5-5",
         "opus[1m]": "claude-opus-5-5",
@@ -297,7 +310,9 @@ const RETIRED_MODEL_MIGRATION = {
     "claude-opus-4-7": "claude-opus-5-5",
     "claude-opus-4-8": "claude-opus-5-5",
     "claude-opus-5": "claude-opus-5-5",
-    "claude-fable-5": "claude-fable-5-1",
+    "claude-fable-5": "claude-fable-5-2",
+    "claude-fable-5-1": "claude-fable-5-2",
+    "claude-haiku-4-5": "claude-haiku-5-5",
     // OpenAI — removed (vendor shutdown announced).
     "o3": "gpt-6.1-sol",
     "o3-mini": "gpt-6.1-sol",

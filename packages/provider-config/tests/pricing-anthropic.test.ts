@@ -48,7 +48,7 @@ test("MODEL_ALIAS maps cross-vendor aliases to current Anthropic flagships", () 
   assert.equal(anthropic.MODEL_ALIAS["opus"], "claude-opus-5-5");
   assert.equal(anthropic.MODEL_ALIAS["opus[1m]"], "claude-opus-5-5");
   assert.equal(anthropic.MODEL_ALIAS["sonnet"], "claude-sonnet-5-5");
-  assert.equal(anthropic.MODEL_ALIAS["haiku"], "claude-haiku-4-5");
+  assert.equal(anthropic.MODEL_ALIAS["haiku"], "claude-haiku-5-5");
 });
 
 test("MODEL_ALIAS passes through native concrete ids", () => {

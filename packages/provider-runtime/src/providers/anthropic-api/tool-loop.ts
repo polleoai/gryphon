@@ -158,9 +158,15 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: {
   // ctx.coercionTool. The tool lives in ctx (not in the tool registry) so
   // it is invisible to executeTool() — the dispatch guard below uses this
   // to detect and skip it, treating its tool_use block as output only.
+  //
+  // A structured turn offers ONLY the coercion tool. It used to add it to
+  // Gryphon's tools under a forced tool_choice, so the other tools could
+  // never run there; forced tool_choice now returns a 400 on Fable 5.1/5.2,
+  // Opus 5.5 and Sonnet 5.5, and tool_choice "auto" with a single tool keeps
+  // the same behaviour on every model.
   const coercionToolName = ctx && ctx.coercionTool ? ctx.coercionTool.name : null;
   const allTools = (coercionToolName
-    ? [...tools, ctx.coercionTool]
+    ? [ctx.coercionTool]
     : tools) as Anthropic.Tool[];
 
   const totalUsage = {
@@ -200,6 +206,8 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: {
   // `redacted_thinking` blocks; we extract them so chat-view can persist
   // and surface them as a collapsible section on the assistant bubble.
   const thinkingBlocks: string[] = [];
+  // L6 structured output: set once the single "call the tool" retry is used.
+  let coercionNudged = false;
 
   while (iterations < MAX_ITERATIONS) {
     iterations++;
@@ -211,8 +219,9 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: {
       tools: allTools.length > 0 ? allTools : undefined,
       messages: history,
     };
-    // L6 structured output: force the model to call the coercion tool.
-    // ctx.toolChoice is only present when the caller passed structuredOutput.
+    // L6 structured output: steer the model to the coercion tool ("auto";
+    // never "tool"/"any", see allTools above). ctx.toolChoice is only present
+    // when the caller passed structuredOutput.
     if (ctx && ctx.toolChoice) {
       streamParams.tool_choice = ctx.toolChoice;
     }
@@ -295,6 +304,23 @@ async function runToolLoop({ client, model, history, ctx, callbacks }: {
     history.push({ role: "assistant", content: finalMessage.content });
 
     if (finalMessage.stop_reason !== "tool_use") {
+      // L6 structured output: tool_choice "auto" doesn't guarantee a tool
+      // call, so a clarifying question or a refusal ends the turn in text.
+      // Ask once more, naming the tool; a second text answer is final and
+      // send() raises STRUCTURED_OUTPUT_COERCION_FAILED. One retry only.
+      if (coercionToolName && !coercionNudged && iterations < MAX_ITERATIONS) {
+        coercionNudged = true;
+        // An empty assistant turn (possible on a refusal) is invalid in a
+        // request; drop it and let the nudge follow the previous user turn.
+        if (!Array.isArray(finalMessage.content) || finalMessage.content.length === 0) {
+          history.pop();
+        }
+        history.push({
+          role: "user",
+          content: `Call the "${coercionToolName}" tool now with your answer. Do not reply in plain text.`,
+        });
+        continue;
+      }
       // Pure text response — we're done
       return { turnText, finalMessage, totalUsage, peakUsage, iterations, thinkingBlocks };
     }

@@ -655,7 +655,8 @@ test("F23-1 (hidden ids) — hidden model runs untouched and the toolbar names i
 test("defaultModelForKind gives subset CLIs their own default", () => {
   const { defaultModelForKind } = require("../src/index");
   assert.equal(defaultModelForKind("codex-cli"), "gpt-5.6-terra");
-  assert.equal(defaultModelForKind("antigravity-cli"), "gemini-3.7-flash");
+  // agy 1.5.9 dropped gemini-3.7-flash (the Google default).
+  assert.equal(defaultModelForKind("antigravity-cli"), "gemini-3.8-flash");
   assert.equal(defaultModelForKind("openai-api"), "gpt-6.1-sol");
   assert.equal(defaultModelForKind("claude-code"), "claude-sonnet-5-5");
 });

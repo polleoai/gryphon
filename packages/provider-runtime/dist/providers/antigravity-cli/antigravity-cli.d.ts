@@ -70,15 +70,15 @@
  *     <conversation_id>` from a prior turn's `result` event continued
  *     the same conversation, with step_index continuing from where the
  *     prior turn left off) — this is no longer speculative.
- *   - `--model` requires a companion `--effort low|medium|high` for SOME
- *     models (verified: Gemini models error `--model ... requires
- *     --effort`) while OTHER models reject `--effort` outright (verified:
- *     Claude models on the same CLI error `--effort is not supported for
- *     model ...`). This is a genuine per-model CLI inconsistency, not
- *     something Gryphon can resolve by guessing — `_buildArgs` below only
- *     adds `--effort` when the caller explicitly supplies
- *     `options.effort` (mirrors claude-code.ts's existing pattern); it
- *     does not inject a default.
+ *   - Effort: agy 1.5.9 (self-updated 2026-11-16) names effort in the model
+ *     id (`gemini-3.8-flash-low|medium|high`) and REJECTS `--effort` for
+ *     those models ("--effort is not supported for model ..."); earlier agy
+ *     required `--effort` with bare Gemini ids, and always rejected it for
+ *     Claude ids. `_buildArgs` therefore never sends `--effort`: a registry
+ *     model goes out as agy's suffixed id for `options.effort`
+ *     (pricing.google.antigravityCliSpawnModel), and an id in agy's own
+ *     vocabulary passes through untouched. scripts/cli-catalog-check.ts
+ *     checks every id sent against `agy models` at release.
  *   - Free-tier quota limits are not published.
  *   - A hard client-side timeout (`_watchdog` below) guards against the
  *     documented stdin-hang failure mode — this provider does NOT rely

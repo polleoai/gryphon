@@ -77,6 +77,12 @@ declare function getModelDropdownOptions(): {
 }[];
 declare const ANTIGRAVITY_CLI_SUPPORTED_MODELS: Set<string>;
 declare const ANTIGRAVITY_CLI_DEFAULT_MODEL: string;
+/**
+ * The `--model` value for an agy spawn of a resolved agy-supported model id
+ * at a Gryphon effort: `gemini-3.8-flash` + "high" → `gemini-3.8-flash-high`.
+ * Ids outside the agy-supported set (agy's own vocabulary) pass through.
+ */
+declare function antigravityCliSpawnModel(modelId: string, effort?: string | null): string;
 declare function getAntigravityCliModelDropdownOptions(): {
     id: string;
     label: string;
@@ -88,4 +94,4 @@ declare function getAntigravityCliModelDropdownOptions(): {
  * Gryphon only partly knows.
  */
 declare function coerceToAntigravityCliModel(alias: string | null | undefined): string;
-export { ANTIGRAVITY_CLI_SUPPORTED_MODELS, ANTIGRAVITY_CLI_DEFAULT_MODEL, getAntigravityCliModelDropdownOptions, coerceToAntigravityCliModel, MODEL_PRICES, MODEL_ALIAS, DEFAULT_MODEL, resolveModel, coerceToVendorModel, priceFor, computeCost, getModelDropdownOptions, };
+export { ANTIGRAVITY_CLI_SUPPORTED_MODELS, ANTIGRAVITY_CLI_DEFAULT_MODEL, getAntigravityCliModelDropdownOptions, coerceToAntigravityCliModel, antigravityCliSpawnModel, MODEL_PRICES, MODEL_ALIAS, DEFAULT_MODEL, resolveModel, coerceToVendorModel, priceFor, computeCost, getModelDropdownOptions, };

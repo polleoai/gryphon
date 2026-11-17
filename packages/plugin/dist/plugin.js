@@ -1977,7 +1977,7 @@ class GryphonPlugin extends obsidian_1.Plugin {
         //
         // Carry intent forward (targets live in registry LEGACY_ALIAS_MIGRATION
         // and move with each lineup refresh):
-        //   haiku    → claude-haiku-4-5     (fast)
+        //   haiku    → claude-haiku-5-5     (fast)
         //   sonnet   → claude-sonnet-5-5    (balanced, 1M)
         //   opus     → claude-opus-5-5      (top Opus tier, 1M)
         //   opus[1m] → claude-opus-5-5      (same — intrinsically 1M)

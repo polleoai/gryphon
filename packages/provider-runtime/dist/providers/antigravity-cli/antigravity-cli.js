@@ -71,15 +71,15 @@
  *     <conversation_id>` from a prior turn's `result` event continued
  *     the same conversation, with step_index continuing from where the
  *     prior turn left off) — this is no longer speculative.
- *   - `--model` requires a companion `--effort low|medium|high` for SOME
- *     models (verified: Gemini models error `--model ... requires
- *     --effort`) while OTHER models reject `--effort` outright (verified:
- *     Claude models on the same CLI error `--effort is not supported for
- *     model ...`). This is a genuine per-model CLI inconsistency, not
- *     something Gryphon can resolve by guessing — `_buildArgs` below only
- *     adds `--effort` when the caller explicitly supplies
- *     `options.effort` (mirrors claude-code.ts's existing pattern); it
- *     does not inject a default.
+ *   - Effort: agy 1.5.9 (self-updated 2026-11-16) names effort in the model
+ *     id (`gemini-3.8-flash-low|medium|high`) and REJECTS `--effort` for
+ *     those models ("--effort is not supported for model ..."); earlier agy
+ *     required `--effort` with bare Gemini ids, and always rejected it for
+ *     Claude ids. `_buildArgs` therefore never sends `--effort`: a registry
+ *     model goes out as agy's suffixed id for `options.effort`
+ *     (pricing.google.antigravityCliSpawnModel), and an id in agy's own
+ *     vocabulary passes through untouched. scripts/cli-catalog-check.ts
+ *     checks every id sent against `agy models` at release.
  *   - Free-tier quota limits are not published.
  *   - A hard client-side timeout (`_watchdog` below) guards against the
  *     documented stdin-hang failure mode — this provider does NOT rely
@@ -171,7 +171,7 @@ const gryphon_provider_config_2 = require("@polleoai/gryphon-provider-config");
 const cli_structured_output_1 = require("../../cli-structured-output");
 const budget_error_1 = require("../../budget-error");
 const host_adapter_1 = require("../../host-adapter");
-const { computeCost, coerceToAntigravityCliModel } = gryphon_provider_config_1.pricing.google;
+const { computeCost, coerceToAntigravityCliModel, antigravityCliSpawnModel } = gryphon_provider_config_1.pricing.google;
 // The registry's default model id (typed loosely upstream).
 const DEFAULT_MODEL = gryphon_provider_config_1.pricing.google.DEFAULT_MODEL;
 exports.DEFAULT_MODEL = DEFAULT_MODEL;
@@ -362,10 +362,11 @@ class AntigravityCliProvider {
         const raw = this.options.model;
         if (!raw)
             return null;
-        // Registry ids go through the agy coercion (resolvedModel); anything
-        // else is agy's own vocabulary and is forwarded untouched.
+        // Registry ids go through the agy coercion (resolvedModel), then become
+        // agy's effort-suffixed id; anything else is agy's own vocabulary and is
+        // forwarded untouched.
         if (FOREIGN_MODEL_RE.test(String(raw)) || gryphon_provider_config_1.registry.isKnownModel(String(raw))) {
-            return this.resolvedModel;
+            return antigravityCliSpawnModel(this.resolvedModel, this.options.effort);
         }
         return raw;
     }
@@ -465,15 +466,10 @@ class AntigravityCliProvider {
         const spawnModel = this._modelForSpawn();
         if (spawnModel) {
             // `-m` is not a valid short form (verified: errors "flags provided
-            // but not defined: -m") — the real flag is `--model`. Some models
-            // additionally REQUIRE a companion `--effort`; others REJECT it —
-            // see header "Known sharp edges". Only forward it when the caller
-            // explicitly set one; we don't guess a default.
-            //
+            // but not defined: -m") — the real flag is `--model`. Effort is part
+            // of the model id; `--effort` is never sent (header "Known sharp
+            // edges": agy 1.5.9 rejects it).
             args.push("--model", spawnModel);
-            if (this.options.effort) {
-                args.push("--effort", this.options.effort);
-            }
         }
         // Resume the prior conversation if we captured one; else start fresh.
         // `--conversation <id>` is the verified real resume flag (`--resume`

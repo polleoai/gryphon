@@ -13,11 +13,16 @@
  * see antigravity-cli.ts header), a real-prompt liveness probe is even
  * more load-bearing here than for the other two CLIs.
  *
- * Timeout is 30s, not 5s: a live model round-trip needs materially more
- * headroom than a local `--version` call (which never leaves the
- * machine) to absorb normal latency variance, while staying well short
- * of a typical host connection timeout (90-180s) so THIS test's specific
- * failure message surfaces first, not a generic "no response."
+ * Timeout is 60s: a live model round-trip needs materially more headroom
+ * than a local `--version` call, while staying short of a typical host
+ * connection timeout (90-180s) so THIS test's specific failure message
+ * surfaces first, not a generic "no response." It was 30s until agy 1.5.9
+ * (2026-11-16), whose one-word replies measured 17-33s (47s on agy's own
+ * default model), so 30s failed a healthy CLI.
+ *
+ * The probe names Gryphon's Antigravity default model, as the provider
+ * would send it, rather than leaving the choice to agy: it tests the id
+ * Gryphon ships, and agy's own default is its slowest.
  *
  * CORRECTION (2026-07-28): flags and event-parsing below were rewritten
  * to match the REAL `agy` v1.1.8 CLI, verified live — see
@@ -43,7 +48,10 @@ const clearTimeoutFn = clearTimeout;
 const child_process_1 = require("child_process");
 const utils_1 = require("../../utils");
 const subprocess_registry_1 = require("../../subprocess-registry");
-const _LIVENESS_TIMEOUT_MS = 30000;
+const gryphon_provider_config_1 = require("@polleoai/gryphon-provider-config");
+// The --model the provider sends for the Antigravity default at no effort.
+const _PROBE_MODEL = gryphon_provider_config_1.pricing.google.antigravityCliSpawnModel(gryphon_provider_config_1.pricing.google.ANTIGRAVITY_CLI_DEFAULT_MODEL);
+const _LIVENESS_TIMEOUT_MS = 60000;
 const _LIVENESS_PROMPT = "Reply with exactly the single word OK and nothing else.";
 function testCli(antigravityPath) {
     return new Promise((resolve) => {
@@ -63,7 +71,7 @@ function testCli(antigravityPath) {
             opts.shell = true;
         let proc;
         try {
-            proc = (0, child_process_1.spawn)(antigravityPath, ["-p", _LIVENESS_PROMPT, "--output-format", "stream-json", "--dangerously-skip-permissions"], opts);
+            proc = (0, child_process_1.spawn)(antigravityPath, ["-p", _LIVENESS_PROMPT, "--output-format", "stream-json", "--dangerously-skip-permissions", "--model", _PROBE_MODEL], opts);
         }
         catch (err) {
             resolve({ ok: false, message: `Could not spawn Antigravity CLI: ${err.message}` });

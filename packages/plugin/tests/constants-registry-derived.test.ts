@@ -11,7 +11,8 @@ test("MODELS dropdown is exactly the current Anthropic lineup", () => {
   const ids = MODELS.map((m) => m.value);
   assert.deepEqual(
     ids.slice().sort(),
-    ["claude-fable-5-1", "claude-haiku-4-5", "claude-opus-5-5", "claude-sonnet-5-5"],
+    // 2026-11: Fable 5.2 and Haiku 5.5 replace Fable 5.1 and Haiku 4.5.
+    ["claude-fable-5-2", "claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"],
   );
 });
 
@@ -38,7 +39,7 @@ test("COLD_START_BUDGET_MS marks Opus models as 180s, Sonnet as 90s, Haiku as 30
 });
 
 test("MODEL_ALIAS_MIGRATION points old aliases to current Anthropic flagships", () => {
-  assert.equal(MODEL_ALIAS_MIGRATION["haiku"], "claude-haiku-4-5");
+  assert.equal(MODEL_ALIAS_MIGRATION["haiku"], "claude-haiku-5-5");
   assert.equal(MODEL_ALIAS_MIGRATION["sonnet"], "claude-sonnet-5-5");
   assert.equal(MODEL_ALIAS_MIGRATION["opus"], "claude-opus-5-5");
   assert.equal(MODEL_ALIAS_MIGRATION["opus[1m]"], "claude-opus-5-5");

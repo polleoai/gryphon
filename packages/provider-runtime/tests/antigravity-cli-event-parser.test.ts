@@ -255,19 +255,22 @@ test("_buildArgs forwards Antigravity's OWN model vocabulary untouched", () => {
   }
 });
 
-test("_buildArgs adds --effort alongside --model only when options.effort is explicitly set", () => {
-  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash", effort: "medium" });
-  const args = p._buildArgs("hello");
-  const modelIdx = args.indexOf("--model");
-  assert.ok(modelIdx >= 0);
-  assert.equal(args[modelIdx + 1], "gemini-3.8-flash");
-  const effortIdx = args.indexOf("--effort");
-  assert.ok(effortIdx >= 0, "--effort should be present when options.effort is set");
-  assert.equal(args[effortIdx + 1], "medium");
+// agy 1.5.9 (2026-11-16) names effort in the model id and rejects --effort
+// for Gemini: "--effort is not supported for model gemini-3.8-flash".
+test("_buildArgs sends effort as agy's model suffix and never --effort", () => {
+  for (const [effort, id] of [["low", "gemini-3.8-flash-low"], ["medium", "gemini-3.8-flash-medium"], ["high", "gemini-3.8-flash-high"], [undefined, "gemini-3.8-flash-medium"], ["max", "gemini-3.8-flash-medium"]]) {
+    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash", effort });
+    const args = p._buildArgs("hello");
+    assert.equal(args[args.indexOf("--model") + 1], id, String(effort));
+    assert.equal(args.indexOf("--effort"), -1, `no --effort for ${effort}`);
+    assert.equal(p.resolvedModel, "gemini-3.8-flash", "pricing/labels use the registry id");
+  }
 });
 
-test("_buildArgs never invents a default --effort when options.effort is unset", () => {
-  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "gemini-3.8-flash" });
+test("_buildArgs never sends --effort, even with a non-Gemini model id and an effort set", () => {
+  // claude-sonnet-4-6 matches FOREIGN_MODEL_RE, so it is coerced to the agy
+  // Gemini default (unchanged behaviour); the point here is: no --effort.
+  const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: "claude-sonnet-4-6", effort: "high" });
   const args = p._buildArgs("hello");
   assert.equal(args.indexOf("--effort"), -1);
 });
@@ -276,11 +279,12 @@ test("_buildArgs never invents a default --effort when options.effort is unset",
 // in the registry. Registry ids it rejects must coerce to the agy default;
 // ids outside the registry are agy vocabulary and must pass through.
 test("_buildArgs coerces registry ids agy rejects to the agy default", () => {
-  for (const rejected of ["gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]) {
-    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: rejected });
+  // gemini-3.7-flash was the Antigravity default until agy 1.5.9 dropped it.
+  for (const rejected of ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-pro-preview", "gemini-2.5-flash"]) {
+    const p = new AntigravityCliProvider("/bin/agy", "/tmp/vault", { model: rejected, effort: "high" });
     const args = p._buildArgs("hello");
-    assert.equal(args[args.indexOf("--model") + 1], "gemini-3.7-flash", `${rejected} must not reach agy`);
-    assert.equal(p.resolvedModel, "gemini-3.7-flash", "resolvedModel agrees with the spawn");
+    assert.equal(args[args.indexOf("--model") + 1], "gemini-3.8-flash-high", `${rejected} must not reach agy`);
+    assert.equal(p.resolvedModel, "gemini-3.8-flash", "resolvedModel agrees with the spawn");
   }
 });
 

@@ -158,37 +158,6 @@ declare const MODELS: ({
     coldStartMs?: undefined;
     isDefault?: undefined;
     codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    dropdown: {
-        label: string;
-        desc: string;
-    };
-    isDefault: boolean;
-    antigravityCliSupported: boolean;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    antigravityCliSupported: boolean;
-    dropdown?: undefined;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    isDefault?: undefined;
-    codexCliSupported?: undefined;
 })[];
 declare const VENDOR_FALLBACK_PRICING: Record<string, Record<string, number>>;
 declare const CROSS_VENDOR_ALIASES: Record<string, Record<string, string>>;
@@ -338,37 +307,6 @@ declare function allModels(): ({
     coldStartMs?: undefined;
     isDefault?: undefined;
     codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    dropdown: {
-        label: string;
-        desc: string;
-    };
-    isDefault: boolean;
-    antigravityCliSupported: boolean;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    antigravityCliSupported: boolean;
-    dropdown?: undefined;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    isDefault?: undefined;
-    codexCliSupported?: undefined;
 })[];
 declare function modelsByVendor(vendor: string): ({
     id: string;
@@ -510,37 +448,6 @@ declare function modelsByVendor(vendor: string): ({
         desc: string;
     };
     antigravityCliSupported: boolean;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    isDefault?: undefined;
-    codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    dropdown: {
-        label: string;
-        desc: string;
-    };
-    isDefault: boolean;
-    antigravityCliSupported: boolean;
-    contextTokens?: undefined;
-    coldStartMs?: undefined;
-    codexCliSupported?: undefined;
-} | {
-    id: string;
-    vendor: string;
-    pricing: {
-        input: number;
-        output: number;
-        cached_input: number;
-    };
-    antigravityCliSupported: boolean;
-    dropdown?: undefined;
     contextTokens?: undefined;
     coldStartMs?: undefined;
     isDefault?: undefined;

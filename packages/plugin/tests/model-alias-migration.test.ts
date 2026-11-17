@@ -114,6 +114,26 @@ test("_migrateRetiredModels is idempotent", () => {
   assert.deepEqual(migrateRetired(settings), [], "second load changes nothing");
 });
 
+test("_migrateRetiredModels moves Fable 5.1 and Haiku 4.5 to 5.2 / 5.5, in model and fallbackModel, once", () => {
+  // 2026-11: both left the dropdown when their successors shipped.
+  for (const [from, to] of [
+    ["claude-fable-5-1", "claude-fable-5-2"],
+    ["claude-haiku-4-5", "claude-haiku-5-5"],
+  ]) {
+    const settings = { model: from, fallbackModel: from };
+    assert.deepEqual(migrateRetired(settings), [
+      { key: "model", from, to },
+      { key: "fallbackModel", from, to },
+    ]);
+    assert.equal(settings.model, to);
+    assert.equal(settings.fallbackModel, to);
+    assert.ok(MODELS.some((m) => m.value === to), `${to} must be selectable`);
+    assert.deepEqual(migrateRetired(settings), [], `second load changes nothing for ${from}`);
+    assert.equal(settings.model, to);
+    assert.equal(settings.fallbackModel, to);
+  }
+});
+
 test("_migrateRetiredModels leaves unknown and empty ids alone (forward-compat)", () => {
   const settings = { model: "claude-future-9-9", fallbackModel: "" };
   assert.deepEqual(migrateRetired(settings), []);

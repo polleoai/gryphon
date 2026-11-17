@@ -214,12 +214,12 @@ test("partial line stays in buffer until newline arrives", () => {
 // ─────────────────────────────────────────────────────────────────
 
 test("_buildArgs constructs fresh-session args without resume (mode → sandbox is 1-for-1)", () => {
-  // Use a Codex-CLI-supported model id (gpt-5.4) — Codex with ChatGPT-
-  // account auth rejects API-only ids like gpt-5 / gpt-5-mini at request
-  // time. Empirically supported set: gpt-5.5 / gpt-5.4 / gpt-5.4-mini.
-  // See pricing/openai.js CODEX_CLI_SUPPORTED_MODELS.
+  // Use a Codex-CLI-supported model id (gpt-5.6-luna) — Codex with
+  // ChatGPT-account auth rejects ids outside its catalog at request time.
+  // Codex 0.145's catalog: gpt-5.6-terra / gpt-5.6-luna.
+  // See pricing/openai.ts CODEX_CLI_SUPPORTED_MODELS.
   const p = new CodexProvider("/bin/codex", "/tmp/vault", {
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
     permissionMode: "default",
   });
   const args = p._buildArgs("hello");
@@ -227,7 +227,7 @@ test("_buildArgs constructs fresh-session args without resume (mode → sandbox 
     "exec", "--json", "--skip-git-repo-check",
     "--sandbox", "workspace-write",
     "-C", "/tmp/vault",
-    "-m", "gpt-5.4",
+    "-m", "gpt-5.6-luna",
     "--", "hello",
   ]);
 });
@@ -271,12 +271,12 @@ test("_buildArgs constructs resume args with raw thread_id (prefix stripped) and
 test("_buildArgs resume + model: -m IS valid on resume (mid-conversation model switch)", () => {
   const p = new CodexProvider("/bin/codex", "/tmp", {
     resumeSessionId: "codex-cli-abc",
-    model: "gpt-5.4",
+    model: "gpt-5.6-luna",
   });
   const args = p._buildArgs("hello");
   const idx = args.indexOf("-m");
   assert.notEqual(idx, -1, "-m is allowed on resume");
-  assert.equal(args[idx + 1], "gpt-5.4");
+  assert.equal(args[idx + 1], "gpt-5.6-luna");
 });
 
 test("_buildArgs accepts raw (un-prefixed) resumeSessionId for back-compat", () => {

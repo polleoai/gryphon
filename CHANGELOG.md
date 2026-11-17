@@ -4,6 +4,25 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.13.0] — 2026-11-16
+
+### New
+
+- **Claude Fable 5.2** is in the model menu: the most capable Claude, and cheaper than Fable 5.1.
+- **Claude Haiku 5.5** is in the model menu: the fastest and cheapest Claude, now reading up to 1M tokens (Haiku 4.5 read 200K).
+
+### Changes
+
+- **Older versions are replaced.** Fable 5.1 and Haiku 4.5 leave the model menu. If you'd picked one of them, as your model or your fallback model, Gryphon switches you to Fable 5.2 or Haiku 5.5 the next time it loads. The default model is still Claude Sonnet 5.5.
+- **"Test key"** for an Anthropic API key now checks the key with Haiku 5.5.
+- **For apps that install Gryphon's npm packages:** the packages no longer list `undici`. Gryphon stopped using it, and the version they named had security advisories, including a certificate-check bypass. The plugin you install in Obsidian never included it. Gryphon's development tools are also updated to clear new advisories.
+
+### Fixes
+
+- **Antigravity works again.** The Antigravity command-line tool updated itself (to 1.5.9) and stopped accepting the model Gryphon asked for, Gemini 3.7 Flash, and the way Gryphon passed the effort level. Every Antigravity request failed, including in Gryphon 2.12.6. Gryphon now uses Gemini 3.8 Flash with Antigravity, at the effort level you pick, and moves you to it automatically if you'd chosen Gemini 3.7 Flash.
+- **Codex: older model choices no longer fail.** The Codex command-line tool no longer offers GPT-5.5, GPT-5.4 or GPT-5.4 mini. If you'd pinned one of them, Gryphon now uses GPT-5.6 Terra instead of failing.
+- **Structured (JSON) answers with an Anthropic API key work again** on Sonnet 5.5, Opus 5.5 and Fable 5.2, where Anthropic had started refusing the request. If the model answers in plain text instead, Gryphon asks it once more before reporting an error.
+
 ## [2.12.6] — 2026-10-22
 
 No change in how Gryphon works inside Obsidian: the plugin is byte-for-byte the same as 2.12.5.

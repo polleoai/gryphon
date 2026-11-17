@@ -1,7 +1,7 @@
 {
   "packages": {
     "@polleoai/gryphon-protect": {
-      "version": "2.12.6",
+      "version": "2.13.0",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "d3a8d53099ab0641fc5fefdc417d8f0533a462360d0282a012a630bb1e31a39f",
@@ -65,11 +65,11 @@
         "dist/untrusted-framing.js": "ef732d085b86f391ee25919865d59e99615499ee85639861871ac29887c11bcb",
         "dist/win-spawn.d.ts": "d76159da303d2bbf8bd6c3936a4fe91577ef3e546ec3ae6015841a92208da5a0",
         "dist/win-spawn.js": "8610543385d3db16e1797b42b4f6db3fd7602ac545517e9b1c5c0c99417483a5",
-        "package.json": "4e6cccc3fe04450f450d74316c30958d907c7deaff5d6c35303d6c017777ad3f"
+        "package.json": "815a0a9e37d9c1460d30bee50e18862066974f8ff2d14b3ae71df471c6724345"
       }
     },
     "@polleoai/gryphon-provider-config": {
-      "version": "2.12.6",
+      "version": "2.13.0",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "e768f863b5ea84b2c6f5f67193654d14f75e878c08f33181fe40942d981596ca",
@@ -79,17 +79,17 @@
         "dist/index.js": "f0cba664c82ec4e9a49a7132c6b2579883b93678d2d915235af153de60a163dc",
         "dist/pricing/anthropic.d.ts": "babfb297225ec4242596d9593bdac404a830de87172d913efeb686ae075d8d9b",
         "dist/pricing/anthropic.js": "d4d61b9305cdab43d26913de2c2f3b71772b2de755de55e5cfc5dc3859f9493e",
-        "dist/pricing/google.d.ts": "03f860e09a2f304b75f7312861202200b461e50bcb58060a177ce89619db7d05",
-        "dist/pricing/google.js": "ed6a7bff851f1befcd23335dd7f5b9e407421552755b47bf55eb925b9993f49a",
+        "dist/pricing/google.d.ts": "a31effe2d6a195c8988620c1af5febced741e2d09479aefa5125581dfb830690",
+        "dist/pricing/google.js": "9ab503ee557f9b7cf060ca40064fa4565ac160939111642d2ed8f2d6073c556f",
         "dist/pricing/openai.d.ts": "bdd59c01cc16f27b450c73590413b747ccf73d4164f5b4cf5e07e535d670d471",
         "dist/pricing/openai.js": "4684d071d6029a1eddb1335a151ba97d18e9cb58acece56638b14cc3871b69b7",
-        "dist/registry.d.ts": "deff477f5d5b9a04e2c54c32bf2987c68d77b50a993723d688447f668cd12ffe",
-        "dist/registry.js": "ca3e7e216161cb61092f102973cc4ea9aa01b98e8a8d64d0294fc19a88eb30f4",
-        "package.json": "91667de609dc2cdb1254e27599d0e43ac9c6c476a960292ee6c07d6c8e614ace"
+        "dist/registry.d.ts": "e228ee155d237b48c13ff74fa46f78f46b5b2a5eb4ec0d56bead4ec1fa960580",
+        "dist/registry.js": "a95d6c772b0841d95d097f906682d7a3158637a23f5210bf3906b7b8981caa76",
+        "package.json": "e6c624e306083d42f0d509b80f57b57ee7b24c7e343500e424d2549aaac00a8b"
       }
     },
     "@polleoai/gryphon-provider-runtime": {
-      "version": "2.12.6",
+      "version": "2.13.0",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "4902ea9795cd5b24e2061b87f2060aa4c951847ffc2b5b16c353293c9a7745be",
@@ -129,9 +129,9 @@
         "dist/provider-interface.d.ts": "b8f03c92303226ef3c144573e5f8f3d13ae3ac5211bdcb9b763895b4ff79c06e",
         "dist/provider-interface.js": "77d7cda786073bf8e0aec92df0389651a2517292ae39df666a631201c2fedd23",
         "dist/providers/anthropic-api/anthropic-api.d.ts": "5044740ab86bcbd0ec2df1636539526695f746d98eb23a83ac15fcae47f76573",
-        "dist/providers/anthropic-api/anthropic-api.js": "ee1372d7f5d928995813fc13bbb304f4c65303c07969c7bdf8ea0bf5d315da3e",
+        "dist/providers/anthropic-api/anthropic-api.js": "4be05ce330e1403a824306386523a270c3f7bcb31cc1614544ef72a463c9c051",
         "dist/providers/anthropic-api/tool-loop.d.ts": "d49c7778c5cdff39d713043e7f3f6080cf10f2f1e84aedfea271edd69d794375",
-        "dist/providers/anthropic-api/tool-loop.js": "fe427dd98132ab5d97f93a90a75a7f59ed5b701e7d60343aad653bfcc159c39e",
+        "dist/providers/anthropic-api/tool-loop.js": "83e60d8898f0c724d8bdcf5581de64ccc08bd7f16eaf430aff7566b1fa1ff832",
         "dist/providers/anthropic-api/tools/bash.d.ts": "dcbf21cce07c8cfc2bd9db47c18be9ea279951f4fd8aa031f8538ada1cf61fca",
         "dist/providers/anthropic-api/tools/bash.js": "40d5a384e01b1edaabf6451cfcee7ee716a8e2db3cc80e9b917a81ce3e7790c9",
         "dist/providers/anthropic-api/tools/edit.d.ts": "40b4359455042f9c14e0ade9c3c412cadde88085c9e2359fc7e43beb0631d9f6",
@@ -150,10 +150,10 @@
         "dist/providers/anthropic-api/tools/web-search.js": "cd3623069c1cb83bc3f945b85f92a7b1e72c633d1a6c08ce3c16cc39cb837c8e",
         "dist/providers/anthropic-api/tools/write.d.ts": "aaa509c21f8949143ef95bc1d27944afcdbbb0ca296d2f471855684cbfbb47a2",
         "dist/providers/anthropic-api/tools/write.js": "fdecda7ee5d56ff44f1ef47f00901e735f03e03a93d2364f6301866151fa4cc2",
-        "dist/providers/antigravity-cli/antigravity-cli.d.ts": "e17fa04c2e76a74870d2457f76dba51d5a06e155cdf3f04fffa3a41a21dda49c",
-        "dist/providers/antigravity-cli/antigravity-cli.js": "3d43db0e6ca60faede818ccc40921a7168143324451b22f147aa8a041866cf4c",
-        "dist/providers/antigravity-cli/test-cli.d.ts": "0b83d4bbea61414a6128a7f552291a612b4cd2ad0f6881cb81da20ab587cf34e",
-        "dist/providers/antigravity-cli/test-cli.js": "693ad67c781c29c485997e58e1ff1792d697fd6ee5fb87688b4ab471b9cdbab3",
+        "dist/providers/antigravity-cli/antigravity-cli.d.ts": "c4a5e82500d7505d0b2e58c2782213dad0f7edd1d3e6f3a4c7d5b6766d1e9673",
+        "dist/providers/antigravity-cli/antigravity-cli.js": "f4f7515df9e9aef968cf42735841a4da55c86e9ef6d6c0c33dfa66ffdbab9be5",
+        "dist/providers/antigravity-cli/test-cli.d.ts": "32dd49c22c3143a76d0f7a4b7971cdad0852249dd644207414cba8363483972a",
+        "dist/providers/antigravity-cli/test-cli.js": "b7aa484177d8ba87cb42949a9ab8a7889cbbdc458b7e2116b7ef4e26a182ac82",
         "dist/providers/claude-code/claude-code.d.ts": "a892a22a1696b23a6c355844012803987d4b194a5da62a6701696c785be000d3",
         "dist/providers/claude-code/claude-code.js": "f9314173aa99218fd08998cf25a5a2993eca386a6abfcc04ec3e4ab36f1b5849",
         "dist/providers/claude-code/hook-settings-builder.d.ts": "15daf8582ff204a55805495ab58cc7e3c9c4883950874351ed47198e061f367e",
@@ -197,11 +197,11 @@
         "dist/utils.d.ts": "a06e215c7ad9d6fbb70aee965decdafb7a3274744d24062c155238085cc07aaf",
         "dist/utils.js": "c99984fac3930a233a545ca06d3eb15dd6e84e95e4fb482e080117764896b012",
         "index.d.ts": "c214b71cdb58939337db9ec3d9cbdb82b70d36fdd993ea59b041479efb4f785f",
-        "package.json": "2200cb41fcc1beb0da46b2dc50f369fedf4756ec081c270091805343a9bea4b5"
+        "package.json": "11a0fbe16dd2777e9a97fdcfe36ba4e8c67b99dfc30eb469a3df4f0ea266cd8f"
       }
     },
     "@polleoai/gryphon-plugin": {
-      "version": "2.12.6",
+      "version": "2.13.0",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "0b2792944c32077d6c5d9d37d80c519886c73462fd8d65eadc6dae67ceea9d1c",
@@ -224,7 +224,7 @@
         "dist/obsidian-host-adapter.d.ts": "ac1070488d4d90392c04bbe2d18a6a479c48516ea782efa0990d8e261d1fe1ca",
         "dist/obsidian-host-adapter.js": "0237679c41d28cc66579125b02df09f5896436cce6287b6bff623bee80cb416c",
         "dist/plugin.d.ts": "902448d745abae20da123af7dcc3b07a6302762b11f55f44e44cf0a6ebb410a8",
-        "dist/plugin.js": "e90c4dfe972437d24d9907e7ef01294749f0279fd07058b822cff8a5b0ff2ea8",
+        "dist/plugin.js": "b47506bf3adfcf95b10173b3fc77b20deccd236220cd5370b6ba8b21ba9a9bf3",
         "dist/rest-api-policy.d.ts": "3243ad9a52236af3f82ea31f531b70bf213e11e9409161addb1cbd6cd177e44f",
         "dist/rest-api-policy.js": "4137bcaba10068c6f3523acd7daeeeb2c5c2827caf2725fa4b301793bc0131e8",
         "dist/security-settings.d.ts": "9405138f3cc11134611be0be77ec6cf9ff16a06cce9882fcf915e869c9e862f6",
@@ -235,7 +235,7 @@
         "dist/settings-view.js": "b1ac92267559f9c97136f00a81cc769dddaa8879126ee78e5b136a32b88a9c11",
         "dist/skills.d.ts": "966f09e1df3fcce30c12896c802010ffccfad91da0870b5503c9bf0a5d2ad9d5",
         "dist/skills.js": "44ee9757b10f9f2b6b47ddab44317b7a60ae34485e1937fb2bcee2eb55dba307",
-        "package.json": "44902bb36b07bb1b54ce961d5a873e3fb0d1aae53d55184f225ae4b9a6d52847",
+        "package.json": "2da7701e61f8c40a2837532215cfdd55133292e19d0a51f86510b2bbe1a1b743",
         "styles.css": "937416025f549e7c342bbe2ffd553f5e264ce74e2fee9fa7d275f112bcfff107"
       }
     }

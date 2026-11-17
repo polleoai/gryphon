@@ -146,7 +146,28 @@ function getModelDropdownOptions() {
 // `antigravityCliSupported`). The antigravity-cli provider reuses this
 // vendor's dropdown; this is its filter, mirroring Codex's in pricing/openai.
 const ANTIGRAVITY_CLI_SUPPORTED_MODELS = registry.antigravityCliSupportedModels();
-const ANTIGRAVITY_CLI_DEFAULT_MODEL = DEFAULT_MODEL;
+// The vendor default when agy serves it; otherwise the first agy-supported
+// model in registry order (agy 1.5.9 dropped gemini-3.7-flash, the vendor
+// default, so the Antigravity default is gemini-3.8-flash).
+const ANTIGRAVITY_CLI_DEFAULT_MODEL: string = ANTIGRAVITY_CLI_SUPPORTED_MODELS.has(DEFAULT_MODEL)
+  ? DEFAULT_MODEL
+  : ([...ANTIGRAVITY_CLI_SUPPORTED_MODELS][0] ?? DEFAULT_MODEL);
+
+// agy (1.5.9+) names effort in the model id and rejects `--effort` for the
+// Gemini models Gryphon offers. Gryphon's efforts map onto agy's suffixes;
+// no effort means agy's own middle tier.
+const ANTIGRAVITY_CLI_EFFORTS = new Set(["low", "medium", "high"]);
+
+/**
+ * The `--model` value for an agy spawn of a resolved agy-supported model id
+ * at a Gryphon effort: `gemini-3.8-flash` + "high" → `gemini-3.8-flash-high`.
+ * Ids outside the agy-supported set (agy's own vocabulary) pass through.
+ */
+function antigravityCliSpawnModel(modelId: string, effort?: string | null): string {
+  if (!ANTIGRAVITY_CLI_SUPPORTED_MODELS.has(modelId)) return modelId;
+  const e = effort && ANTIGRAVITY_CLI_EFFORTS.has(effort) ? effort : "medium";
+  return `${modelId}-${e}`;
+}
 
 function getAntigravityCliModelDropdownOptions() {
   return getModelDropdownOptions().filter((opt: { id: string; label: string }) =>
@@ -172,6 +193,7 @@ export {
   ANTIGRAVITY_CLI_DEFAULT_MODEL,
   getAntigravityCliModelDropdownOptions,
   coerceToAntigravityCliModel,
+  antigravityCliSpawnModel,
   MODEL_PRICES,
   MODEL_ALIAS,
   DEFAULT_MODEL,
