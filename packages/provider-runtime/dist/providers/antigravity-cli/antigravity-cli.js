@@ -169,7 +169,7 @@ const utils_1 = require("../../utils");
 const gryphon_protect_2 = require("@polleoai/gryphon-protect");
 const gryphon_provider_config_2 = require("@polleoai/gryphon-provider-config");
 const cli_structured_output_1 = require("../../cli-structured-output");
-const budget_error_1 = require("../../budget-error");
+const budget_guard_1 = require("../../budget-guard");
 const host_adapter_1 = require("../../host-adapter");
 const { computeCost, coerceToAntigravityCliModel, antigravityCliSpawnModel } = gryphon_provider_config_1.pricing.google;
 // The registry's default model id (typed loosely upstream).
@@ -524,26 +524,16 @@ class AntigravityCliProvider {
             this.onDone = null;
             const loop = async () => {
                 let lastError = null;
-                const priorCallCumulative = this.lastCumulativeCost;
+                let callSpent = 0; // #53: sum of this send()\'s own turn costs
                 try {
                     for (let attempt = 1; attempt <= maxRetries; attempt++) {
                         const turnResult = await this._spawnTurn(enrichedPrompt);
                         if (this._spawnOverride)
-                            this.lastCumulativeCost = turnResult.cumulativeCost || 0;
+                            this.lastCumulativeCost = (0, budget_guard_1.nextCumulative)(this.lastCumulativeCost, turnResult);
                         if (options && typeof options.maxUsdBudget === "number") {
-                            const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
-                            if (cumCost === null) {
-                                if (this.hostAdapter && this.hostAdapter.notify)
-                                    this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
-                            }
-                            const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-                            if (perCallSpent >= options.maxUsdBudget) {
-                                throw new budget_error_1.BudgetExceededError({
-                                    budget: options.maxUsdBudget,
-                                    spent: perCallSpent,
-                                    lastTurnCost: turnResult.cost || 0,
-                                });
-                            }
+                            // Issue #53: an unknown cost stops the call (never counted as $0).
+                            callSpent = (0, budget_guard_1.checkCliBudget)(options.maxUsdBudget, callSpent, turnResult, (m) => { if (this.hostAdapter && this.hostAdapter.notify)
+                                this.hostAdapter.notify(m, { level: "warn" }); });
                         }
                         try {
                             // structuredOutput was checked truthy before the loop started.
@@ -578,23 +568,12 @@ class AntigravityCliProvider {
         }
         // Plain (non-structured-output) path.
         if (options && typeof options.maxUsdBudget === "number") {
-            const priorCallCumulative = this.lastCumulativeCost;
             return this._spawnTurn(prompt).then((result) => {
                 if (this._spawnOverride)
-                    this.lastCumulativeCost = result.cumulativeCost || 0;
-                const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
-                if (cumCost === null) {
-                    if (this.hostAdapter && this.hostAdapter.notify)
-                        this.hostAdapter.notify(`[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`, { level: "warn" });
-                }
-                const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-                if (perCallSpent >= options.maxUsdBudget) {
-                    throw new budget_error_1.BudgetExceededError({
-                        budget: options.maxUsdBudget, // checked as a number before .then
-                        spent: perCallSpent,
-                        lastTurnCost: result.cost || 0,
-                    });
-                }
+                    this.lastCumulativeCost = (0, budget_guard_1.nextCumulative)(this.lastCumulativeCost, result);
+                // Issue #53: an unknown cost stops the call (never counted as $0).
+                (0, budget_guard_1.checkCliBudget)(options.maxUsdBudget, 0, result, (m) => { if (this.hostAdapter && this.hostAdapter.notify)
+                    this.hostAdapter.notify(m, { level: "warn" }); });
                 return result;
             });
         }
@@ -972,7 +951,10 @@ class AntigravityCliProvider {
                 candidatesTokenCount: usage.output_tokens || 0,
                 cachedContentTokenCount: usage.cache_read_tokens || 0,
             };
-            const { cost } = computeCost(mappedUsage, this.resolvedModel);
+            // Issue #53: a result without usage (or without an input-token
+            // count) is an unknown cost, never $0.
+            const costUnknown = !(0, budget_guard_1.isKnownCost)(lastResult.usage && lastResult.usage.input_tokens);
+            const cost = costUnknown ? 0 : computeCost(mappedUsage, this.resolvedModel).cost;
             this.lastCumulativeCost += cost;
             this.contextTokens = usage.input_tokens || 0;
             // result.response is the authoritative full text (verified
@@ -984,6 +966,7 @@ class AntigravityCliProvider {
                 text,
                 cost,
                 cumulativeCost: this.lastCumulativeCost,
+                ...(costUnknown ? { costUnknown: true } : {}),
                 sessionId: this.sessionId,
                 duration: typeof lastResult.duration_seconds === "number"
                     ? Math.round(lastResult.duration_seconds * 1000)

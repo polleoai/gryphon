@@ -46,7 +46,7 @@ import type { Result, SendOptions, StreamMessageType } from "../../types";
 import { buildEnhancedPath, resolveCliBinary } from "../../utils";
 import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
 import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
-import { BudgetExceededError } from "../../budget-error";
+import { checkCliBudget, nextCumulative, isKnownCost } from "../../budget-guard";
 import { HeadlessHostAdapter } from "../../host-adapter";
 const { computeCost, coerceToVendorModel } = pricing.google;
 // The registry's default model id (typed loosely upstream).
@@ -513,35 +513,21 @@ class GeminiCliProvider {
 
       const loop = async (): Promise<Result> => {
         let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
-        // Snapshot before the retry loop: each failed attempt still costs
-        // money; the per-call cap covers all attempts within this send().
-        const priorCallCumulative = this.lastCumulativeCost;
+        // Each failed attempt still costs money; the per-call cap covers
+        // the sum of all attempts' own costs within this send() (#53).
+        let callSpent = 0; // #53: sum of this send()\'s own turn costs
         try {
           for (let attempt = 1; attempt <= maxRetries; attempt++) {
             const turnResult = await this._spawnTurn(enrichedPrompt);
             // Keep lastCumulativeCost in sync when _spawnOverride is active
             // (the real path updates it in _handleClose; the override bypasses that).
-            if (this._spawnOverride) this.lastCumulativeCost = turnResult.cumulativeCost || 0;
+            if (this._spawnOverride) this.lastCumulativeCost = nextCumulative(this.lastCumulativeCost, turnResult);
             // L5 per-call budget cap (post-turn): CLI subprocess owns its
             // internal loop; we can only check at turn-end. Throw immediately
             // rather than continuing into the structured-output retry loop.
-            // perCallSpent accumulates across retries within this send().
             if (options && typeof options.maxUsdBudget === "number") {
-              const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
-              if (cumCost === null) {
-                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
-                  `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
-                  { level: "warn" },
-                );
-              }
-              const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-              if (perCallSpent >= options.maxUsdBudget) {
-                throw new BudgetExceededError({
-                  budget: options.maxUsdBudget,
-                  spent: perCallSpent,
-                  lastTurnCost: turnResult.cost || 0,
-                });
-              }
+              // Issue #53: an unknown cost stops the call (never counted as $0).
+              callSpent = checkCliBudget(options.maxUsdBudget, callSpent, turnResult, (m) => { if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(m, { level: "warn" }); });
             }
             try {
               // structuredOutput was checked truthy before the loop started.
@@ -579,32 +565,16 @@ class GeminiCliProvider {
     // Plain (non-structured-output) path.
     // L5 per-call budget cap (post-turn): CLI subprocess owns its internal
     // loop; we can only check at turn-end after the spawn returns.
-    // Snapshot before the call so multi-send works correctly: the CLI
-    // reports a monotonically-growing cumulativeCost (session total), but
-    // maxUsdBudget is a PER-CALL cap. Using the delta avoids falsely
-    // throwing on call 2 when (session total > budget) even though
-    // (this call's cost < budget).
+    // maxUsdBudget is a PER-CALL cap, measured by this call's own turn
+    // cost (#53) — not by the session total, which restarts at 0 when the
+    // CLI process is replaced.
     if (options && typeof options.maxUsdBudget === "number") {
-      const priorCallCumulative = this.lastCumulativeCost;
       return this._spawnTurn(prompt).then((result: Result) => {
         // Keep lastCumulativeCost in sync when _spawnOverride is active
         // (the real path updates it in _handleClose; the override bypasses that).
-        if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
-        const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
-        if (cumCost === null) {
-          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
-            `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
-            { level: "warn" },
-          );
-        }
-        const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= (options.maxUsdBudget as number)) {
-          throw new BudgetExceededError({
-            budget: options.maxUsdBudget as number, // checked as a number before .then
-            spent: perCallSpent,
-            lastTurnCost: result.cost || 0,
-          });
-        }
+        if (this._spawnOverride) this.lastCumulativeCost = nextCumulative(this.lastCumulativeCost, result);
+        // Issue #53: an unknown cost stops the call (never counted as $0).
+        checkCliBudget(options.maxUsdBudget as number, 0, result, (m) => { if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(m, { level: "warn" }); });
         return result;
       });
     }
@@ -943,13 +913,16 @@ class GeminiCliProvider {
         candidatesTokenCount: this._lastStats.output_tokens || 0,
         cachedContentTokenCount: this._lastStats.cached || 0,
       };
-      const { cost } = computeCost(mappedUsage, this.resolvedModel);
+      // Issue #53: stats without an input-token count is an unknown cost.
+      const costUnknown = !isKnownCost(this._lastStats.input_tokens);
+      const cost = costUnknown ? 0 : computeCost(mappedUsage, this.resolvedModel).cost;
       this.lastCumulativeCost += cost;
 
       const result: Result = {
         text: this._turnText || "",
         cost,
         cumulativeCost: this.lastCumulativeCost,
+        ...(costUnknown ? { costUnknown: true } : {}),
         sessionId: this.sessionId,
         duration: this._lastStats.duration_ms || 0,
         contextTokens: this.contextTokens,
@@ -997,6 +970,8 @@ class GeminiCliProvider {
           text: this._turnText || "",
           cost: 0,
           cumulativeCost: this.lastCumulativeCost,
+          // Issue #53: the turn ran but reported no stats — cost unknown.
+          costUnknown: true,
           sessionId: null,
           duration: 0,
           contextTokens: this.contextTokens,

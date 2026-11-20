@@ -28,6 +28,7 @@ import {
   executeTool,
 } from "../anthropic-api/tools/tool-registry";
 import { BudgetExceededError } from "../../budget-error";
+import { isKnownCost, usageKnown } from "../../budget-guard";
 
 type ChatMessageParam = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 type OpenAIChatStream = ReturnType<OpenAI["chat"]["completions"]["stream"]>;
@@ -188,6 +189,17 @@ async function runOpenAIToolLoop({
       // The `as number` casts below are compile-time only: an undefined
       // budget still compares false at runtime, exactly as before.
       const iterCost = ctx.computeIterationCost(u);
+      // Issue #53: a response without usage (or a cost that isn't a finite,
+      // non-negative number) is an unknown cost. It stops a budgeted call
+      // instead of counting as $0.
+      if (typeof ctx.maxUsdBudget === "number" && (!usageKnown(u, "prompt_tokens") || !isKnownCost(iterCost))) {
+        throw new BudgetExceededError({
+          budget: ctx.maxUsdBudget,
+          spent: (ctx.priorCumulativeCost || 0) + (ctx._loopCost || 0),
+          lastTurnCost: 0,
+          costUnknown: true,
+        });
+      }
       if (!ctx._loopCost) ctx._loopCost = 0;
       ctx._loopCost += iterCost;
       const callCumulative = (ctx.priorCumulativeCost || 0) + ctx._loopCost;

@@ -1,7 +1,7 @@
 {
   "packages": {
     "@polleoai/gryphon-protect": {
-      "version": "2.13.0",
+      "version": "2.13.1",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "d3a8d53099ab0641fc5fefdc417d8f0533a462360d0282a012a630bb1e31a39f",
@@ -65,11 +65,11 @@
         "dist/untrusted-framing.js": "ef732d085b86f391ee25919865d59e99615499ee85639861871ac29887c11bcb",
         "dist/win-spawn.d.ts": "d76159da303d2bbf8bd6c3936a4fe91577ef3e546ec3ae6015841a92208da5a0",
         "dist/win-spawn.js": "8610543385d3db16e1797b42b4f6db3fd7602ac545517e9b1c5c0c99417483a5",
-        "package.json": "815a0a9e37d9c1460d30bee50e18862066974f8ff2d14b3ae71df471c6724345"
+        "package.json": "0246dfa15d81f48f2308c27fa28cbd2e04471e088627918befe6760c8bf298f9"
       }
     },
     "@polleoai/gryphon-provider-config": {
-      "version": "2.13.0",
+      "version": "2.13.1",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "e768f863b5ea84b2c6f5f67193654d14f75e878c08f33181fe40942d981596ca",
@@ -85,16 +85,18 @@
         "dist/pricing/openai.js": "4684d071d6029a1eddb1335a151ba97d18e9cb58acece56638b14cc3871b69b7",
         "dist/registry.d.ts": "e228ee155d237b48c13ff74fa46f78f46b5b2a5eb4ec0d56bead4ec1fa960580",
         "dist/registry.js": "a95d6c772b0841d95d097f906682d7a3158637a23f5210bf3906b7b8981caa76",
-        "package.json": "e6c624e306083d42f0d509b80f57b57ee7b24c7e343500e424d2549aaac00a8b"
+        "package.json": "5ee6d635c5e937f8370565a46a6e6baf44c1a711cccb1c95a4790ee600f30ba8"
       }
     },
     "@polleoai/gryphon-provider-runtime": {
-      "version": "2.13.0",
+      "version": "2.13.1",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "4902ea9795cd5b24e2061b87f2060aa4c951847ffc2b5b16c353293c9a7745be",
-        "dist/budget-error.d.ts": "26efd84110e6005963f7699c559bd15fd6b20ef0afea571126c5a9e632d99b89",
-        "dist/budget-error.js": "d44fb08169c2382ed5effa7f891cb717481427cd922c512b15e74dec2c384905",
+        "dist/budget-error.d.ts": "57e6d2948db3c54314874b450975b9de826f94c1e9d398acecc3afe16b50a5d9",
+        "dist/budget-error.js": "350e9997962ff193e7f7bce7390092e5cf11db10ee164729509a3e36b344b0c5",
+        "dist/budget-guard.d.ts": "8b9a6078dbfd84b8ae57a19bcf94b4d422cb00cd5f100ff22f23e69ca682f789",
+        "dist/budget-guard.js": "f3a0a8c92df780ddb71d315134c5403ae17126ee3acf017096b81cfcfe2710fd",
         "dist/cli-structured-output.d.ts": "032b8f8c4c389534a8ac1a0a4008cf6bbfe09dbd37905a540d4ac915b68ce824",
         "dist/cli-structured-output.js": "85acda976663e2ac8afa179bd5c2f2641adba08d36482f50dad7e1ff592e6cec",
         "dist/factory.d.ts": "91280e2b64732aced7dad26c56ec8f9ae9a01d1676961b79bc61d94efafb3c8b",
@@ -131,7 +133,7 @@
         "dist/providers/anthropic-api/anthropic-api.d.ts": "5044740ab86bcbd0ec2df1636539526695f746d98eb23a83ac15fcae47f76573",
         "dist/providers/anthropic-api/anthropic-api.js": "4be05ce330e1403a824306386523a270c3f7bcb31cc1614544ef72a463c9c051",
         "dist/providers/anthropic-api/tool-loop.d.ts": "d49c7778c5cdff39d713043e7f3f6080cf10f2f1e84aedfea271edd69d794375",
-        "dist/providers/anthropic-api/tool-loop.js": "83e60d8898f0c724d8bdcf5581de64ccc08bd7f16eaf430aff7566b1fa1ff832",
+        "dist/providers/anthropic-api/tool-loop.js": "5b52e3a770e8e3c7b35674b02b8e06efb05d2ff27b00a2ff40b79bc05229dd4b",
         "dist/providers/anthropic-api/tools/bash.d.ts": "dcbf21cce07c8cfc2bd9db47c18be9ea279951f4fd8aa031f8538ada1cf61fca",
         "dist/providers/anthropic-api/tools/bash.js": "40d5a384e01b1edaabf6451cfcee7ee716a8e2db3cc80e9b917a81ce3e7790c9",
         "dist/providers/anthropic-api/tools/edit.d.ts": "40b4359455042f9c14e0ade9c3c412cadde88085c9e2359fc7e43beb0631d9f6",
@@ -151,11 +153,11 @@
         "dist/providers/anthropic-api/tools/write.d.ts": "aaa509c21f8949143ef95bc1d27944afcdbbb0ca296d2f471855684cbfbb47a2",
         "dist/providers/anthropic-api/tools/write.js": "fdecda7ee5d56ff44f1ef47f00901e735f03e03a93d2364f6301866151fa4cc2",
         "dist/providers/antigravity-cli/antigravity-cli.d.ts": "c4a5e82500d7505d0b2e58c2782213dad0f7edd1d3e6f3a4c7d5b6766d1e9673",
-        "dist/providers/antigravity-cli/antigravity-cli.js": "f4f7515df9e9aef968cf42735841a4da55c86e9ef6d6c0c33dfa66ffdbab9be5",
+        "dist/providers/antigravity-cli/antigravity-cli.js": "22e61b17fac11d3e503f4407ba6b8746e9e6ba55600a0fb263b01245c043aef8",
         "dist/providers/antigravity-cli/test-cli.d.ts": "32dd49c22c3143a76d0f7a4b7971cdad0852249dd644207414cba8363483972a",
         "dist/providers/antigravity-cli/test-cli.js": "b7aa484177d8ba87cb42949a9ab8a7889cbbdc458b7e2116b7ef4e26a182ac82",
         "dist/providers/claude-code/claude-code.d.ts": "a892a22a1696b23a6c355844012803987d4b194a5da62a6701696c785be000d3",
-        "dist/providers/claude-code/claude-code.js": "f9314173aa99218fd08998cf25a5a2993eca386a6abfcc04ec3e4ab36f1b5849",
+        "dist/providers/claude-code/claude-code.js": "289d1ec326adaa3359bf3a443cedb0a135f269065d2a9732606e432d1a646def",
         "dist/providers/claude-code/hook-settings-builder.d.ts": "15daf8582ff204a55805495ab58cc7e3c9c4883950874351ed47198e061f367e",
         "dist/providers/claude-code/hook-settings-builder.js": "540090c30113941f5006e8d9b5aad05677919ddf5270af63550ea9a9d68f2fbc",
         "dist/providers/claude-code/memory-appendix.d.ts": "2c0804adf0d8caba0fbd48768f2422b1e55e9fd97c1d96a6dafdfb0170db5f53",
@@ -165,11 +167,11 @@
         "dist/providers/claude-code/test-cli.d.ts": "d4618eb694f0240ffcd4274f635371c683516cf127e6a482653244af4302e618",
         "dist/providers/claude-code/test-cli.js": "4a1be46b5a5da25cfd7c14351847267cdc61d43a5950b56e61fa7275f41a8cf6",
         "dist/providers/codex-cli/codex-cli.d.ts": "25576140d1154d8906f95cfbf0a407a2f7fee5de9a931e1b0ffd611b62b86d0a",
-        "dist/providers/codex-cli/codex-cli.js": "09ae63f5e227fe802aa3e902ad0335272792c6d91e8fd0ae34d9a6867f49ceb4",
+        "dist/providers/codex-cli/codex-cli.js": "823b2488839097e3825aa0e6835084837d381b0318e4bea80dc8f2de9bee65ca",
         "dist/providers/codex-cli/test-cli.d.ts": "ca7d7612b45a725994f18e02258aa3308cc524748b301503e7296edfb90c3e6a",
         "dist/providers/codex-cli/test-cli.js": "b6af0d1a320844367a4f93899136d528f9c78dd414e5942b0f6ce89ea2512470",
         "dist/providers/gemini-cli/gemini-cli.d.ts": "d65ad3e40488e1d64ba5b5a20e96c1a92002334d0c0c4e914f42516489089e76",
-        "dist/providers/gemini-cli/gemini-cli.js": "30e7e104b49366a81e8845c4c47ee72252d44cb7a76002bebf6b454e6c356192",
+        "dist/providers/gemini-cli/gemini-cli.js": "b1c77ca9903408146bdc8a794646ea9b170d33c813f30bfcc7656a268be71790",
         "dist/providers/gemini-cli/test-cli.d.ts": "af17f0813fc279f5a1c8a226be3aa11ea6c788c31c3d0040996845eed15cd662",
         "dist/providers/gemini-cli/test-cli.js": "efd17c3c48c2c8463f83131ce42b97f722968cb5106f16c88e4d32de008b74ff",
         "dist/providers/google-api/google-api.d.ts": "dd70994300309229f713855b9e412fb82833c0f2f570d101e5b614221e9db27b",
@@ -177,13 +179,13 @@
         "dist/providers/google-api/test-key.d.ts": "7f20f204286b72f4aad298a119d2984d282dc7ddfb008a28643e596f34473e9d",
         "dist/providers/google-api/test-key.js": "2b57e122acf40df6c1b19dfced3ae8428f5a390249413bcb10324bab5b34a2c9",
         "dist/providers/google-api/tool-loop.d.ts": "9085cc2a8318931642e939647a29825fad09433ec2d381351154596fb6399e76",
-        "dist/providers/google-api/tool-loop.js": "7ac280c010034936b9b66f71e659e226fa598f8bc75a1a37d057129a4d459006",
+        "dist/providers/google-api/tool-loop.js": "7e127883ce6854e8db9aa6cebb86fe43ecdb9d63c833293ebb3e3c478438ea70",
         "dist/providers/google-api/tool-schema-translator.d.ts": "2ed378854e2dfb9ab0f4c60c8687f01a3b7740785b3fd9064a752d68e1bf671c",
         "dist/providers/google-api/tool-schema-translator.js": "5e8ed92222ce439bfdc06576a91ea65ee666c7667900a4eb7692090bd3a5c4ec",
         "dist/providers/openai-api/openai-api.d.ts": "18e9a74aad94d6eedf92a9288167829748dab6ad827a5f822cfaf1fa268c52ef",
         "dist/providers/openai-api/openai-api.js": "4ff6860031fd5a9973027ad5181b80abb2a154be86bdb3723ed23ea05f1c0272",
         "dist/providers/openai-api/tool-loop.d.ts": "d6be46e06fd4a889b6de6d17735212b9069710c3cd81fb0bab064bafba9435ad",
-        "dist/providers/openai-api/tool-loop.js": "57c086ec576647f5159b706153ada7e4b215e46f9a14dd120d86b0c64052af97",
+        "dist/providers/openai-api/tool-loop.js": "9e9ae1e305668b3e2906fb2fbf9ee23bdd440a2a4fbab5f5f39d1a8c8df29b5d",
         "dist/providers/openai-api/tool-schema-translator.d.ts": "96a012fefdf65024a09ba37327f9e22eae19a9193c9ded506f69a0ddf00a03f4",
         "dist/providers/openai-api/tool-schema-translator.js": "5e9060cfdfbdbec3c0aa8a65d9621744c644b33293b4225afe5b4a39e8d1f956",
         "dist/readiness.d.ts": "f792580e2318b9b0848415ff6f37155ad825bee65b3cd7370385b2d49b0d290a",
@@ -192,16 +194,16 @@
         "dist/shell-quote.js": "1dd01032545ddc5402f31ea362bcaf184d7707bafaf368d6cf8de77c18d01b14",
         "dist/subprocess-registry.d.ts": "444a4f355acc874bd03bf6ff2743347af8e6fc535d366df3c0a41b1f072b7c44",
         "dist/subprocess-registry.js": "39c18a8ee03962837834a4a73a3679b67d106a036c7f44c57f977c6f85f4171f",
-        "dist/types.d.ts": "3a71f849b56b6a47f000c40f356bf87ae22316abd41a8d4dcad0f958adcd7281",
+        "dist/types.d.ts": "c1a68c5a38ba88ad9b8bd82d1128f6c3a0e8b6ea78dc849b7b69e84daa9160e3",
         "dist/types.js": "5e2c5a11b1e57ba43935a68ad309361c1d91fbafc4c3ffc247d1ac3c8ed36329",
         "dist/utils.d.ts": "a06e215c7ad9d6fbb70aee965decdafb7a3274744d24062c155238085cc07aaf",
         "dist/utils.js": "c99984fac3930a233a545ca06d3eb15dd6e84e95e4fb482e080117764896b012",
         "index.d.ts": "c214b71cdb58939337db9ec3d9cbdb82b70d36fdd993ea59b041479efb4f785f",
-        "package.json": "11a0fbe16dd2777e9a97fdcfe36ba4e8c67b99dfc30eb469a3df4f0ea266cd8f"
+        "package.json": "247b65130e693efdc170390cd2b3fe34f707878dc7dd1636af832104c62f00b1"
       }
     },
     "@polleoai/gryphon-plugin": {
-      "version": "2.13.0",
+      "version": "2.13.1",
       "files": {
         "LICENSE": "3092308facb15267f1a621edd594e169e7d797a7378b4cb1b2a9a5c342a706e5",
         "README.md": "0b2792944c32077d6c5d9d37d80c519886c73462fd8d65eadc6dae67ceea9d1c",
@@ -235,7 +237,7 @@
         "dist/settings-view.js": "b1ac92267559f9c97136f00a81cc769dddaa8879126ee78e5b136a32b88a9c11",
         "dist/skills.d.ts": "966f09e1df3fcce30c12896c802010ffccfad91da0870b5503c9bf0a5d2ad9d5",
         "dist/skills.js": "44ee9757b10f9f2b6b47ddab44317b7a60ae34485e1937fb2bcee2eb55dba307",
-        "package.json": "2da7701e61f8c40a2837532215cfdd55133292e19d0a51f86510b2bbe1a1b743",
+        "package.json": "5dcab915876597e98ac4e90889aff0e6ce42a72f7cb1a271d5c6b7fc45bcb7de",
         "styles.css": "937416025f549e7c342bbe2ffd553f5e264ce74e2fee9fa7d275f112bcfff107"
       }
     }

@@ -28,6 +28,7 @@ exports.serializeToolResultContent = serializeToolResultContent;
 const tool_schema_translator_1 = require("./tool-schema-translator");
 const tool_registry_1 = require("../anthropic-api/tools/tool-registry");
 const budget_error_1 = require("../../budget-error");
+const budget_guard_1 = require("../../budget-guard");
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
 async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, callbacks, }) {
@@ -141,6 +142,17 @@ async function runOpenAIToolLoop({ client, model, systemPrompt, history, ctx, ca
             // The `as number` casts below are compile-time only: an undefined
             // budget still compares false at runtime, exactly as before.
             const iterCost = ctx.computeIterationCost(u);
+            // Issue #53: a response without usage (or a cost that isn't a finite,
+            // non-negative number) is an unknown cost. It stops a budgeted call
+            // instead of counting as $0.
+            if (typeof ctx.maxUsdBudget === "number" && (!(0, budget_guard_1.usageKnown)(u, "prompt_tokens") || !(0, budget_guard_1.isKnownCost)(iterCost))) {
+                throw new budget_error_1.BudgetExceededError({
+                    budget: ctx.maxUsdBudget,
+                    spent: (ctx.priorCumulativeCost || 0) + (ctx._loopCost || 0),
+                    lastTurnCost: 0,
+                    costUnknown: true,
+                });
+            }
             if (!ctx._loopCost)
                 ctx._loopCost = 0;
             ctx._loopCost += iterCost;

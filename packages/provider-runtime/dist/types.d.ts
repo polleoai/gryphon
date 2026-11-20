@@ -14,6 +14,7 @@ export interface Result {
     text: string;
     cost: number;
     cumulativeCost: number;
+    costUnknown?: boolean;
     sessionId: string | null;
     duration: number;
     contextTokens: number;

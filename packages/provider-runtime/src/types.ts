@@ -24,6 +24,10 @@ export interface Result {
   text: string;
   cost: number;            // USD this turn
   cumulativeCost: number;  // USD across the session
+  // Issue #53: true when the provider couldn't read this turn's cost (no
+  // usage / cost field). cost is then 0 and cumulativeCost the last known
+  // total; a budgeted call stops (BudgetExceededError, costUnknown: true).
+  costUnknown?: boolean;
   sessionId: string | null;
   duration: number;        // ms
   contextTokens: number;

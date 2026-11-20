@@ -37,6 +37,7 @@ import {
   executeTool,
 } from "../anthropic-api/tools/tool-registry";
 import { BudgetExceededError } from "../../budget-error";
+import { isKnownCost, usageKnown } from "../../budget-guard";
 
 type GeminiStream = Awaited<ReturnType<GoogleGenAI["models"]["generateContentStream"]>>;
 
@@ -191,21 +192,30 @@ async function runGeminiToolLoop({
     // L5 per-call budget cap: check mid-loop after each model response.
     // SDK providers throw here; CLI providers can only check post-turn
     // (subprocess owns its internal loop; cannot abort mid-stream).
-    // Drop the `&& lastUsage` precondition so the cap can't be silently
-    // skipped on a streaming iteration without usageMetadata. If lastUsage
-    // is missing, treat the iteration cost as 0 (warn via hostAdapter) so
-    // subsequent iterations still fire the cap reactively.
+    // Issue #53: an iteration whose cost can't be measured (no
+    // usageMetadata, no prompt-token count, or computeIterationCost throws
+    // or returns a non-finite / negative cost) is an UNKNOWN cost. It stops
+    // the budgeted call; it is never counted as $0.
     if (ctx && ctx.maxUsdBudget !== null && ctx.maxUsdBudget !== undefined && ctx.computeIterationCost) {
-      let iterCost = 0;
-      try {
-        iterCost = ctx.computeIterationCost(lastUsage || {});
-      } catch (e) {
-        // unmeasurable; warn but treat as 0 to keep cap reactive on subsequent turns
-        if (ctx.hostAdapter && ctx.hostAdapter.notify) {
-          try {
-            ctx.hostAdapter.notify(`[gryphon] iteration cost unmeasurable: ${(e as Error).message}`, { level: "warn" });
-          } catch { /* notify must not block */ }
+      let iterCost: number | null = null;
+      if (usageKnown(lastUsage, "promptTokenCount")) {
+        try {
+          iterCost = ctx.computeIterationCost(lastUsage as GenerateContentResponseUsageMetadata);
+        } catch (e) {
+          if (ctx.hostAdapter && ctx.hostAdapter.notify) {
+            try {
+              ctx.hostAdapter.notify(`[gryphon] iteration cost unmeasurable: ${(e as Error).message}`, { level: "warn" });
+            } catch { /* notify must not block */ }
+          }
         }
+      }
+      if (!isKnownCost(iterCost)) {
+        throw new BudgetExceededError({
+          budget: ctx.maxUsdBudget,
+          spent: (ctx.priorCumulativeCost || 0) + (ctx._loopCost || 0),
+          lastTurnCost: 0,
+          costUnknown: true,
+        });
       }
       if (!ctx._loopCost) ctx._loopCost = 0;
       ctx._loopCost += iterCost;

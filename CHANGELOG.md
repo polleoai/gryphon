@@ -4,6 +4,14 @@ All notable changes to the Gryphon Obsidian plugin are documented here. Format f
 
 > **Project history:** This plugin was originally developed as **Hermes** through pre-1.0 milestones and was briefly published under that name at v1.0.0. It was renamed to **Gryphon** in 2026-04 to avoid confusion with the unrelated Hermes agentic system. The Gryphon v1.0.0 release is the same code as the Hermes v1.0.0 release with a name change. CHANGELOG entries below referencing "Hermes" reflect what the project was called at the time of those releases.
 
+## [2.13.1] — 2026-11-17
+
+A security fix for apps that set a spending cap on Gryphon.
+
+### Security
+
+- **A per-call spending cap now stops a call whose cost can't be read.** Apps that set a spending cap on a Gryphon call (`maxUsdBudget`) were not protected when the AI service didn't report that call's cost: it was counted as $0, so the cap never stopped the call. Now such a call stops with the usual budget error, marked as cost unknown. This applies to every provider: Claude Code, Codex, Gemini CLI, Antigravity, and the Anthropic, OpenAI and Google APIs. Calls without a cap, including Gryphon's own chat, are unchanged.
+
 ## [2.13.0] — 2026-11-16
 
 ### New

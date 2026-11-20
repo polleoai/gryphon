@@ -19,14 +19,22 @@ const fs = require("fs");
 const path = require("path");
 const Module = require("module");
 
-const MAIN_JS = path.resolve(__dirname, "..", "main.js");
+// The build writes main.js at the REPO ROOT. From v1.5.0 (the workspace split)
+// until 2.13.0 this pointed at packages/plugin/main.js, which never exists, so
+// the test skipped on every run and the gate counted the skip as a pass.
+const MAIN_JS = path.resolve(__dirname, "..", "..", "..", "main.js");
 
-// Skip cleanly if main.js isn't built — CI should run `npm run build`
-// before `npm test`, but a local dev-mode run without a fresh build
-// shouldn't make this file blow up the whole suite.
-const shouldSkip = !fs.existsSync(MAIN_JS)
-  ? { skip: "main.js not built — run `npm run build` first" }
+// A missing main.js FAILS: verify-all builds before the tests, and a skip here
+// once hid this whole test for six months. A dev-mode `npm test` without a
+// build may opt out explicitly with GRYPHON_ALLOW_UNBUILT=1.
+const shouldSkip = !fs.existsSync(MAIN_JS) && process.env.GRYPHON_ALLOW_UNBUILT === "1"
+  ? { skip: "main.js not built and GRYPHON_ALLOW_UNBUILT=1" }
   : {};
+if (!fs.existsSync(MAIN_JS) && process.env.GRYPHON_ALLOW_UNBUILT !== "1") {
+  test("main.js exists (run `npm run build` first)", () => {
+    assert.fail(`main.js not found at ${MAIN_JS}: run \`npm run build\` before the tests (or set GRYPHON_ALLOW_UNBUILT=1 for a dev run)`);
+  });
+}
 
 test("main.js loads under a realistic Obsidian stub", shouldSkip, () => {
   // Full enough Obsidian surface to satisfy every class extension / call

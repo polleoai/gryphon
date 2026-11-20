@@ -170,7 +170,7 @@ import { buildEnhancedPath, resolveCliBinary } from "../../utils";
 import { securityInputsOf } from "@polleoai/gryphon-protect";
 import { filterExtraArgs } from "@polleoai/gryphon-provider-config";
 import { injectSchemaHint, parseAndValidate, CliStructuredOutputError } from "../../cli-structured-output";
-import { BudgetExceededError } from "../../budget-error";
+import { checkCliBudget, nextCumulative, isKnownCost } from "../../budget-guard";
 import { HeadlessHostAdapter } from "../../host-adapter";
 const { computeCost, coerceToAntigravityCliModel, antigravityCliSpawnModel } = pricing.google;
 // The registry's default model id (typed loosely upstream).
@@ -640,27 +640,14 @@ class AntigravityCliProvider {
 
       const loop = async (): Promise<Result> => {
         let lastError: InstanceType<typeof CliStructuredOutputError> | null = null;
-        const priorCallCumulative = this.lastCumulativeCost;
+        let callSpent = 0; // #53: sum of this send()\'s own turn costs
         try {
           for (let attempt = 1; attempt <= maxRetries; attempt++) {
             const turnResult = await this._spawnTurn(enrichedPrompt);
-            if (this._spawnOverride) this.lastCumulativeCost = turnResult.cumulativeCost || 0;
+            if (this._spawnOverride) this.lastCumulativeCost = nextCumulative(this.lastCumulativeCost, turnResult);
             if (options && typeof options.maxUsdBudget === "number") {
-              const cumCost = typeof turnResult.cumulativeCost === "number" ? turnResult.cumulativeCost : null;
-              if (cumCost === null) {
-                if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
-                  `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
-                  { level: "warn" },
-                );
-              }
-              const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-              if (perCallSpent >= options.maxUsdBudget) {
-                throw new BudgetExceededError({
-                  budget: options.maxUsdBudget,
-                  spent: perCallSpent,
-                  lastTurnCost: turnResult.cost || 0,
-                });
-              }
+              // Issue #53: an unknown cost stops the call (never counted as $0).
+              callSpent = checkCliBudget(options.maxUsdBudget, callSpent, turnResult, (m) => { if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(m, { level: "warn" }); });
             }
             try {
               // structuredOutput was checked truthy before the loop started.
@@ -697,24 +684,10 @@ class AntigravityCliProvider {
 
     // Plain (non-structured-output) path.
     if (options && typeof options.maxUsdBudget === "number") {
-      const priorCallCumulative = this.lastCumulativeCost;
       return this._spawnTurn(prompt).then((result: Result) => {
-        if (this._spawnOverride) this.lastCumulativeCost = result.cumulativeCost || 0;
-        const cumCost = typeof result.cumulativeCost === "number" ? result.cumulativeCost : null;
-        if (cumCost === null) {
-          if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(
-            `[gryphon] CLI provider did not report cumulativeCost; budget guard cannot verify spend`,
-            { level: "warn" },
-          );
-        }
-        const perCallSpent = cumCost !== null ? cumCost - priorCallCumulative : 0;
-        if (perCallSpent >= (options.maxUsdBudget as number)) {
-          throw new BudgetExceededError({
-            budget: options.maxUsdBudget as number, // checked as a number before .then
-            spent: perCallSpent,
-            lastTurnCost: result.cost || 0,
-          });
-        }
+        if (this._spawnOverride) this.lastCumulativeCost = nextCumulative(this.lastCumulativeCost, result);
+        // Issue #53: an unknown cost stops the call (never counted as $0).
+        checkCliBudget(options.maxUsdBudget as number, 0, result, (m) => { if (this.hostAdapter && this.hostAdapter.notify) this.hostAdapter.notify(m, { level: "warn" }); });
         return result;
       });
     }
@@ -1081,7 +1054,10 @@ class AntigravityCliProvider {
         candidatesTokenCount: usage.output_tokens || 0,
         cachedContentTokenCount: usage.cache_read_tokens || 0,
       };
-      const { cost } = computeCost(mappedUsage, this.resolvedModel);
+      // Issue #53: a result without usage (or without an input-token
+      // count) is an unknown cost, never $0.
+      const costUnknown = !isKnownCost(lastResult.usage && lastResult.usage.input_tokens);
+      const cost = costUnknown ? 0 : computeCost(mappedUsage, this.resolvedModel).cost;
       this.lastCumulativeCost += cost;
       this.contextTokens = usage.input_tokens || 0;
 
@@ -1095,6 +1071,7 @@ class AntigravityCliProvider {
         text,
         cost,
         cumulativeCost: this.lastCumulativeCost,
+        ...(costUnknown ? { costUnknown: true } : {}),
         sessionId: this.sessionId,
         duration: typeof lastResult.duration_seconds === "number"
           ? Math.round(lastResult.duration_seconds * 1000)

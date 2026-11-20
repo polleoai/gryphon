@@ -25,6 +25,7 @@ exports.runToolLoop = runToolLoop;
 const tool_registry_1 = require("./tools/tool-registry");
 const gryphon_protect_1 = require("@polleoai/gryphon-protect");
 const budget_error_1 = require("../../budget-error");
+const budget_guard_1 = require("../../budget-guard");
 const { shouldFrame, buildFraming } = gryphon_protect_1.untrustedFraming;
 const MAX_ITERATIONS = 25;
 exports.MAX_ITERATIONS = MAX_ITERATIONS;
@@ -233,6 +234,17 @@ async function runToolLoop({ client, model, history, ctx, callbacks }) {
             // The `as number` casts below are compile-time only: an undefined
             // budget still compares false at runtime, exactly as before.
             const iterCost = ctx.computeIterationCost(u);
+            // Issue #53: a response without usage (or a cost that isn't a finite,
+            // non-negative number) is an unknown cost. It stops a budgeted call
+            // instead of counting as $0.
+            if (typeof ctx.maxUsdBudget === "number" && (!(0, budget_guard_1.usageKnown)(u, "input_tokens") || !(0, budget_guard_1.isKnownCost)(iterCost))) {
+                throw new budget_error_1.BudgetExceededError({
+                    budget: ctx.maxUsdBudget,
+                    spent: (ctx.priorCumulativeCost || 0) + (ctx._loopCost || 0),
+                    lastTurnCost: 0,
+                    costUnknown: true,
+                });
+            }
             if (!ctx._loopCost)
                 ctx._loopCost = 0;
             ctx._loopCost += iterCost;
